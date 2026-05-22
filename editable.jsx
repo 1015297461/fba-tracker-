@@ -266,7 +266,23 @@ function ProductsProvider({ children, initial }) {
       if (p.id !== id) return p;
       const s = p.stages[stageKey] || {};
       const next = typeof patch === 'function' ? patch(s) : { ...s, ...patch };
-      return { ...p, stages: { ...p.stages, [stageKey]: next } };
+      const newStages = { ...p.stages, [stageKey]: next };
+
+      // 阶段 status 变化时，自动重算顶层 progress / currentStage，保持表格同步
+      if (typeof patch === 'object' && patch !== null && 'status' in patch) {
+        const keys = window.STAGES.map(st => st.key);
+        const doneCount = keys.filter(k => newStages[k]?.status === 'done').length;
+        const progress = Math.round((doneCount / keys.length) * 100);
+        const activeKey   = keys.find(k => newStages[k]?.status === 'active');
+        const holdKey     = keys.find(k => newStages[k]?.status === 'hold');
+        const lastDoneIdx = keys.reduce((acc, k, i) => newStages[k]?.status === 'done' ? i : acc, -1);
+        const nextStageKey = lastDoneIdx >= 0 && lastDoneIdx < keys.length - 1
+          ? keys[lastDoneIdx + 1] : null;
+        const currentStage = activeKey || holdKey || nextStageKey || keys[0];
+        return { ...p, stages: newStages, progress, currentStage };
+      }
+
+      return { ...p, stages: newStages };
     }));
   }, []);
   const updateRecord = React.useCallback((id, stageKey, arrayKey, recId, patch) => {
