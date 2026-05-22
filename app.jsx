@@ -68,7 +68,7 @@ function AppShell() {
         )}
         {view === 'table' && (
           <TableView
-            products={filteredProducts}
+            filter={filter}
             onSelectProduct={(id) => { setActiveId(id); changeView('list'); }}
           />
         )}

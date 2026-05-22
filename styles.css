@@ -1145,6 +1145,14 @@ select.meta-edit { cursor: pointer; }
   font-weight: 600;
   color: var(--ink-3);
   border-right: 1px solid var(--border);
+  cursor: default;
+}
+.dtable th.group-sticky {
+  position: sticky;
+  left: 0;
+  z-index: 5;
+  background: var(--bg);
+  text-align: center;
 }
 .dtable td {
   padding: 9px 10px;

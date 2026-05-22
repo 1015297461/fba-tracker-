@@ -17,7 +17,13 @@ function marginClass(m) {
   return '';
 }
 
-function TableView({ products, onSelectProduct }) {
+function TableView({ onSelectProduct, filter }) {
+  // 直接订阅 context，确保编辑后立即同步，不依赖父组件 prop 传递
+  const { products: allProducts } = useProducts();
+  const products = filter && filter !== 'all'
+    ? allProducts.filter(p => p.status === filter)
+    : allProducts;
+
   const [sortKey, setSortKey] = React.useState('createdAt');
   const [sortDir, setSortDir] = React.useState('desc');
 
@@ -49,7 +55,7 @@ function TableView({ products, onSelectProduct }) {
     <div style={{padding: '22px 28px 60px', overflowY:'auto', height:'100%'}}>
       <div className="dtable-wrap">
         <div className="dtable-toolbar">
-          <span style={{fontWeight:600}}>22 列对比</span>
+          <span style={{fontWeight:600}}>21 列对比</span>
           <span className="count">· {rows.length} 个产品 · 按{getColLabel(sortKey)}{sortDir === 'asc' ? ' 升序' : ' 降序'}</span>
           <span style={{marginLeft:'auto', display:'flex', gap:6}}>
             <button className="btn btn-sm">列设置</button>
@@ -60,7 +66,7 @@ function TableView({ products, onSelectProduct }) {
           <table className="dtable">
             <thead>
               <tr>
-                <th colSpan={7} className="group">产品信息</th>
+                <th colSpan={7} className="group group-sticky">产品信息</th>
                 <th colSpan={2} className="group">立项评估</th>
                 <th colSpan={1} className="group">竞品</th>
                 <th colSpan={6} className="group">利润测算</th>
