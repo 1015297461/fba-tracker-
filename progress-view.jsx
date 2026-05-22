@@ -31,39 +31,94 @@ function ProgressKPIs({ products }) {
   );
 }
 
-// Convert a YYYY-MM-DD to month-fractional position within a range
-function dPos(dateStr, start, end) {
-  const d = new Date(dateStr + 'T00:00:00').getTime();
-  const s = start.getTime();
-  const e = end.getTime();
-  return Math.max(0, Math.min(100, (d - s) / (e - s) * 100));
-}
+const MO_LABELS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
 
 function GanttAll({ products, onSelectProduct }) {
   const [zoom, setZoom] = React.useState('month');
-  const start = new Date('2025-09-01T00:00:00');
-  const end = new Date('2026-08-01T00:00:00');
-  const months = [];
-  let cur = new Date(start);
-  while (cur < end) {
-    months.push({ y: cur.getFullYear(), m: cur.getMonth() });
-    cur.setMonth(cur.getMonth() + 1);
-  }
-  const today = new Date('2026-05-22T00:00:00');
-  const todayPos = dPos('2026-05-22', start, end);
+
+  // Dynamic today (no hardcoding)
+  const now = React.useMemo(() => {
+    const d = new Date(); d.setHours(0,0,0,0); return d;
+  }, []);
+  const todayStr = now.toISOString().slice(0,10);
+
+  // Collect all meaningful dates from all products to determine range
+  const { minMs, maxMs } = React.useMemo(() => {
+    const ms = [now.getTime()];
+    products.forEach(p => {
+      if (p.createdAt) ms.push(new Date(p.createdAt + 'T00:00:00').getTime());
+      STAGES.forEach(s => {
+        const sd = p.stages[s.key];
+        if (!sd) return;
+        if (sd.startDate) ms.push(new Date(sd.startDate + 'T00:00:00').getTime());
+        if (sd.endDate)   ms.push(new Date(sd.endDate   + 'T00:00:00').getTime());
+      });
+      (p.stages.production?.batches || []).forEach(b => {
+        if (b.expectedShip) ms.push(new Date(b.expectedShip + 'T00:00:00').getTime());
+      });
+    });
+    return { minMs: Math.min(...ms), maxMs: Math.max(...ms) };
+  }, [products, now]);
+
+  // Build axis units and date range based on zoom
+  const { start, end, axisUnits } = React.useMemo(() => {
+    let s, e, units = [];
+
+    if (zoom === 'week') {
+      // Show 8 weeks before → 16 weeks after today
+      s = new Date(now); s.setDate(s.getDate() - 56);
+      const dow = (s.getDay() + 6) % 7; s.setDate(s.getDate() - dow); // snap to Monday
+      e = new Date(now); e.setDate(e.getDate() + 112);
+      let cur = new Date(s);
+      let idx = 0;
+      while (cur < e) {
+        // Only label every 2nd week to avoid crowding
+        units.push({ label: idx % 2 === 0 ? `${cur.getMonth()+1}/${cur.getDate()}` : '', ms: cur.getTime() });
+        cur = new Date(cur); cur.setDate(cur.getDate() + 7); idx++;
+      }
+    } else if (zoom === 'quarter') {
+      // Quarter boundaries covering all data
+      s = new Date(minMs); s.setDate(1); s.setMonth(Math.floor(s.getMonth()/3)*3); s.setHours(0,0,0,0);
+      e = new Date(maxMs); e.setDate(1); e.setMonth(Math.floor(e.getMonth()/3)*3+3); e.setHours(0,0,0,0);
+      // At least 4 quarters
+      if (e - s < 365 * 24 * 3600 * 1000) { e = new Date(s); e.setFullYear(e.getFullYear() + 1); }
+      let cur = new Date(s);
+      while (cur < e) {
+        const q = Math.floor(cur.getMonth()/3) + 1;
+        units.push({ label: `${cur.getFullYear()} Q${q}`, ms: cur.getTime() });
+        cur = new Date(cur); cur.setMonth(cur.getMonth() + 3);
+      }
+    } else {
+      // month: cover all data + 1 month padding each side
+      s = new Date(minMs); s.setDate(1); s.setMonth(s.getMonth()-1); s.setHours(0,0,0,0);
+      e = new Date(maxMs); e.setDate(1); e.setMonth(e.getMonth()+2); e.setHours(0,0,0,0);
+      let cur = new Date(s);
+      while (cur < e) {
+        units.push({ label: `${MO_LABELS[cur.getMonth()]} ${String(cur.getFullYear()).slice(2)}`, ms: cur.getTime() });
+        cur = new Date(cur); cur.setMonth(cur.getMonth()+1);
+      }
+    }
+    return { start: s, end: e, axisUnits: units };
+  }, [zoom, minMs, maxMs, now]);
+
+  const totalMs = end.getTime() - start.getTime();
+  const pct = (dateStr) => Math.max(0, Math.min(100, (new Date(dateStr + 'T00:00:00').getTime() - start.getTime()) / totalMs * 100));
+  const todayPct = Math.max(0, Math.min(100, (now.getTime() - start.getTime()) / totalMs * 100));
 
   return (
     <div className="gantt-wrap">
       <div className="gantt-hdr">
         <span className="gantt-title">全部产品时间线</span>
-        <span style={{color:'var(--ink-4)', fontSize:11}}>{products.length} 个产品 · {start.toISOString().slice(0,7)} → {end.toISOString().slice(0,7)}</span>
+        <span style={{color:'var(--ink-4)', fontSize:11}}>
+          {products.length} 个产品 · {start.toISOString().slice(0,7)} → {end.toISOString().slice(0,7)}
+        </span>
         <div className="gantt-zoom">
           {['week','month','quarter'].map(z => (
             <button key={z} data-active={zoom === z} onClick={() => setZoom(z)}>
               {z === 'week' ? '周' : z === 'month' ? '月' : '季'}
             </button>
           ))}
-          <button>📍 今天</button>
+          <button onClick={() => {}}>📍 今天</button>
         </div>
       </div>
       <div className="gantt-body">
@@ -78,49 +133,68 @@ function GanttAll({ products, onSelectProduct }) {
             ))}
           </div>
           <div className="gantt-canvas">
-            <div className="gantt-axis">
-              {months.map((m, i) => (
-                <div key={i} className="gantt-month">
-                  {['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'][m.m]} {String(m.y).slice(2)}
-                </div>
-              ))}
+            {/* Axis: absolutely-positioned labels so they align with segment bars */}
+            <div className="gantt-axis" style={{position:'relative', overflow:'hidden'}}>
+              {axisUnits.map((unit, i) => {
+                const nextMs = i + 1 < axisUnits.length ? axisUnits[i+1].ms : end.getTime();
+                const left = Math.max(0, (unit.ms - start.getTime()) / totalMs * 100);
+                const width = Math.max(0, (nextMs - unit.ms) / totalMs * 100);
+                return (
+                  <div key={i} className="gantt-month"
+                    style={{position:'absolute', left: left+'%', width: width+'%', boxSizing:'border-box'}}>
+                    {unit.label}
+                  </div>
+                );
+              })}
             </div>
+
             {products.map(p => {
-              // Build segments from stages with endDate (status===done) or active stages
               const segs = [];
               let prevDate = p.createdAt;
               STAGES.forEach(s => {
                 const sd = p.stages[s.key];
                 if (!sd) return;
-                const endDate = sd.endDate || sd.doneDate;
-                if (sd.status === 'done' && endDate) {
-                  const startDate = sd.startDate || prevDate;
-                  segs.push({ key: s.key, color: s.color, name: s.short, start: startDate, end: endDate });
-                  prevDate = endDate;
+                const stageEnd = sd.endDate || sd.doneDate;
+                if (sd.status === 'done' && stageEnd) {
+                  const segStart = sd.startDate || prevDate;
+                  segs.push({ color: s.color, name: s.short, start: segStart, end: stageEnd });
+                  prevDate = stageEnd;
                 } else if (sd.status === 'active') {
-                  const startDate = sd.startDate || prevDate;
-                  segs.push({ key: s.key, color: s.color, name: s.short, start: startDate, end: '2026-05-22', current: true });
-                  prevDate = '2026-05-22';
+                  const segStart = sd.startDate || prevDate;
+                  // Planned end: stage endDate or first batch expectedShip
+                  let plannedEnd = sd.endDate;
+                  if (!plannedEnd && s.key === 'production') {
+                    const batch = (sd.batches || []).find(b => b.expectedShip);
+                    if (batch) plannedEnd = batch.expectedShip;
+                  }
+                  const segEnd = (plannedEnd && plannedEnd > todayStr) ? plannedEnd : todayStr;
+                  segs.push({ color: s.color, name: s.short, start: segStart, end: segEnd, current: true, planned: segEnd > todayStr });
+                  prevDate = segEnd;
                 } else if (sd.status === 'hold' && (sd.startDate || prevDate)) {
-                  const startDate = sd.startDate || prevDate;
-                  segs.push({ key: s.key, color: '#9333ea', name: s.short + '⏸', start: startDate, end: sd.endDate || '2026-05-22' });
+                  const segStart = sd.startDate || prevDate;
+                  segs.push({ color: '#9333ea', name: s.short + '⏸', start: segStart, end: sd.endDate || todayStr });
                 }
               });
               return (
                 <div key={p.id} className="gantt-row">
                   {segs.map((seg, i) => {
-                    const l = dPos(seg.start, start, end);
-                    const r = dPos(seg.end, start, end);
+                    const l = pct(seg.start);
+                    const r = pct(seg.end);
                     const w = r - l;
-                    if (w < 0.5) return null;
+                    if (w < 0.3) return null;
                     return (
-                      <div key={i} className={"gantt-seg" + (seg.current ? ' current' : '')}
+                      <div key={i}
+                        className={"gantt-seg" + (seg.current ? ' current' : '')}
                         style={{
                           left: l + '%',
                           width: w + '%',
                           background: seg.color,
+                          opacity: seg.planned ? 0.55 : 1,
+                          backgroundImage: seg.planned
+                            ? 'repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,0.3) 4px,rgba(255,255,255,0.3) 8px)'
+                            : 'none',
                         }}
-                        title={`${seg.name}: ${seg.start} → ${seg.end}`}>
+                        title={`${seg.name}: ${seg.start} → ${seg.end}${seg.planned ? ' (计划)' : ''}`}>
                         {w > 4 ? seg.name : ''}
                       </div>
                     );
@@ -128,7 +202,7 @@ function GanttAll({ products, onSelectProduct }) {
                 </div>
               );
             })}
-            <div className="gantt-today" style={{left: todayPos + '%'}}></div>
+            <div className="gantt-today" style={{left: todayPct + '%'}}></div>
           </div>
         </div>
       </div>
@@ -139,6 +213,10 @@ function GanttAll({ products, onSelectProduct }) {
             <span>{s.name}</span>
           </span>
         ))}
+        <span className="item" style={{marginLeft:'auto', opacity:0.65}}>
+          <span className="sw" style={{background:'var(--ink-3)', backgroundImage:'repeating-linear-gradient(45deg,transparent,transparent 2px,rgba(255,255,255,0.5) 2px,rgba(255,255,255,0.5) 4px)'}}></span>
+          <span>计划中</span>
+        </span>
       </div>
     </div>
   );
@@ -180,7 +258,8 @@ function CalendarHeatmap({ product }) {
     }
   }
 
-  const today = new Date('2026-05-22T00:00:00');
+  const today = React.useMemo(() => { const d = new Date(); d.setHours(0,0,0,0); return d; }, []);
+  const todayDateStr = today.toISOString().slice(0,10);
 
   const monthNames = ['一月','二月','三月','四月','五月','六月','七月','八月','九月','十月','十一月','十二月'];
   const dowNames = ['一','二','三','四','五','六','日'];
@@ -212,7 +291,7 @@ function CalendarHeatmap({ product }) {
       const dateStr = `${year}-${String(monthIdx+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
       const ev = events[dateStr];
       const br = bridge[dateStr];
-      const isToday = dateStr === '2026-05-22';
+      const isToday = dateStr === todayDateStr;
       let cls = 'cal-day';
       let style = {};
       if (ev) {
@@ -280,7 +359,7 @@ function CalendarHeatmap({ product }) {
         ))}
         <span className="item" style={{marginLeft:'auto'}}>
           <span className="sw" style={{outline:'1.5px solid var(--ink)', outlineOffset:-1.5, background:'var(--card-bg)'}}></span>
-          <span>今天 (5/22)</span>
+          <span>今天 ({today.getMonth()+1}/{today.getDate()})</span>
         </span>
       </div>
     </div>
