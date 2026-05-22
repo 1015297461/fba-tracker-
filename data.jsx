@@ -405,6 +405,27 @@ function getDone(stage) {
   return stage && (stage.endDate || stage.doneDate || (stage.status === 'done' ? stage.startDate : '') || '');
 }
 
+// ====== 公共利润计算函数（list-view / table-view 共用）======
+// 退货成本 = 售价 × 退货率（不含任何成本项）
+// 产品成本用不含税金额参与计算，含税仅展示
+function calcProfit(p) {
+  const pr = p.stages?.profit;
+  if (!pr || !Number(pr.targetPrice)) return null;
+  const fx        = Number(p.fxRate) || window.DEFAULT_FX || 7.20;
+  const price     = Number(pr.targetPrice)  || 0;  // 目标售价 $
+  const cogsUsd   = fx > 0 ? (Number(pr.cogs)      || 0) / fx : 0; // 不含税产品成本 $
+  const shipUsd   = fx > 0 ? (Number(pr.shipping)  || 0) / fx : 0; // 头程运费 $
+  const otherUsd  = fx > 0 ? (Number(pr.otherCost) || 0) / fx : 0; // 其他费用 $
+  const fbaFee    = Number(pr.fbaFee)       || 0;  // FBA费用 $
+  const referral  = price * (Number(pr.referralPct || 0) / 100);   // 平台佣金 $
+  const adFee     = price * (Number(pr.adPct       || 0) / 100);   // 广告费 $
+  const returnCost = price * (Number(pr.returnRate || 0) / 100);   // 退货成本 = 售价×退货率 $
+  const gross     = price - fbaFee - shipUsd - cogsUsd;
+  const net       = gross - referral - adFee - returnCost - otherUsd;
+  const margin    = price ? (net / price * 100) : 0;
+  return { price, cogsUsd, shipUsd, otherUsd, fbaFee, referral, adFee, returnCost, gross, net, margin };
+}
+
 Object.assign(window, {
-  STAGES, TABS, STAGE_STATUSES, STATUS_LABELS, PRODUCTS, S, uid, getDone, DEFAULT_FX,
+  STAGES, TABS, STAGE_STATUSES, STATUS_LABELS, PRODUCTS, S, uid, getDone, DEFAULT_FX, calcProfit,
 });

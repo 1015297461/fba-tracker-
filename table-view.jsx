@@ -7,24 +7,7 @@ function firstExpectedShip(p) {
   return null;
 }
 
-function calcMargin(p) {
-  const pr = p.stages.profit;
-  if (!pr.targetPrice) return null;
-  const fx = Number(p.fxRate) || window.DEFAULT_FX || 7.20;
-  const targetPrice = Number(pr.targetPrice) || 0;
-  const taxRate = Number(pr.taxRate || 0);
-  const cogsInclUsd = fx > 0 ? (Number(pr.cogs||0) * (1 + taxRate/100)) / fx : 0;
-  const shippingUsd = fx > 0 ? (Number(pr.shipping||0)) / fx : 0;
-  const otherUsd = fx > 0 ? (Number(pr.otherCost||0)) / fx : 0;
-  const fbaFee = Number(pr.fbaFee) || 0;
-  const referralFee = targetPrice * (Number(pr.referralPct||0)/100);
-  const adFee = targetPrice * (Number(pr.adPct||0)/100);
-  const returnCost = (Number(pr.returnRate||0)/100) * (fbaFee + cogsInclUsd);
-  const grossProfit = targetPrice - fbaFee - shippingUsd - cogsInclUsd;
-  const netProfit = grossProfit - referralFee - adFee - returnCost - otherUsd;
-  const margin = (netProfit / targetPrice) * 100;
-  return { netProfit, margin, grossProfit };
-}
+// 使用 data.jsx 中的公共 calcProfit，保持与 list-view 计算逻辑一致
 
 function marginClass(m) {
   if (m == null) return '';
@@ -117,7 +100,7 @@ function TableView({ products, onSelectProduct }) {
             </thead>
             <tbody>
               {rows.map(p => {
-                const m = calcMargin(p);
+                const m = calcProfit(p);
                 const pr = p.stages.profit;
                 return (
                   <tr key={p.id} onClick={() => onSelectProduct(p.id)} style={{cursor:'pointer'}}>
@@ -140,10 +123,10 @@ function TableView({ products, onSelectProduct }) {
 
                     <td className="num">{p.stages.research.avgPrice ? `$${p.stages.research.avgPrice.toFixed(2)}` : '—'}</td>
 
-                    <td className="num">{pr.targetPrice ? `$${pr.targetPrice.toFixed(2)}` : '—'}</td>
-                    <td className="num">{pr.cogs ? `¥${pr.cogs.toFixed(2)}` : '—'}</td>
+                    <td className="num">{pr.targetPrice ? `$${Number(pr.targetPrice).toFixed(2)}` : '—'}</td>
+                    <td className="num">{pr.cogs ? `¥${Number(pr.cogs).toFixed(2)}` : '—'}</td>
                     <td className="num">{p.stages.bom.items?.length ? `¥${(p.stages.bom.items||[]).reduce((s,i)=>s+i.qty*i.unitCost,0).toFixed(2)}` : '—'}</td>
-                    <td className="num">{m ? `$${m.netProfit.toFixed(2)}` : '—'}</td>
+                    <td className="num">{m ? `$${m.net.toFixed(2)}` : '—'}</td>
                     <td className={"num " + (m ? marginClass(m.margin) : '')}>{m ? `${m.margin.toFixed(1)}%` : '—'}</td>
                     <td style={{borderRight:'1px solid var(--border)'}}>
                       {pr.decision === 'pass' && <span className="decision-pill pass">✓ 通过</span>}
@@ -176,7 +159,7 @@ function TableView({ products, onSelectProduct }) {
 
 function getColVal(p, k) {
   const pr = p.stages.profit;
-  const m = calcMargin(p);
+  const m = calcProfit(p);
   switch(k) {
     case 'name': return p.name;
     case 'sku': return p.sku;
@@ -191,7 +174,7 @@ function getColVal(p, k) {
     case 'targetPrice': return pr.targetPrice;
     case 'cogs': return pr.cogs;
     case 'bomTotal': return (p.stages.bom.items||[]).reduce((s,i)=>s+i.qty*i.unitCost,0) || null;
-    case 'netProfit': return m?.netProfit;
+    case 'netProfit': return m?.net;
     case 'margin': return m?.margin;
     case 'decision': return pr.decision;
     case 'supCount': return (p.stages.supplier.suppliers || []).length;

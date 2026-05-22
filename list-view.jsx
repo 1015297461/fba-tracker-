@@ -144,7 +144,7 @@ function ProfitCard({ p }) {
 
   const referralFee = targetPrice * referralPct / 100;
   const adFee = targetPrice * adPct / 100;
-  const returnCost = (returnRate / 100) * (fbaFee + cogsUsd);  // 退货成本用不含税产品成本
+  const returnCost = targetPrice * (returnRate / 100);          // 退货成本 = 售价 × 退货率
 
   // 毛利润 = 目标售价 - FBA费用 - 头程运费 - 不含税产品成本
   const grossProfit = targetPrice - fbaFee - shippingUsd - cogsUsd;
@@ -258,8 +258,8 @@ function ProfitCard({ p }) {
           <div className="formula-row">
             <span className="fr-label">退货成本</span>
             <span className="fr-eq">=</span>
-            <span className="fr-expr">退货率 × (FBA费用 + 产品成本不含税)</span>
-            <span className="fr-calc mono">{returnRate}% × (${fbaFee.toFixed(2)} + ${cogsUsd.toFixed(2)}) = <strong>${returnCost.toFixed(2)}</strong></span>
+            <span className="fr-expr">目标售价 × 退货率</span>
+            <span className="fr-calc mono">${targetPrice.toFixed(2)} × {returnRate}% = <strong>${returnCost.toFixed(2)}</strong></span>
           </div>
           <div className="formula-row highlight strong">
             <span className="fr-label">净利润 ($)</span>
@@ -477,8 +477,8 @@ function SensitivityPanel({ items, profit, fxRate }) {
 
   const baseGross = targetPrice - fbaFee - shippingUsd - baseCogsUsd;
   const adjGross = targetPrice - fbaFee - shippingUsd - adjCogsUsd;
-  const baseReturnCost = returnRate * (fbaFee + baseCogsUsd);
-  const adjReturnCost = returnRate * (fbaFee + adjCogsUsd);
+  const baseReturnCost = returnRate * targetPrice;  // 退货成本 = 售价 × 退货率
+  const adjReturnCost  = returnRate * targetPrice;  // 退货成本与成本无关，两种场景相同
   const baseNet = baseGross - referralFee - adFee - baseReturnCost - otherUsd;
   const adjNet = adjGross - referralFee - adFee - adjReturnCost - otherUsd;
   const netDelta = adjNet - baseNet;
