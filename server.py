@@ -29,7 +29,27 @@ from urllib.parse import urlparse
 
 
 def get_lan_ip():
-    """探测本机的局域网 IP（用于打印访问地址）"""
+    """探测本机的局域网 IP，优先返回 192.168.x.x / 10.x.x.x / 172.16-31.x.x"""
+    import subprocess
+    candidates = []
+    try:
+        # 获取所有网卡 IP
+        result = subprocess.run(
+            ["ifconfig"], capture_output=True, text=True, timeout=3
+        )
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("inet ") and "127.0.0.1" not in line:
+                ip = line.split()[1]
+                # 优先选真实局域网段
+                if ip.startswith("192.168.") or ip.startswith("10.") or \
+                   any(ip.startswith(f"172.{i}.") for i in range(16, 32)):
+                    candidates.append(ip)
+    except Exception:
+        pass
+    if candidates:
+        return candidates[0]
+    # 兜底：UDP 探测
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("8.8.8.8", 80))
