@@ -9,6 +9,33 @@ const STATUS_LABELS = {
   cancel: { label: '已取消', color: '#9a9a96' },
 };
 
+function useSyncLabel() {
+  const ctx = useProducts ? useProducts() : null;
+  const { syncMode, syncStatus, syncVersion } = ctx || {};
+
+  if (!syncMode || syncMode === 'checking') {
+    return { label: '检测中...', cls: '', icon: '…' };
+  }
+  if (syncMode === 'local') {
+    return { label: '本地已保存', cls: 'sync-local', icon: '💾' };
+  }
+  // server mode
+  if (syncStatus === 'saving') {
+    return { label: '同步中...', cls: 'sync-saving', icon: '☁' };
+  }
+  if (syncStatus === 'conflict') {
+    return { label: '已自动合并', cls: 'sync-conflict', icon: '⚠' };
+  }
+  if (syncStatus === 'offline') {
+    return { label: '离线 (本地缓存)', cls: 'sync-offline', icon: '⚠' };
+  }
+  if (syncStatus === 'error') {
+    return { label: '同步错误', cls: 'sync-error', icon: '⚠' };
+  }
+  // saved / idle
+  return { label: `已同步 v${syncVersion ?? 0}`, cls: 'sync-online', icon: '☁' };
+}
+
 function Sidebar({ view, setView, filter, setFilter, products }) {
   const counts = {
     all: products.length,
@@ -21,13 +48,18 @@ function Sidebar({ view, setView, filter, setFilter, products }) {
   const overdue = 1;
   const due30 = 4;
 
+  const ctx = useProducts ? useProducts() : null;
+  const syncMode = ctx?.syncMode;
+  const { label: syncLabel, cls: syncCls } = useSyncLabel();
+  const modeText = syncMode === 'server' ? '局域网协作' : syncMode === 'local' ? '本地存储' : '检测中';
+
   return (
     <aside className="sidebar">
       <div className="sb-brand">
         <div className="sb-brand-icon">F</div>
         <div className="sb-brand-text">
           <span className="sb-brand-title">FBA Tracker</span>
-          <span className="sb-brand-sub">v2.0 · standalone</span>
+          <span className="sb-brand-sub">v2.0 · {modeText}</span>
         </div>
       </div>
 
@@ -86,8 +118,8 @@ function Sidebar({ view, setView, filter, setFilter, products }) {
       </div>
 
       <div className="sb-footer">
-        <span>本地存储</span>
-        <span className="pill">已保存</span>
+        <span>{modeText}</span>
+        <span className={`pill ${syncCls}`}>{syncLabel}</span>
       </div>
     </aside>
   );
@@ -96,14 +128,18 @@ function Sidebar({ view, setView, filter, setFilter, products }) {
 function TopBar({ view, product, theme, onToggleTheme, onNewProduct }) {
   const titles = { list: '产品列表', progress: '进度总览', table: '数据表格' };
   const ctx = useProducts ? useProducts() : null;
-  const savedAt = ctx?.savedAt;
-  const [savedFlash, setSavedFlash] = React.useState(false);
+  const { label: syncLabel, cls: syncCls, icon: syncIcon } = useSyncLabel();
+
+  // 保存成功时短暂闪烁绿色
+  const syncStatus = ctx?.syncStatus;
+  const [flash, setFlash] = React.useState(false);
   React.useEffect(() => {
-    if (!savedAt) return;
-    setSavedFlash(true);
-    const t = setTimeout(() => setSavedFlash(false), 1200);
+    if (syncStatus !== 'saved') return;
+    setFlash(true);
+    const t = setTimeout(() => setFlash(false), 1200);
     return () => clearTimeout(t);
-  }, [savedAt]);
+  }, [ctx?.savedAt]);
+
   return (
     <div className="topbar">
       <span className="topbar-title">{titles[view]}</span>
@@ -114,8 +150,8 @@ function TopBar({ view, product, theme, onToggleTheme, onNewProduct }) {
         </>
       )}
       <div className="topbar-spacer"></div>
-      <span className="save-indicator" data-flash={savedFlash}>
-        {savedFlash ? <><span className="dot"></span>已保存</> : savedAt ? <>✓ 已保存 {savedAt.toLocaleTimeString()}</> : '未保存'}
+      <span className={`save-indicator ${syncCls}`} data-flash={flash}>
+        {syncIcon} {syncLabel}
       </span>
       <div className="topbar-actions">
         <button className="btn btn-sm" onClick={() => ctx?.importJSON?.()}><span>↑</span><span>导入</span></button>

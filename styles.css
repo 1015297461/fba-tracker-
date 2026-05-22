@@ -159,13 +159,19 @@ input, textarea, select { font-family: inherit; font-size: 13px; }
   align-items: center;
 }
 .sb-footer .pill {
-  background: rgba(34,197,94,0.12);
-  color: #16a34a;
   padding: 2px 7px;
   border-radius: 10px;
   font-size: 10.5px;
   font-weight: 600;
+  background: rgba(154,154,150,0.12);
+  color: var(--ink-3);
 }
+.sb-footer .pill.sync-online  { background: rgba(22,163,74,0.12);   color: #16a34a; }
+.sb-footer .pill.sync-saving  { background: rgba(37,99,235,0.12);   color: #2563eb; }
+.sb-footer .pill.sync-conflict{ background: rgba(234,88,12,0.12);   color: #ea580c; }
+.sb-footer .pill.sync-offline,
+.sb-footer .pill.sync-error   { background: rgba(220,38,38,0.12);   color: #dc2626; }
+.sb-footer .pill.sync-local   { background: rgba(154,154,150,0.12); color: var(--ink-3); }
 
 /* ===== MAIN AREA ===== */
 .main-area {
