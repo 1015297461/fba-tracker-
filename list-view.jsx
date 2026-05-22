@@ -62,7 +62,10 @@ function TabEval({ p }) {
     <>
       <StageCard stage={STAGES[0]} productId={p.id} stageKey="initiation" stageData={init}>
         <div className="fieldgrid cols-3">
-          <EditField label="负责人" value={init.lead} onChange={v => set('initiation', { lead:v })} />
+          <EditField label="负责人" value={p.lead ?? init.lead} onChange={v => {
+            set('initiation', { lead:v });
+            update(p.id, prev => ({ ...prev, lead: v }));
+          }} />
           <EditField label="目标市场" value={init.market}
             options={['美国 US','英国 UK','德国 DE','日本 JP','加拿大 CA','澳大利亚 AU']}
             onChange={v => set('initiation', { market:v })} />
