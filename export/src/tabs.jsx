@@ -1,0 +1,667 @@
+/* eslint-disable no-undef */
+// Tabs: 供应商/打样, 内容设计, 生产出货, 上架运营, 返单复盘 — fully editable
+
+// ============ TAB: 供应商/打样 ============
+function TabSup({ p }) {
+  const { updateStage, addRecord, updateRecord, removeRecord } = useProducts();
+  const sup = p.stages.supplier || { suppliers:[] };
+  const sampling = p.stages.sampling || { rounds:[] };
+  const cert = p.stages.cert || {};
+
+  return (
+    <>
+      <StageCard stage={STAGES[4]} productId={p.id} stageKey="supplier" stageData={sup}>
+        <table className="sup-table editable">
+          <thead>
+            <tr>
+              <th style={{width:'22%'}}>供应商</th>
+              <th style={{width:'24%'}}>联系方式</th>
+              <th style={{textAlign:'right'}}>报价(¥)</th>
+              <th style={{textAlign:'right'}}>MOQ</th>
+              <th style={{textAlign:'right'}}>周期(天)</th>
+              <th style={{textAlign:'right'}}>评分</th>
+              <th></th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {(sup.suppliers || []).map(s => (
+              <tr key={s.id} className={s.selected ? 'selected' : ''}>
+                <td><input className="cell" value={s.name} onChange={e => updateRecord(p.id, 'supplier', 'suppliers', s.id, { name:e.target.value })} /></td>
+                <td><input className="cell mono" style={{fontSize:11}} value={s.contact} onChange={e => updateRecord(p.id, 'supplier', 'suppliers', s.id, { contact:e.target.value })} /></td>
+                <td className="num"><input className="cell mono" type="number" step="0.01" value={s.price} onChange={e => updateRecord(p.id, 'supplier', 'suppliers', s.id, { price:Number(e.target.value) })} /></td>
+                <td className="num"><input className="cell mono" type="number" value={s.moq} onChange={e => updateRecord(p.id, 'supplier', 'suppliers', s.id, { moq:Number(e.target.value) })} /></td>
+                <td className="num"><input className="cell mono" type="number" value={s.lead} onChange={e => updateRecord(p.id, 'supplier', 'suppliers', s.id, { lead:Number(e.target.value) })} /></td>
+                <td className="num"><input className="cell mono" type="number" value={s.score} onChange={e => updateRecord(p.id, 'supplier', 'suppliers', s.id, { score:Number(e.target.value) })} /></td>
+                <td>
+                  {s.selected
+                    ? <span style={{color:'var(--blue)',fontWeight:600,fontSize:11}}>✓ 已选定</span>
+                    : <button className="btn btn-sm" onClick={() => {
+                        const next = (sup.suppliers || []).map(x => ({ ...x, selected: x.id === s.id }));
+                        updateStage(p.id, 'supplier', { suppliers: next });
+                      }}>选定</button>}
+                </td>
+                <td><button className="row-del" onClick={() => removeRecord(p.id, 'supplier', 'suppliers', s.id)}>✕</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div style={{marginTop:10}}>
+          <AddRecordButton label="添加供应商" onClick={() => addRecord(p.id, 'supplier', 'suppliers', { name:'', contact:'', price:0, moq:0, lead:0, score:0, selected:false })} />
+        </div>
+        <div style={{marginTop:12}}>
+          <EditField label="最终确认备注 (账期/质保/包装要求)" multi wide value={sup.finalNote}
+            onChange={v => updateStage(p.id, 'supplier', { finalNote:v })} />
+        </div>
+      </StageCard>
+
+      <StageCard stage={STAGES[5]} productId={p.id} stageKey="sampling" stageData={sampling}>
+        <div className="record-list">
+          {(sampling.rounds || []).map((r, idx) => (
+            <RecordCard key={r.id} index={r.round || idx+1} title={`打样轮次 #${r.round || idx+1}`}
+              color={STAGES[5].color}
+              status={r.status}
+              isFinal={r.isFinal}
+              onStatusChange={v => updateRecord(p.id, 'sampling', 'rounds', r.id, { status:v })}
+              onRemove={() => removeRecord(p.id, 'sampling', 'rounds', r.id)}>
+              <div className="fieldgrid cols-4">
+                <EditField label="下单日期" type="date" mono value={r.orderDate}
+                  onChange={v => updateRecord(p.id, 'sampling', 'rounds', r.id, { orderDate:v })} />
+                <EditField label="数量" type="number" mono value={r.qty} suffix="pcs"
+                  onChange={v => updateRecord(p.id, 'sampling', 'rounds', r.id, { qty:v })} />
+                <EditField label="费用 (¥)" type="number" mono prefix="¥" value={r.cost}
+                  onChange={v => updateRecord(p.id, 'sampling', 'rounds', r.id, { cost:v })} />
+                <EditField label="收样日期" type="date" mono value={r.receivedDate}
+                  onChange={v => updateRecord(p.id, 'sampling', 'rounds', r.id, { receivedDate:v })} />
+                <EditField label="评审结果" wide multi value={r.result}
+                  onChange={v => updateRecord(p.id, 'sampling', 'rounds', r.id, { result:v })} />
+              </div>
+              <label className="final-toggle">
+                <input type="checkbox" checked={!!r.isFinal}
+                  onChange={e => {
+                    const next = (sampling.rounds || []).map(x => ({ ...x, isFinal: x.id === r.id ? e.target.checked : (e.target.checked ? false : x.isFinal) }));
+                    updateStage(p.id, 'sampling', { rounds: next });
+                  }} />
+                <span>标记为最终版本</span>
+              </label>
+            </RecordCard>
+          ))}
+        </div>
+        <div style={{marginTop:10}}>
+          <AddRecordButton label="添加打样轮次" onClick={() => {
+            const nextRound = ((sampling.rounds || []).reduce((m, r) => Math.max(m, r.round || 0), 0)) + 1;
+            addRecord(p.id, 'sampling', 'rounds', { round: nextRound, orderDate:'', qty:0, cost:0, receivedDate:'', result:'', isFinal:false });
+          }} />
+        </div>
+      </StageCard>
+
+      <StageCard stage={STAGES[6]} productId={p.id} stageKey="cert" stageData={cert}>
+        <div className="fieldgrid cols-3">
+          <EditField label="认证类型" value={cert.types}
+            onChange={v => updateStage(p.id, 'cert', { types:v })} />
+          <EditField label="检测机构" value={cert.agency}
+            onChange={v => updateStage(p.id, 'cert', { agency:v })} />
+          <EditField label="费用 (¥)" type="number" mono prefix="¥" value={cert.cost}
+            onChange={v => updateStage(p.id, 'cert', { cost:v })} />
+          <EditField label="预计完成" type="date" mono value={cert.expectedDate}
+            onChange={v => updateStage(p.id, 'cert', { expectedDate:v })} />
+          <EditField label="实际完成" type="date" mono value={cert.doneDate}
+            onChange={v => updateStage(p.id, 'cert', { doneDate:v })} />
+        </div>
+      </StageCard>
+    </>
+  );
+}
+
+// ============ TAB: 内容设计 ============
+function TabDesign({ p }) {
+  const { updateStage, addRecord, updateRecord, removeRecord } = useProducts();
+  const pack = p.stages.packaging || { rounds:[] };
+  const vis = p.stages.visuals || { rounds:[] };
+
+  return (
+    <>
+      <StageCard stage={STAGES[7]} productId={p.id} stageKey="packaging" stageData={pack}>
+        <div className="record-list">
+          {(pack.rounds || []).map((r, idx) => (
+            <RecordCard key={r.id} index={r.round || idx+1} title={`包装设计 #${r.round || idx+1}`}
+              color={STAGES[7].color} status={r.status} isFinal={r.isFinal}
+              onStatusChange={v => updateRecord(p.id, 'packaging', 'rounds', r.id, { status:v })}
+              onRemove={() => removeRecord(p.id, 'packaging', 'rounds', r.id)}>
+              <div className="fieldgrid cols-4">
+                <EditField label="需求提交日" type="date" mono value={r.briefDate}
+                  onChange={v => updateRecord(p.id, 'packaging', 'rounds', r.id, { briefDate:v })} />
+                <EditField label="设计师" value={r.designer}
+                  onChange={v => updateRecord(p.id, 'packaging', 'rounds', r.id, { designer:v })} />
+                <EditField label="初稿完成" type="date" mono value={r.draftDate}
+                  onChange={v => updateRecord(p.id, 'packaging', 'rounds', r.id, { draftDate:v })} />
+                <EditField label="确认日期" type="date" mono value={r.confirmDate}
+                  onChange={v => updateRecord(p.id, 'packaging', 'rounds', r.id, { confirmDate:v })} />
+              </div>
+              <label className="final-toggle">
+                <input type="checkbox" checked={!!r.isFinal}
+                  onChange={e => updateRecord(p.id, 'packaging', 'rounds', r.id, { isFinal: e.target.checked })} />
+                <span>标记为最终版本</span>
+              </label>
+            </RecordCard>
+          ))}
+        </div>
+        <div style={{marginTop:10}}>
+          <AddRecordButton label="添加包装轮次" onClick={() => {
+            const next = ((pack.rounds || []).reduce((m, r) => Math.max(m, r.round || 0), 0)) + 1;
+            addRecord(p.id, 'packaging', 'rounds', { round: next, briefDate:'', designer:'', draftDate:'', confirmDate:'', isFinal:false });
+          }} />
+        </div>
+      </StageCard>
+
+      <StageCard stage={STAGES[8]} productId={p.id} stageKey="visuals" stageData={vis}>
+        <div className="record-list">
+          {(vis.rounds || []).map((r, idx) => (
+            <RecordCard key={r.id} index={r.round || idx+1} title={`视觉素材 #${r.round || idx+1}`}
+              color={STAGES[8].color} status={r.status} isFinal={r.isFinal}
+              onStatusChange={v => updateRecord(p.id, 'visuals', 'rounds', r.id, { status:v })}
+              onRemove={() => removeRecord(p.id, 'visuals', 'rounds', r.id)}>
+              <div className="fieldgrid cols-4">
+                <EditField label="需求提交日" type="date" mono value={r.briefDate}
+                  onChange={v => updateRecord(p.id, 'visuals', 'rounds', r.id, { briefDate:v })} />
+                <EditField label="摄影/设计" value={r.designer}
+                  onChange={v => updateRecord(p.id, 'visuals', 'rounds', r.id, { designer:v })} />
+                <EditField label="拍摄日期" type="date" mono value={r.shootDate}
+                  onChange={v => updateRecord(p.id, 'visuals', 'rounds', r.id, { shootDate:v })} />
+                <EditField label="主图数量" type="number" mono value={r.mainImgCount}
+                  onChange={v => updateRecord(p.id, 'visuals', 'rounds', r.id, { mainImgCount:v })} />
+                <EditField label="A+ 完成日" type="date" mono value={r.aPlusDate}
+                  onChange={v => updateRecord(p.id, 'visuals', 'rounds', r.id, { aPlusDate:v })} />
+              </div>
+              <label className="final-toggle">
+                <input type="checkbox" checked={!!r.isFinal}
+                  onChange={e => updateRecord(p.id, 'visuals', 'rounds', r.id, { isFinal: e.target.checked })} />
+                <span>标记为最终版本</span>
+              </label>
+            </RecordCard>
+          ))}
+        </div>
+        <div style={{marginTop:10}}>
+          <AddRecordButton label="添加视觉轮次" onClick={() => {
+            const next = ((vis.rounds || []).reduce((m, r) => Math.max(m, r.round || 0), 0)) + 1;
+            addRecord(p.id, 'visuals', 'rounds', { round: next, briefDate:'', designer:'', shootDate:'', mainImgCount:0, aPlusDate:'', isFinal:false });
+          }} />
+        </div>
+      </StageCard>
+    </>
+  );
+}
+
+// ============ TAB: 生产出货 ============
+function TabProd({ p }) {
+  const { addRecord, updateRecord, removeRecord } = useProducts();
+  const prod = p.stages.production || { batches:[] };
+  const qc = p.stages.qc || { records:[] };
+  const ship = p.stages.shipment || { records:[] };
+
+  return (
+    <>
+      <StageCard stage={STAGES[9]} productId={p.id} stageKey="production" stageData={prod}>
+        <div className="record-list">
+          {(prod.batches || []).map((b, idx) => (
+            <RecordCard key={b.id} index={b.batchNo || ('B'+(idx+1))} title={`生产批次 ${b.batchNo || 'B'+(idx+1)}`}
+              color={STAGES[9].color} status={b.status}
+              onStatusChange={v => updateRecord(p.id, 'production', 'batches', b.id, { status:v })}
+              onRemove={() => removeRecord(p.id, 'production', 'batches', b.id)}>
+              <div className="fieldgrid cols-4">
+                <EditField label="批次号" value={b.batchNo}
+                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { batchNo:v })} />
+                <EditField label="工厂" value={b.factory}
+                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { factory:v })} />
+                <EditField label="下单日期" type="date" mono value={b.orderDate}
+                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { orderDate:v })} />
+                <EditField label="预计出货" type="date" mono value={b.expectedShip}
+                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { expectedShip:v })} />
+                <EditField label="数量" type="number" mono suffix="pcs" value={b.qty}
+                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { qty:v })} />
+                <EditField label="单价 (¥)" type="number" mono prefix="¥" value={b.unitPrice}
+                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { unitPrice:v })} />
+                <EditField label="预付款比例" type="number" mono suffix="%" value={b.depositPct}
+                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositPct:v })} />
+                <EditField label="预付款金额 (¥)" type="number" mono prefix="¥" value={b.depositAmt}
+                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositAmt:v })} />
+                <EditField label="批次备注" wide multi value={b.note}
+                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { note:v })} />
+              </div>
+            </RecordCard>
+          ))}
+        </div>
+        <div style={{marginTop:10}}>
+          <AddRecordButton label="添加生产批次" onClick={() => {
+            const idx = (prod.batches || []).length + 1;
+            addRecord(p.id, 'production', 'batches', { batchNo:'B'+idx, orderDate:'', factory:'', qty:0, unitPrice:0, depositPct:30, depositAmt:0, expectedShip:'', note:'' });
+          }} />
+        </div>
+      </StageCard>
+
+      <StageCard stage={STAGES[10]} productId={p.id} stageKey="qc" stageData={qc}>
+        <div className="record-list">
+          {(qc.records || []).map((r, idx) => (
+            <RecordCard key={r.id} index={'QC' + (idx+1)} title={`验货记录 ${idx+1}`}
+              color={STAGES[10].color} status={r.status}
+              onStatusChange={v => updateRecord(p.id, 'qc', 'records', r.id, { status:v })}
+              onRemove={() => removeRecord(p.id, 'qc', 'records', r.id)}>
+              <div className="fieldgrid cols-3">
+                <EditField label="验货日期" type="date" mono value={r.date}
+                  onChange={v => updateRecord(p.id, 'qc', 'records', r.id, { date:v })} />
+                <EditField label="验货人员" value={r.inspector}
+                  onChange={v => updateRecord(p.id, 'qc', 'records', r.id, { inspector:v })} />
+                <EditField label="结论" value={r.result}
+                  options={['通过','有条件通过','不通过']}
+                  onChange={v => updateRecord(p.id, 'qc', 'records', r.id, { result:v })} />
+                <EditField label="问题/备注" wide multi value={r.issues}
+                  onChange={v => updateRecord(p.id, 'qc', 'records', r.id, { issues:v })} />
+              </div>
+            </RecordCard>
+          ))}
+        </div>
+        <div style={{marginTop:10}}>
+          <AddRecordButton label="添加验货记录" onClick={() => addRecord(p.id, 'qc', 'records', { date:'', inspector:'', result:'通过', issues:'' })} />
+        </div>
+      </StageCard>
+
+      <StageCard stage={STAGES[11]} productId={p.id} stageKey="shipment" stageData={ship}>
+        <div className="record-list">
+          {(ship.records || []).map((r, idx) => (
+            <RecordCard key={r.id} index={'SH' + (idx+1)} title={`出货记录 ${idx+1}`}
+              color={STAGES[11].color} status={r.status}
+              onStatusChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { status:v })}
+              onRemove={() => removeRecord(p.id, 'shipment', 'records', r.id)}>
+              <div className="fieldgrid cols-4">
+                <EditField label="出货日期" type="date" mono value={r.shipDate}
+                  onChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { shipDate:v })} />
+                <EditField label="物流方式" value={r.method}
+                  options={['海运','空运','快递','卡车']}
+                  onChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { method:v })} />
+                <EditField label="服务商" value={r.carrier}
+                  onChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { carrier:v })} />
+                <EditField label="运单号" mono value={r.tracking}
+                  onChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { tracking:v })} />
+                <EditField label="数量" type="number" mono suffix="pcs" value={r.qty}
+                  onChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { qty:v })} />
+                <EditField label="到港 ETA" type="date" mono value={r.etaPort}
+                  onChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { etaPort:v })} />
+                <EditField label="入仓 ETA" type="date" mono value={r.etaFBA}
+                  onChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { etaFBA:v })} />
+              </div>
+            </RecordCard>
+          ))}
+        </div>
+        <div style={{marginTop:10}}>
+          <AddRecordButton label="添加出货记录" onClick={() => addRecord(p.id, 'shipment', 'records', { shipDate:'', method:'海运', carrier:'', tracking:'', qty:0, etaPort:'', etaFBA:'' })} />
+        </div>
+      </StageCard>
+    </>
+  );
+}
+
+// ============ TAB: 上架运营 ============
+function TabOps({ p }) {
+  const { updateStage } = useProducts();
+  const set = (k, patch) => updateStage(p.id, k, patch);
+  const kw = p.stages.keywords || {};
+  const lst = p.stages.listing || {};
+  const ho = p.stages.handover || {};
+  const pr = p.stages.promotion || {};
+
+  return (
+    <>
+      <StageCard stage={STAGES[12]} productId={p.id} stageKey="keywords" stageData={kw}>
+        <div className="fieldgrid cols-3">
+          <EditField label="关键词工具" value={kw.tool}
+            options={['Helium 10','Cerebro','卖家精灵','Jungle Scout','其他']}
+            onChange={v => set('keywords', { tool:v })} />
+          <EditField label="主关键词" value={kw.mainKw} onChange={v => set('keywords', { mainKw:v })} />
+          <EditField label="关键词数量" type="number" mono value={kw.kwCount} onChange={v => set('keywords', { kwCount:v })} />
+        </div>
+      </StageCard>
+
+      <StageCard stage={STAGES[13]} productId={p.id} stageKey="listing" stageData={lst}>
+        <div className="fieldgrid cols-3">
+          <EditField label="ASIN" mono value={lst.asin} onChange={v => set('listing', { asin:v })} />
+          <EditField label="父 ASIN" mono value={lst.parentAsin} onChange={v => set('listing', { parentAsin:v })} />
+          <EditField label="SKU" mono value={p.sku} onChange={() => {}} />
+          <EditField label="上架日期" type="date" mono value={lst.launchDate} onChange={v => set('listing', { launchDate:v })} />
+            <EditField label="售价 ($)" type="number" mono prefix="$" value={lst.price} onChange={v => set('listing', { price:v })} />
+        </div>
+        <EditField label="Listing 标题" wide multi value={lst.title} onChange={v => set('listing', { title:v })} />
+      </StageCard>
+
+      <StageCard stage={STAGES[14]} productId={p.id} stageKey="handover" stageData={ho}>
+        <div className="fieldgrid cols-3">
+          <EditField label="交接日期" type="date" mono value={ho.endDate}
+            onChange={v => set('handover', { endDate:v })} />
+          <EditField label="移交方" value={ho.from} onChange={v => set('handover', { from:v })} />
+          <EditField label="接收方" value={ho.to} onChange={v => set('handover', { to:v })} />
+          <EditField label="交接文档" wide multi value={ho.docs} onChange={v => set('handover', { docs:v })} />
+        </div>
+      </StageCard>
+
+      <StageCard stage={STAGES[15]} productId={p.id} stageKey="promotion" stageData={pr}>
+        <div className="fieldgrid cols-3">
+          <EditField label="广告开始" type="date" mono value={pr.adStartDate}
+            onChange={v => set('promotion', { adStartDate:v })} />
+          <EditField label="日预算 ($)" type="number" mono prefix="$" value={pr.adBudget}
+            onChange={v => set('promotion', { adBudget:v })} />
+          <EditField label="Vine 投放日" type="date" mono value={pr.vineDate}
+            onChange={v => set('promotion', { vineDate:v })} />
+          <EditField label="Vine 数量" type="number" mono value={pr.vineUnits}
+            onChange={v => set('promotion', { vineUnits:v })} />
+          <EditField label="首条评价日" type="date" mono value={pr.firstReviewDate}
+            onChange={v => set('promotion', { firstReviewDate:v })} />
+          <EditField label="广告策略" wide multi value={pr.strategy}
+            onChange={v => set('promotion', { strategy:v })} />
+        </div>
+      </StageCard>
+    </>
+  );
+}
+
+// ============ TAB: 返单复盘 ============
+function TabReview({ p }) {
+  const { updateStage, addRecord, updateRecord, removeRecord, addSubShipment, updateSubShipment, removeSubShipment, addLog } = useProducts();
+  const ro = p.stages.reorder || { records:[] };
+  const rv = p.stages.review || {};
+
+  return (
+    <>
+      <StageCard stage={STAGES[16]} productId={p.id} stageKey="reorder" stageData={ro}>
+        <div className="record-list">
+          {(ro.records || []).map((r, idx) => {
+            // auto-compute total
+            const total = (Number(r.qty)||0) * (Number(r.unitPrice)||0);
+            const taxIncl = r.unitPrice ? +(r.unitPrice * (1 + (Number(r.taxRate)||0)/100)).toFixed(4) : 0;
+            const subQty = (r.subShipments||[]).reduce((s, x) => s + (Number(x.qty)||0), 0);
+            const splitOk = !r.subShipments?.length || subQty === Number(r.qty);
+            return (
+              <div key={r.id} className="reorder-card">
+                <div className="record-hdr">
+                  <div className="record-num" style={{background: STAGES[16].color, color:'#fff'}}>#{idx+1}</div>
+                  <span className="record-title">{r.orderNo || '返单 ' + (idx+1)}</span>
+                  <span className="record-dates">{r.orderDate || '—'} · {r.qty || 0} pcs · ¥{total.toFixed(0)}</span>
+                  <StatusSelect value={r.status} size="sm"
+                    onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { status:v })} />
+                  <button className="record-remove" onClick={() => removeRecord(p.id, 'reorder', 'records', r.id)}>✕</button>
+                </div>
+                <div className="record-body">
+                  <div className="fieldgrid cols-4">
+                    <EditField label="返单单号" value={r.orderNo}
+                      onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { orderNo:v })} />
+                    <EditField label="供应商" value={r.supplier}
+                      onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { supplier:v })} />
+                    <EditField label="返单时间" type="date" mono value={r.orderDate}
+                      onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { orderDate:v })} />
+                    <EditField label="触发库存" type="number" mono value={r.triggerInv}
+                      onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { triggerInv:v })} />
+                    <EditField label="数量" type="number" mono suffix="pcs" value={r.qty}
+                      onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { qty:v })} />
+                    <EditField label="单价 (¥)" type="number" mono prefix="¥" value={r.unitPrice}
+                      onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { unitPrice:v })} />
+                    <EditField label="税点" type="number" mono suffix="%" value={r.taxRate}
+                      onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { taxRate:v })} />
+                    <EditField label="含税单价 (¥)" type="number" mono prefix="¥" value={taxIncl}
+                      onChange={v => {
+                        const incl = Number(v);
+                        const rate = Number(r.taxRate || 0);
+                        const base = +(incl / (1 + rate/100)).toFixed(4);
+                        updateRecord(p.id, 'reorder', 'records', r.id, { taxIncl: incl, unitPrice: base });
+                      }} />
+                    <EditField label="总金额 (¥)" type="number" mono prefix="¥" value={total.toFixed(2)} onChange={() => {}} />
+                    <EditField label="物流方式" value={r.method}
+                      options={['海运','空运','空+派','快递','卡车']}
+                      onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { method:v })} />
+                    <EditField label="出货时间" type="date" mono value={r.shipDate}
+                      onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { shipDate:v })} />
+                    <EditField label="服务商" value={r.carrier}
+                      onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { carrier:v })} />
+                    <EditField label="预计到货" type="date" mono value={r.etaDate}
+                      onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { etaDate:v })} />
+                    <EditField label="实际到货" type="date" mono value={r.actualEta}
+                      onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { actualEta:v })} />
+                  </div>
+
+                  {/* Sub-shipments (分批到货) */}
+                  <div className="sub-ship-block">
+                    <div className="sub-ship-hdr">
+                      <span className="sub-ship-title">分批到货明细</span>
+                      <span className={"sub-ship-sum mono" + (!splitOk ? ' warn' : '')}>
+                        {subQty} / {r.qty || 0} pcs {splitOk ? '' : '· 数量不一致'}
+                      </span>
+                      <button className="btn btn-sm btn-add" onClick={() => {
+                        const letter = String.fromCharCode(65 + (r.subShipments||[]).length);
+                        addSubShipment(p.id, r.id, { batchNo: letter, qty:0, shipDate:'', method:r.method||'海运', carrier:'', tracking:'', etaDate:'', actualEta:'' });
+                      }}>+ 添加批次</button>
+                    </div>
+                    <table className="ss-table">
+                      <thead>
+                        <tr>
+                          <th>批次</th>
+                          <th>数量</th>
+                          <th>出货日期</th>
+                          <th>物流方式</th>
+                          <th>服务商</th>
+                          <th>运单号</th>
+                          <th>预计到货</th>
+                          <th>实际到货</th>
+                          <th>状态</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(r.subShipments || []).map(ss => (
+                          <tr key={ss.id}>
+                            <td><input className="cell" style={{width:36, textAlign:'center'}} value={ss.batchNo} onChange={e => updateSubShipment(p.id, r.id, ss.id, { batchNo: e.target.value })} /></td>
+                            <td><input className="cell mono" type="number" value={ss.qty} onChange={e => updateSubShipment(p.id, r.id, ss.id, { qty: Number(e.target.value) })} /></td>
+                            <td><input className="cell mono" type="date" value={ss.shipDate} onChange={e => updateSubShipment(p.id, r.id, ss.id, { shipDate: e.target.value })} /></td>
+                            <td>
+                              <select className="cell" value={ss.method} onChange={e => updateSubShipment(p.id, r.id, ss.id, { method: e.target.value })}>
+                                <option value="">—</option>
+                                <option>海运</option><option>空运</option><option>空+派</option><option>快递</option><option>卡车</option>
+                              </select>
+                            </td>
+                            <td><input className="cell" value={ss.carrier} onChange={e => updateSubShipment(p.id, r.id, ss.id, { carrier: e.target.value })} /></td>
+                            <td><input className="cell mono" style={{fontSize:11}} value={ss.tracking} onChange={e => updateSubShipment(p.id, r.id, ss.id, { tracking: e.target.value })} /></td>
+                            <td><input className="cell mono" type="date" value={ss.etaDate} onChange={e => updateSubShipment(p.id, r.id, ss.id, { etaDate: e.target.value })} /></td>
+                            <td><input className="cell mono" type="date" value={ss.actualEta} onChange={e => updateSubShipment(p.id, r.id, ss.id, { actualEta: e.target.value })} /></td>
+                            <td><StatusSelect value={ss.status} size="sm" onChange={v => updateSubShipment(p.id, r.id, ss.id, { status:v })} /></td>
+                            <td><button className="row-del" onClick={() => removeSubShipment(p.id, r.id, ss.id)}>✕</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{marginTop:10}}>
+          <AddRecordButton label="添加返单" onClick={() => addRecord(p.id, 'reorder', 'records', {
+            orderNo: 'RO-' + new Date().toISOString().slice(0,7).replace('-', '-'),
+            supplier:'', orderDate:'', triggerInv:0, qty:0, unitPrice:0, taxRate:13, totalAmount:0,
+            shipDate:'', method:'海运', carrier:'', etaDate:'', actualEta:'',
+            subShipments:[],
+          })} />
+        </div>
+      </StageCard>
+
+      <StageCard stage={STAGES[17]} productId={p.id} stageKey="review" stageData={rv}>
+        <div className="fieldgrid cols-3">
+          <EditField label="复盘日期" type="date" mono value={rv.endDate}
+            onChange={v => updateStage(p.id, 'review', { endDate:v })} />
+          <EditField label="3 月销量" type="number" mono value={rv.monthSales3}
+            onChange={v => updateStage(p.id, 'review', { monthSales3:v })} />
+          <EditField label="实际净利率" type="number" mono suffix="%" value={rv.actualMargin}
+            onChange={v => updateStage(p.id, 'review', { actualMargin:v })} />
+          <EditField label="平均评分" type="number" mono value={rv.rating}
+            onChange={v => updateStage(p.id, 'review', { rating:v })} />
+          <EditField label="成功点" wide multi value={rv.successPoints}
+            onChange={v => updateStage(p.id, 'review', { successPoints:v })} />
+          <EditField label="问题点" wide multi value={rv.issues}
+            onChange={v => updateStage(p.id, 'review', { issues:v })} />
+          <EditField label="改进方向" wide multi value={rv.improvements}
+            onChange={v => updateStage(p.id, 'review', { improvements:v })} />
+        </div>
+      </StageCard>
+
+      <div className="stage-card">
+        <div className="stage-card-hdr">
+          <div className="stage-card-bar" style={{background:'var(--ink-3)'}}></div>
+          <span className="stage-card-title">动态日志</span>
+          <span style={{marginLeft:'auto', fontSize:11, color:'var(--ink-4)'}}>{p.logs?.length || 0} 条记录</span>
+        </div>
+        <div className="stage-card-body">
+          <div className="logs-list">
+            {(p.logs || []).map(l => (
+              <div key={l.id} className="log-row">
+                <span className="date">{l.date}</span>
+                <span className="text">{l.text}</span>
+              </div>
+            ))}
+          </div>
+          <LogAdder onAdd={text => addLog(p.id, text)} />
+        </div>
+      </div>
+    </>
+  );
+}
+
+function LogAdder({ onAdd }) {
+  const [v, setV] = React.useState('');
+  return (
+    <div style={{marginTop:12, display:'flex', gap:8}}>
+      <input className="input"
+        value={v} onChange={e => setV(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' && v.trim()) { onAdd(v.trim()); setV(''); }}}
+        placeholder="添加一条日志…(回车提交)"
+        style={{flex:1, height:30, padding:'0 10px', border:'1px solid var(--border)', borderRadius:4, background:'var(--bg)', color:'var(--ink)', fontSize:12.5, outline:'none'}} />
+      <button className="btn btn-sm btn-primary" onClick={() => { if (v.trim()) { onAdd(v.trim()); setV(''); } }}>添加</button>
+    </div>
+  );
+}
+
+// ============ DETAIL ============
+function Detail({ p }) {
+  const { update } = useProducts();
+  const [tab, setTab] = React.useState('eval');
+  if (!p) return <div className="detail"><div className="empty-hint" style={{margin:40}}>请从左侧选择一个产品</div></div>;
+
+  const tabCounts = {
+    eval: STAGES.filter(s => s.tab === 'eval').length,
+    sup: STAGES.filter(s => s.tab === 'sup').length,
+    design: STAGES.filter(s => s.tab === 'design').length,
+    prod: STAGES.filter(s => s.tab === 'prod').length,
+    ops: STAGES.filter(s => s.tab === 'ops').length,
+    review: STAGES.filter(s => s.tab === 'review').length,
+  };
+
+  return (
+    <div className="detail" data-screen-label="Product detail">
+      <div className="detail-hdr">
+        <div className="detail-hdr-top">
+          <div className="detail-title-wrap">
+            <div className="detail-title">
+              <input className="title-edit"
+                value={p.name}
+                onChange={e => update(p.id, prev => ({ ...prev, name: e.target.value }))} />
+              <select className="status-edit"
+                value={p.status}
+                onChange={e => update(p.id, prev => ({ ...prev, status: e.target.value }))}>
+                <option value="active">进行中</option>
+                <option value="hold">已暂停</option>
+                <option value="done">已完成</option>
+                <option value="cancel">已取消</option>
+              </select>
+            </div>
+            <div className="detail-meta">
+              <span className="detail-meta-item"><span className="lbl">SKU</span>
+                <input className="meta-edit mono" value={p.sku}
+                  onChange={e => update(p.id, prev => ({ ...prev, sku: e.target.value }))} />
+              </span>
+              <span className="detail-meta-item"><span className="lbl">品类</span>
+                <input className="meta-edit" value={p.category}
+                  onChange={e => update(p.id, prev => ({ ...prev, category: e.target.value }))} />
+              </span>
+              <span className="detail-meta-item"><span className="lbl">负责人</span>
+                <input className="meta-edit" value={p.lead}
+                  onChange={e => update(p.id, prev => ({ ...prev, lead: e.target.value }))} />
+              </span>
+              <span className="detail-meta-item"><span className="lbl">立项</span>
+                <input className="meta-edit mono" type="date" value={p.createdAt}
+                  onChange={e => update(p.id, prev => ({ ...prev, createdAt: e.target.value }))} />
+              </span>
+              <span className="detail-meta-item"><span className="lbl">当前阶段</span>
+                <select className="meta-edit"
+                  value={p.currentStage}
+                  onChange={e => update(p.id, prev => ({ ...prev, currentStage: e.target.value }))}>
+                  {STAGES.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}
+                </select>
+              </span>
+            </div>
+          </div>
+          <div style={{display:'flex', gap:6}}>
+            <button className="btn btn-sm">复制</button>
+            <button className="btn btn-sm">导出</button>
+            <button className="btn btn-sm" style={{color:'var(--red)'}}>删除</button>
+          </div>
+        </div>
+        <div className="detail-progressbar">
+          {STAGES.map(s => {
+            const sd = p.stages[s.key] || {};
+            const isDone = sd.status === 'done';
+            const isActive = sd.status === 'active';
+            const isHold = sd.status === 'hold';
+            return (
+              <div key={s.key} className="seg"
+                title={`${s.name} · ${STAGE_STATUSES.find(x=>x.value===(sd.status||'idle'))?.label}`}
+                style={{
+                  background: isDone || isActive ? s.color : isHold ? '#9333ea' : 'var(--border)',
+                  opacity: isDone ? 1 : isActive ? 0.75 : isHold ? 0.55 : 0.35,
+                }}></div>
+            );
+          })}
+          <div className="progress-edit">
+            <input type="range" min={0} max={100} value={p.progress}
+              onChange={e => update(p.id, prev => ({ ...prev, progress: Number(e.target.value) }))} />
+            <input type="number" min={0} max={100} className="pct-input mono" value={p.progress}
+              onChange={e => update(p.id, prev => ({ ...prev, progress: Math.max(0, Math.min(100, Number(e.target.value))) }))} />
+            <span>%</span>
+          </div>
+        </div>
+
+        <div className="detail-tabs">
+          {TABS.map(t => (
+            <button key={t.key} className="detail-tab"
+              data-active={tab === t.key}
+              onClick={() => setTab(t.key)}>
+              <span className="ic">{t.icon}</span>
+              <span>{t.name}</span>
+              <span className="num">{tabCounts[t.key]}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="detail-body">
+        {tab === 'eval' && <TabEval p={p} />}
+        {tab === 'sup' && <TabSup p={p} />}
+        {tab === 'design' && <TabDesign p={p} />}
+        {tab === 'prod' && <TabProd p={p} />}
+        {tab === 'ops' && <TabOps p={p} />}
+        {tab === 'review' && <TabReview p={p} />}
+      </div>
+    </div>
+  );
+}
+
+window.Detail = Detail;
+window.TabSup = TabSup;
+window.TabDesign = TabDesign;
+window.TabProd = TabProd;
+window.TabOps = TabOps;
+window.TabReview = TabReview;

@@ -1,0 +1,20 @@
+# 运行时数据
+fba-data.json
+fba-data*.json
+*.tmp
+
+# macOS 系统文件
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo

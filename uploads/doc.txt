@@ -1,0 +1,323 @@
+产品开发全流程管理系统
+FBA Product Development Tracker
+产品文档 v2.0
+文档日期：2026年05月22日
+系统形态：单文件 HTML（零依赖、离线可用、内嵌数据分享）
+代码规模：~3,400 行（CSS + HTML + JavaScript）
+一、系统概述
+产品开发全流程管理系统是一个面向 Amazon FBA 卖家的产品开发管理工具，采用单文件 HTML 实现，覆盖从选品立项到出货复盘的全流程管理。系统无需服务器，支持数据内嵌独立分享，接收方打开即可查看完整数据。
+核心能力
+能力
+说明
+全流程阶段管理
+18 个标准阶段，覆盖立项→出货→复盘完整链路
+三视图架构
+列表详情 / 进度总览 / 数据表格
+数据自包含
+导出独立 HTML，接收方打开即可查看全部数据
+可视化分析
+时间线甘特图、年度日历热力图、BOM 成本饼图、敏感性分析
+多记录管理
+供应商/打样/设计/生产/出货/返单均支持多条记录
+双主题
+浅色/深色主题一键切换
+二、系统架构
+2.1 数据模型
+系统核心数据实体为&quot;产品&quot;（Product），每个产品包含基础信息、18 个阶段状态、动态日志和产品日志。
+产品基础字段
+字段
+类型
+说明
+id
+String
+唯一标识（时间戳+随机字符串）
+name
+String
+产品名称
+sku
+String
+SKU / 编号
+category
+String
+品类 / 类目
+status
+Enum
+active（进行中）/ hold（已暂停）/ done（已完成）/ cancel（已取消）
+createdAt
+Date
+立项日期
+logs
+Array
+动态记录日志
+阶段数据模型（18 个阶段）
+阶段 Key
+名称
+核心字段
+initiation
+选品立项
+date / lead / source / market / reason / notes
+research
+竞品调研
+monthSales / competitorCount / avgPrice / topAsin / avgRating / painPoints / opportunity
+profit
+利润测算
+targetPrice / cogs / shipping / fbaFee / referralPct / adPct / otherCost / decision
+bom
+BOM成本拆解
+bom[]: {name, spec, cat, qty, unitCost} / notes
+supplier
+供应商开发
+suppliers[]: {name, contact, price, moq, lead, selected}
+sampling
+打样/改版
+rounds[]: {orderDate, qty, cost, receivedDate, result, isFinal}
+cert
+认证合规
+types / agency / cost / expectedDate / doneDate
+packaging
+包装设计
+rounds[]: {briefDate, designer, draftDate, confirmDate}
+visuals
+视觉素材
+rounds[]: {briefDate, designer, shootDate, mainImgDate, aPlusDate}
+production
+下单生产
+batches[]: {orderDate, factory, qty, unitPrice, depositAmt, expectedShip}
+qc
+品控验货
+records[]: {date, inspector, result, issues}
+shipment
+出货物流
+records[]: {shipDate, method, carrier, tracking, qty, etaPort, etaFBA}
+keywords
+关键词研究
+tool / mainKw / kwCount / completedDate
+listing
+Listing上架
+asin / parentAsin / sku / title / launchDate / price
+handover
+产品交接
+date / from / to / docs
+promotion
+广告推广
+adStartDate / adBudget / strategy / vineDate / vineUnits / firstReviewDate
+reorder
+返单管理
+records[]: {orderDate, triggerInv, reorderQty, supplier}
+review
+产品复盘
+date / monthSales3 / actualMargin / rating / successPoints / issues / improvements
+2.2 Tab 组织
+Tab
+包含阶段
+📋 立项评估
+选品立项 → 竞品调研 → 利润测算 → BOM成本拆解
+🏭 供应商/打样
+供应商开发 → 打样/改版 → 认证合规
+🎨 内容设计
+包装设计 → 视觉素材
+📦 生产出货
+下单生产 → 品控验货 → 出货物流
+🛒 上架运营
+关键词研究 → Listing上架 → 产品交接 → 广告推广
+🔄 返单复盘
+返单管理 → 产品复盘 → 动态记录
+2.3 三视图架构
+系统提供三种视图模式，通过侧边栏顶部的模式按钮一键切换：
+视图
+说明
+适用场景
+📋 列表视图
+左侧产品列表 + 右侧详情面板，按 Tab 查看各阶段
+日常编辑、逐项填写
+📊 进度总览
+全部产品时间线 / 单产品日历热力图 + 时间线
+整体进度把控、月度回顾
+📐 数据表格
+22 列多产品对比表格，支持排序、筛选
+横向对比、数据导出
+三、功能模块详解
+3.1 产品列表视图
+搜索框：按产品名称/SKU 模糊搜索
+状态筛选：全部 / 进行中 / 暂停 / 已完成 / 已取消
+产品卡片：名称 + 状态徽章 + SKU/类目/日期 + 进度条 + 当前阶段
+产品详情：6 个 Tab × 18 个阶段表单 + 动态日志
+产品操作：新建、复制、删除、修改名称
+3.2 进度总览视图
+全部产品模式（默认）
+顶部 6-7 个统计卡片：总数 / 进行中 / 已完成 / 已暂停 / 本月完成 / 30天到期 / 已逾期
+全部产品水平时间线：周/月/季度三级缩放 + 📍 今天定位按钮 + 阶段颜色图例
+点击产品时间线条 → 切换到该产品单视图
+单产品模式
+产品头部：名称 + 状态徽章 + 进度百分比 + &quot;← 返回全部&quot;按钮
+紧凑水平时间线：显示该产品从立项到当前的时间跨度
+年度日历热力图（macOS 风格）
+4×3 月份网格，每格显示完整日期（一～日 + 1～31 日）
+里程碑日以阶段色块标注
+里程碑间以半透明过渡色填充
+同日多任务以叠加彩色圆点展示
+鼠标悬浮显示完整日期和全部任务详情
+每月顶部色条显示主导阶段
+左右箭头翻年 + +/- 缩放按钮 + 鼠标滚轮缩放（0.3x ~ 3.0x）
+底部图例：该产品涉及的阶段颜色 + 返单标记
+3.3 数据表格视图
+列分组
+包含列
+产品信息
+产品名称🔒、SKU、状态、进度条、立项日期、负责人、品类
+立项评估
+选品来源、目标市场
+竞品调研
+竞品均价
+利润测算
+目标售价、产品成本、BOM合计、毛利润、净利率（颜色编码）、立项决策
+供应商/打样
+供应商数、打样轮次
+生产出货
+预计出货
+上架/返单
+上架日期、返单次数
+点击列头排序（升序 ▲ / 降序 ▼），默认按立项日期降序
+产品名称列固定在左侧（sticky），横向滚动不丢失
+净利率 ≥20% 绿色加粗、≥10% 橙色、&lt;0% 红色
+进度条在单元格内可视化展示
+金额右对齐 $XX.00 格式
+状态筛选联动（复用左侧筛选栏）
+点击任意行 → 切换到列表视图并打开产品详情
+3.4 BOM 成本拆解
+10 个预设组件分类：面料/布料、电机/马达、电源/电池、开关/控制、LED/灯珠、模具/外壳、包装材料、认证费、物流/运费、其他
+每个组件：名称 + 规格/型号 + 分类（下拉选择）+ 用量/件 + 单价($) → 自动计算小计
+BOM 合计行自动汇总所有组件成本
+SVG 环形饼图：以利润测算「产品成本」为分母，BOM 合计为分子，灰色&quot;未拆解&quot;扇区显示覆盖缺口
+水平条形图：按分类汇总，显示金额和百分比
+图表标题显示 BOM 覆盖率（如&quot;BOM覆盖 88%&quot;）
+🔄 同步按钮：BOM 合计一键填入利润测算的产品成本字段
+成本敏感性分析：取 Top 5 高成本组件，滑块调整 ±50%，实时重算净利润变化
+3.5 利润测算
+利润计算公式如下：
+毛利润 = 目标售价 - 产品成本 - 头程运费 - FBA费用
+净利润 = 毛利润 - 平台佣金（售价×%）- 广告预算（售价×%）- 其他费用
+净利率 = 净利润 ÷ 目标售价 × 100%
+净利率颜色：≥20% 绿色 / 10%~20% 橙色 / &lt;10% 红色
+BOM 参考成本行：显示当前 BOM 合计，点击 🔄 同步按钮自动填入产品成本
+立项决策记录：通过立项 / 暂缓观察 / 否决 + 决策日期 + 备注
+3.6 供应商管理
+自定义添加多个供应商，对比报价
+每个供应商：名称、联系方式、报价($/件)、MOQ、生产周期(天)
+自动评分算法：基于价格/MOQ/周期的加权评分（100分制）
+选定供应商：单选切换，确定最终合作方
+最终确认备注：账期/质保/包装要求等
+3.7 多记录模块
+以下阶段均支持多条记录，以卡片列表形式展示，可自由添加/删除：
+阶段
+记录类型
+关键字段
+打样/改版
+轮次
+下单日期、数量、费用、收样日期、评审结果、最终版✓标记
+包装设计
+轮次
+需求提交日、设计师、初稿完成日、确认日期
+视觉素材
+轮次
+需求提交日、摄影师/设计师、拍摄日期、主图数量、A+完成日
+下单生产
+批次
+下单日期、工厂名称、数量、单价、预付款、预计出货日
+品控验货
+记录
+验货日期、人员/机构、结论（通过/有条件通过/不通过）
+出货物流
+记录
+出货日期、物流方式、服务商、运单号、数量、ETA
+返单管理
+记录
+下单日期、触发库存、补货数量、供应商
+3.8 数据持久化与分享
+功能
+实现方式
+在线编辑
+localStorage 自动保存（600ms 防抖）
+导出 JSON
+完整数据备份，可跨设备迁移
+导入 JSON
+支持合并现有数据或替换全部数据
+独立 HTML
+Base64 内嵌全部产品数据，接收方双击打开即看，无需导入
+独立模式检测
+自动识别内嵌数据，显示 📦 徽章，隐藏重复导出按钮
+数据迁移
+v2.0 自动迁移机制，旧格式数据无损升级
+3.9 主题切换
+浅色 / 深色双主题，点击 🌙/☀️ 一键切换
+基于 CSS 变量（--blue / --g50 / --card-bg 等 30+ 变量）全局即时生效
+主题偏好保存在 localStorage，刷新后保持
+四、交互规范
+场景
+行为
+列表视图点击产品
+打开右侧详情面板，显示该产品全部阶段
+进度总览-全部产品点时间线行
+切换到该产品的单产品视图（时间线+日历）
+进度总览-单产品点&quot;←返回全部&quot;
+回到全部产品时间线视图
+数据表格点击列头
+排序切换（首次点击升序，再次点击降序）
+数据表格点击行
+切换到列表视图并打开对应产品详情
+日历区域鼠标滚轮
+缩放日历（0.3x ~ 3.0x）
+日历 +/- 按钮
+步进 0.2x 缩放
+日历 ◀ ▶ 按钮
+切换年份
+侧边栏筛选按钮
+按状态过滤产品列表和表格
+搜索框输入
+按产品名称/SKU 模糊过滤
+Esc 键
+关闭弹窗
+Ctrl+N（规划中）
+新建产品
+五、数据版本与迁移
+当前版本：v2.0（STANDALONE_DATA_VERSION）
+系统内置 migrateData() 函数，在每次加载数据时自动检测并升级旧格式：
+迁移项
+旧格式
+新格式
+供应商
+supplier1/supplier2 独立字段
+suppliers[] 数组
+打样
+单条记录字段
+rounds[] 数组（支持多轮次）
+包装设计
+单条记录字段
+rounds[] 数组
+视觉素材
+单条记录字段
+rounds[] 数组
+生产
+单条记录字段
+batches[] 数组（支持多批次）
+品控
+单条记录字段
+records[] 数组
+出货
+单条记录字段
+records[] 数组
+返单
+单条记录字段
+records[] 数组
+BOM 成本拆解
+p.stages.initiation.bom
+p.stages.bom（独立阶段）
+六、技术约束
+纯单文件 HTML
+所有图表自绘：SVG（饼图）、CSS（条形图/热力图/时间线/进度条）
+兼容现代浏览器：Chrome / Firefox / Safari / Edge
+Base64 编解码使用 TextEncoder/TextDecoder（含 fallback 兼容方案）
+深色模式通过 CSS 变量 + data-theme 属性驱动
+独立 HTML 模式不依赖 localStorage，数据完全内嵌
+UTF-8 安全编码：中文产品名称/备注无乱码
+─ 文档结束 ─
