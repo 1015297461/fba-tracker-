@@ -33,7 +33,10 @@ function useSyncLabel() {
     return { label: '同步错误', cls: 'sync-error', icon: '⚠' };
   }
   // saved / idle
-  return { label: `已同步 v${syncVersion ?? 0}`, cls: 'sync-online', icon: '☁' };
+  const ctx2 = useProducts ? useProducts() : null;
+  const savedAt = ctx2?.savedAt;
+  const timeStr = savedAt ? savedAt.toLocaleTimeString('zh-CN', { hour:'2-digit', minute:'2-digit', second:'2-digit' }) : '';
+  return { label: timeStr ? `已同步 ${timeStr}` : '已同步', cls: 'sync-online', icon: '☁' };
 }
 
 function Sidebar({ view, setView, filter, setFilter, products }) {

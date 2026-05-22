@@ -712,6 +712,9 @@ select.meta-edit { cursor: pointer; }
   .fieldgrid.cols-3 { grid-template-columns: repeat(3, 1fr); }
   .fieldgrid.cols-4 { grid-template-columns: repeat(4, 1fr); }
 }
+.field-static { display: flex; flex-direction: column; gap: 4px; }
+.field-static-label { font-size: 11px; color: var(--ink-4); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+.field-static-value { font-size: 13px; color: var(--ink); padding: 6px 10px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 5px; }
 .field { display: flex; flex-direction: column; gap: 4px; }
 .field .lbl { font-size: 11px; color: var(--ink-4); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
 .field .input {

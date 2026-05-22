@@ -136,17 +136,18 @@ function ProfitCard({ p }) {
   const returnRate = Number(pr.returnRate ?? 0);             // %
 
   // Derived
-  const cogsInclCny = cogsCny * (1 + taxRate/100);           // CNY (含税产品成本)
-  const cogsInclUsd = fx > 0 ? cogsInclCny / fx : 0;         // USD
+  const cogsUsd = fx > 0 ? cogsCny / fx : 0;                  // USD 不含税（参与计算）
+  const cogsInclCny = cogsCny * (1 + taxRate/100);             // CNY 含税（仅展示）
+  const cogsInclUsd = fx > 0 ? cogsInclCny / fx : 0;           // USD 含税（仅展示）
   const shippingUsd = fx > 0 ? shippingCny / fx : 0;
   const otherUsd = fx > 0 ? otherCny / fx : 0;
 
   const referralFee = targetPrice * referralPct / 100;
   const adFee = targetPrice * adPct / 100;
-  const returnCost = (returnRate / 100) * (fbaFee + cogsInclUsd); // lost on returns: FBA + product
+  const returnCost = (returnRate / 100) * (fbaFee + cogsUsd);  // 退货成本用不含税产品成本
 
-  // 毛利润 = 目标售价 - FBA费用 - 头程运费 - 含税产品成本
-  const grossProfit = targetPrice - fbaFee - shippingUsd - cogsInclUsd;
+  // 毛利润 = 目标售价 - FBA费用 - 头程运费 - 不含税产品成本
+  const grossProfit = targetPrice - fbaFee - shippingUsd - cogsUsd;
   // 净利润 = 毛利润 - 平台佣金 - 广告费 - 退货成本 - 其他费用
   const netProfit = grossProfit - referralFee - adFee - returnCost - otherUsd;
   const margin = targetPrice ? (netProfit / targetPrice * 100) : 0;
@@ -174,7 +175,7 @@ function ProfitCard({ p }) {
 
       <div className="kpi-strip cols-5">
         <div className="kpi"><div className="l">目标售价 ($)</div><div className="v">${targetPrice.toFixed(2)}</div></div>
-        <div className="kpi"><div className="l">含税产品成本</div><div className="v">¥{cogsInclCny.toFixed(2)}</div><div className="s">≈ ${cogsInclUsd.toFixed(2)} · 税点 {taxRate}%</div></div>
+        <div className="kpi"><div className="l">不含税产品成本</div><div className="v">¥{cogsCny.toFixed(2)}</div><div className="s">≈ ${cogsUsd.toFixed(2)}</div></div>
         <div className="kpi"><div className="l">毛利润 ($)</div><div className="v">${grossProfit.toFixed(2)}</div></div>
         <div className="kpi"><div className="l">净利润 ($)</div><div className={`v ${marginCls}`}>${netProfit.toFixed(2)}</div></div>
         <div className="kpi"><div className="l">净利率</div><div className={`v ${marginCls}`}>{margin.toFixed(1)}%</div><div className="s">{margin >= 20 ? '健康' : margin >= 10 ? '可接受' : '风险'}</div></div>
@@ -187,13 +188,10 @@ function ProfitCard({ p }) {
           onChange={v => set({ cogs:v })} />
         <EditField label="税点 (%)" type="number" mono suffix="%" value={pr.taxRate}
           onChange={v => set({ taxRate:v })} />
-        <EditField label="含税产品成本 (¥)" type="number" mono prefix="¥" value={cogsInclCny.toFixed(2)}
-          onChange={v => {
-            const incl = Number(v);
-            const rate = Number(pr.taxRate || 0);
-            const base = +(incl / (1 + rate/100)).toFixed(4);
-            set({ cogs: base });
-          }} />
+        <div className="field-static">
+          <div className="field-static-label">含税产品成本 (¥) <span style={{color:'var(--ink-4)',fontWeight:400,fontSize:10}}>仅展示</span></div>
+          <div className="field-static-value mono">¥{cogsInclCny.toFixed(2)} <span style={{color:'var(--ink-4)',fontSize:10.5}}>≈ ${cogsInclUsd.toFixed(2)}</span></div>
+        </div>
         <EditField label="头程运费 (¥)" type="number" mono prefix="¥" value={pr.shipping}
           onChange={v => set({ shipping:v })} />
         <EditField label="FBA 费用 ($)" type="number" mono prefix="$" value={pr.fbaFee}
@@ -240,9 +238,9 @@ function ProfitCard({ p }) {
           <div className="formula-row highlight strong">
             <span className="fr-label">毛利润 ($)</span>
             <span className="fr-eq">=</span>
-            <span className="fr-expr">目标售价 − FBA费用 − 头程运费 − 含税产品成本</span>
+            <span className="fr-expr">目标售价 − FBA费用 − 头程运费 − 产品成本(不含税)</span>
             <span className="fr-calc mono">
-              ${targetPrice.toFixed(2)} − ${fbaFee.toFixed(2)} − ${shippingUsd.toFixed(2)} − ${cogsInclUsd.toFixed(2)} = <strong className={grossProfit >= 0 ? 'green' : 'red'}>${grossProfit.toFixed(2)}</strong>
+              ${targetPrice.toFixed(2)} − ${fbaFee.toFixed(2)} − ${shippingUsd.toFixed(2)} − ${cogsUsd.toFixed(2)} = <strong className={grossProfit >= 0 ? 'green' : 'red'}>${grossProfit.toFixed(2)}</strong>
             </span>
           </div>
           <div className="formula-row">
@@ -260,8 +258,8 @@ function ProfitCard({ p }) {
           <div className="formula-row">
             <span className="fr-label">退货成本</span>
             <span className="fr-eq">=</span>
-            <span className="fr-expr">退货率 × (FBA费用 + 含税产品成本)</span>
-            <span className="fr-calc mono">{returnRate}% × (${fbaFee.toFixed(2)} + ${cogsInclUsd.toFixed(2)}) = <strong>${returnCost.toFixed(2)}</strong></span>
+            <span className="fr-expr">退货率 × (FBA费用 + 产品成本不含税)</span>
+            <span className="fr-calc mono">{returnRate}% × (${fbaFee.toFixed(2)} + ${cogsUsd.toFixed(2)}) = <strong>${returnCost.toFixed(2)}</strong></span>
           </div>
           <div className="formula-row highlight strong">
             <span className="fr-label">净利润 ($)</span>
@@ -466,11 +464,10 @@ function SensitivityPanel({ items, profit, fxRate }) {
 
   // Profit recalc: use original profit, replace cogs (CNY) with adjustedTotal
   const targetPrice = Number(profit.targetPrice) || 0;
-  const taxRate = Number(profit.taxRate || 0);
   const baseCogsCny = Number(profit.cogs) || baseTotal;
   const adjCogsCny = adjustedTotal;
-  const baseCogsInclUsd = (baseCogsCny * (1 + taxRate/100)) / fx;
-  const adjCogsInclUsd = (adjCogsCny * (1 + taxRate/100)) / fx;
+  const baseCogsUsd = baseCogsCny / fx;   // 不含税，参与计算
+  const adjCogsUsd = adjCogsCny / fx;     // 不含税，参与计算
   const shippingUsd = (Number(profit.shipping)||0) / fx;
   const otherUsd = (Number(profit.otherCost)||0) / fx;
   const fbaFee = Number(profit.fbaFee) || 0;
@@ -478,10 +475,10 @@ function SensitivityPanel({ items, profit, fxRate }) {
   const adFee = targetPrice * ((Number(profit.adPct)||0)/100);
   const returnRate = (Number(profit.returnRate)||0)/100;
 
-  const baseGross = targetPrice - fbaFee - shippingUsd - baseCogsInclUsd;
-  const adjGross = targetPrice - fbaFee - shippingUsd - adjCogsInclUsd;
-  const baseReturnCost = returnRate * (fbaFee + baseCogsInclUsd);
-  const adjReturnCost = returnRate * (fbaFee + adjCogsInclUsd);
+  const baseGross = targetPrice - fbaFee - shippingUsd - baseCogsUsd;
+  const adjGross = targetPrice - fbaFee - shippingUsd - adjCogsUsd;
+  const baseReturnCost = returnRate * (fbaFee + baseCogsUsd);
+  const adjReturnCost = returnRate * (fbaFee + adjCogsUsd);
   const baseNet = baseGross - referralFee - adFee - baseReturnCost - otherUsd;
   const adjNet = adjGross - referralFee - adFee - adjReturnCost - otherUsd;
   const netDelta = adjNet - baseNet;
