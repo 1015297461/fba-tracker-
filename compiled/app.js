@@ -3,6 +3,64 @@ const {
   useState,
   useEffect
 } = React;
+function LoginScreen({
+  onLogin
+}) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const submit = async e => {
+    e.preventDefault();
+    if (!username.trim()) return;
+    setLoading(true);
+    setError('');
+    const ok = await onLogin(username.trim(), password);
+    if (!ok) {
+      setError('用户名或密码错误，请重试');
+      setLoading(false);
+    }
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    className: "login-overlay"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "login-card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "login-logo"
+  }, "\uD83D\uDCE6"), /*#__PURE__*/React.createElement("h1", {
+    className: "login-title"
+  }, "FBA Tracker"), /*#__PURE__*/React.createElement("p", {
+    className: "login-subtitle"
+  }, "\u4EA7\u54C1\u5F00\u53D1\u5168\u6D41\u7A0B\u7BA1\u7406\u7CFB\u7EDF"), /*#__PURE__*/React.createElement("form", {
+    className: "login-form",
+    onSubmit: submit
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "login-field"
+  }, /*#__PURE__*/React.createElement("label", null, "\u7528\u6237\u540D"), /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    value: username,
+    onChange: e => setUsername(e.target.value),
+    placeholder: "\u8BF7\u8F93\u5165\u7528\u6237\u540D",
+    autoFocus: true,
+    autoComplete: "username"
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "login-field"
+  }, /*#__PURE__*/React.createElement("label", null, "\u5BC6\u7801"), /*#__PURE__*/React.createElement("input", {
+    type: "password",
+    value: password,
+    onChange: e => setPassword(e.target.value),
+    placeholder: "\u8BF7\u8F93\u5165\u5BC6\u7801",
+    autoComplete: "current-password"
+  })), error && /*#__PURE__*/React.createElement("div", {
+    className: "login-error"
+  }, error), /*#__PURE__*/React.createElement("button", {
+    type: "submit",
+    className: "login-btn",
+    disabled: loading
+  }, loading ? '登录中...' : '登录')), /*#__PURE__*/React.createElement("p", {
+    className: "login-hint"
+  }, "\u5C40\u57DF\u7F51\u534F\u4F5C\u6A21\u5F0F \xB7 \u8BF7\u8054\u7CFB\u7BA1\u7406\u5458\u83B7\u53D6\u8D26\u53F7")));
+}
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "theme": "light",
   "view": "list",
@@ -132,9 +190,23 @@ function AppShell() {
     }
   }));
 }
+
+// AuthGate: isolated component so AppShell hooks are always called unconditionally
+function AuthGate({
+  children
+}) {
+  const {
+    needLogin,
+    login
+  } = useProducts();
+  if (needLogin) return /*#__PURE__*/React.createElement(LoginScreen, {
+    onLogin: login
+  });
+  return children;
+}
 function App() {
   return /*#__PURE__*/React.createElement(ProductsProvider, {
     initial: window.PRODUCTS
-  }, /*#__PURE__*/React.createElement(AppShell, null));
+  }, /*#__PURE__*/React.createElement(AuthGate, null, /*#__PURE__*/React.createElement(AppShell, null)));
 }
 ReactDOM.createRoot(document.getElementById('root')).render(/*#__PURE__*/React.createElement(App, null));

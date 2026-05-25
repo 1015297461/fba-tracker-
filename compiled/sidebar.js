@@ -200,6 +200,8 @@ function TopBar({
     cls: syncCls,
     icon: syncIcon
   } = useSyncLabel();
+  const currentUser = ctx?.currentUser;
+  const logout = ctx?.logout;
 
   // 保存成功时短暂闪烁绿色
   const syncStatus = ctx?.syncStatus;
@@ -223,7 +225,15 @@ function TopBar({
   }), /*#__PURE__*/React.createElement("span", {
     className: `save-indicator ${syncCls}`,
     "data-flash": flash
-  }, syncIcon, " ", syncLabel), /*#__PURE__*/React.createElement("div", {
+  }, syncIcon, " ", syncLabel), currentUser && /*#__PURE__*/React.createElement("div", {
+    className: "topbar-user"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "topbar-username"
+  }, currentUser.name), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-sm topbar-logout",
+    onClick: logout,
+    title: "\u9000\u51FA\u767B\u5F55"
+  }, "\u9000\u51FA")), /*#__PURE__*/React.createElement("div", {
     className: "topbar-actions"
   }, /*#__PURE__*/React.createElement("button", {
     className: "btn btn-sm",

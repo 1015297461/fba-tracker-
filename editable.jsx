@@ -1,6 +1,14 @@
 /* eslint-disable no-undef */
 // Shared editable primitives + product state context
 
+const AUTH_TOKEN_KEY = 'fba-auth-v1';
+const AUTH_USER_KEY  = 'fba-auth-user-v1';
+function getToken() { return localStorage.getItem(AUTH_TOKEN_KEY) || ''; }
+function getAuthHeaders() {
+  const t = getToken();
+  return t ? { 'Authorization': 'Bearer ' + t } : {};
+}
+
 const ProductCtx = React.createContext(null);
 
 function useProducts() {
@@ -37,16 +45,28 @@ function ProductsProvider({ children, initial }) {
   const versionRef = React.useRef(0);
   const lastSentRef = React.useRef(null);
   const skipNextPutRef = React.useRef(false);
+  const [needLogin, setNeedLogin] = React.useState(false);
+  const [currentUser, setCurrentUser] = React.useState(() => {
+    try { return JSON.parse(localStorage.getItem(AUTH_USER_KEY) || 'null'); }
+    catch { return null; }
+  });
 
   // ----- Server sync helpers -----
   const SYNC_URL = '/api/products';
 
-  // Probe server on mount
+  // Probe server — re-runs when syncMode becomes 'checking' (also after login)
   React.useEffect(() => {
+    if (syncMode !== 'checking') return;
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(SYNC_URL, { headers: { 'Accept': 'application/json' } });
+        const res = await fetch(SYNC_URL, {
+          headers: { 'Accept': 'application/json', ...getAuthHeaders() },
+        });
+        if (res.status === 401) {
+          if (!cancelled) { setNeedLogin(true); setSyncMode('local'); }
+          return;
+        }
         if (!res.ok) throw new Error('no server');
         const data = await res.json();
         if (cancelled) return;
@@ -66,7 +86,7 @@ function ProductsProvider({ children, initial }) {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [syncMode]);
 
   // Local debounced save (when not in server mode)
   React.useEffect(() => {
@@ -89,9 +109,12 @@ function ProductsProvider({ children, initial }) {
       try {
         const res = await fetch(SYNC_URL, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ products, baseVersion: versionRef.current }),
         });
+        if (res.status === 401) {
+          setNeedLogin(true); setSyncMode('local'); return;
+        }
         if (res.ok) {
           const data = await res.json().catch(() => ({ version: versionRef.current + 1 }));
           versionRef.current = data.version;
@@ -126,7 +149,10 @@ function ProductsProvider({ children, initial }) {
       if (stopped) return;
       if (syncStatus === 'saving') return;
       try {
-        const res = await fetch(SYNC_URL);
+        const res = await fetch(SYNC_URL, { headers: { ...getAuthHeaders() } });
+        if (res.status === 401) {
+          stopped = true; setNeedLogin(true); setSyncMode('local'); return;
+        }
         if (!res.ok) return;
         const data = await res.json();
         if (data.version > versionRef.current && Array.isArray(data.products)) {
@@ -197,6 +223,37 @@ function ProductsProvider({ children, initial }) {
     };
     inp.click();
   }, [products]);
+
+  const login = React.useCallback(async (username, password) => {
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+        localStorage.setItem(AUTH_USER_KEY, JSON.stringify(data.user));
+        setCurrentUser(data.user);
+        setNeedLogin(false);
+        setSyncMode('checking'); // re-trigger probe
+        return true;
+      }
+      return false;
+    } catch { return false; }
+  }, []);
+
+  const logout = React.useCallback(async () => {
+    try {
+      await fetch('/api/logout', { method: 'POST', headers: { ...getAuthHeaders() } });
+    } catch { /* ignore */ }
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(AUTH_USER_KEY);
+    setCurrentUser(null);
+    setNeedLogin(true);
+    setSyncMode('local');
+  }, []);
 
   // Build a blank product with all 18 stages initialized
   const buildBlankProduct = React.useCallback((seed) => {
@@ -355,7 +412,8 @@ function ProductsProvider({ children, initial }) {
     savedAt, resetToDefaults, exportJSON, importJSON, exportProduct,
     createProduct, removeProduct, duplicateProduct,
     syncMode, syncStatus, syncVersion: versionRef.current,
-  }), [products, update, updateStage, updateRecord, addRecord, removeRecord, updateSubShipment, addSubShipment, removeSubShipment, addLog, savedAt, resetToDefaults, exportJSON, importJSON, exportProduct, createProduct, removeProduct, duplicateProduct, syncMode, syncStatus]);
+    needLogin, currentUser, login, logout,
+  }), [products, update, updateStage, updateRecord, addRecord, removeRecord, updateSubShipment, addSubShipment, removeSubShipment, addLog, savedAt, resetToDefaults, exportJSON, importJSON, exportProduct, createProduct, removeProduct, duplicateProduct, syncMode, syncStatus, needLogin, currentUser, login, logout]);
 
   return <ProductCtx.Provider value={value}>{children}</ProductCtx.Provider>;
 }

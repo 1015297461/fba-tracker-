@@ -1,6 +1,51 @@
 /* eslint-disable no-undef */
 const { useState, useEffect } = React;
 
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError]       = useState('');
+  const [loading, setLoading]   = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!username.trim()) return;
+    setLoading(true);
+    setError('');
+    const ok = await onLogin(username.trim(), password);
+    if (!ok) { setError('用户名或密码错误，请重试'); setLoading(false); }
+  };
+
+  return (
+    <div className="login-overlay">
+      <div className="login-card">
+        <div className="login-logo">📦</div>
+        <h1 className="login-title">FBA Tracker</h1>
+        <p className="login-subtitle">产品开发全流程管理系统</p>
+        <form className="login-form" onSubmit={submit}>
+          <div className="login-field">
+            <label>用户名</label>
+            <input type="text" value={username}
+              onChange={e => setUsername(e.target.value)}
+              placeholder="请输入用户名" autoFocus autoComplete="username" />
+          </div>
+          <div className="login-field">
+            <label>密码</label>
+            <input type="password" value={password}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="请输入密码" autoComplete="current-password" />
+          </div>
+          {error && <div className="login-error">{error}</div>}
+          <button type="submit" className="login-btn" disabled={loading}>
+            {loading ? '登录中...' : '登录'}
+          </button>
+        </form>
+        <p className="login-hint">局域网协作模式 · 请联系管理员获取账号</p>
+      </div>
+    </div>
+  );
+}
+
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "theme": "light",
   "view": "list",
@@ -122,10 +167,19 @@ function AppShell() {
   );
 }
 
+// AuthGate: isolated component so AppShell hooks are always called unconditionally
+function AuthGate({ children }) {
+  const { needLogin, login } = useProducts();
+  if (needLogin) return <LoginScreen onLogin={login} />;
+  return children;
+}
+
 function App() {
   return (
     <ProductsProvider initial={window.PRODUCTS}>
-      <AppShell />
+      <AuthGate>
+        <AppShell />
+      </AuthGate>
     </ProductsProvider>
   );
 }

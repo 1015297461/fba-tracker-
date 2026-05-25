@@ -125,6 +125,8 @@ function TopBar({ view, product, theme, onToggleTheme, onNewProduct }) {
   const titles = { list: '产品列表', progress: '进度总览', table: '数据表格' };
   const ctx = useProducts ? useProducts() : null;
   const { label: syncLabel, cls: syncCls, icon: syncIcon } = useSyncLabel();
+  const currentUser = ctx?.currentUser;
+  const logout = ctx?.logout;
 
   // 保存成功时短暂闪烁绿色
   const syncStatus = ctx?.syncStatus;
@@ -149,6 +151,12 @@ function TopBar({ view, product, theme, onToggleTheme, onNewProduct }) {
       <span className={`save-indicator ${syncCls}`} data-flash={flash}>
         {syncIcon} {syncLabel}
       </span>
+      {currentUser && (
+        <div className="topbar-user">
+          <span className="topbar-username">{currentUser.name}</span>
+          <button className="btn btn-sm topbar-logout" onClick={logout} title="退出登录">退出</button>
+        </div>
+      )}
       <div className="topbar-actions">
         <button className="btn btn-sm" onClick={() => ctx?.importJSON?.()}><span>↑</span><span>导入</span></button>
         <button className="btn btn-sm" onClick={() => ctx?.exportJSON?.()}><span>↓</span><span>导出 JSON</span></button>

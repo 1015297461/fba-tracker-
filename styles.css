@@ -1479,3 +1479,80 @@ select.meta-edit { cursor: pointer; }
 .decision-pill.pass { background: rgba(34,197,94,0.13); color: #16a34a; }
 .decision-pill.hold { background: rgba(234,88,12,0.13); color: #ea580c; }
 .decision-pill.reject { background: rgba(220,38,38,0.13); color: #dc2626; }
+
+/* ===== LOGIN SCREEN ===== */
+.login-overlay {
+  position: fixed; inset: 0;
+  background: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 9999;
+}
+.login-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 40px 44px;
+  width: 360px;
+  box-shadow: var(--shadow-md);
+}
+.login-logo {
+  font-size: 28px; text-align: center; margin-bottom: 12px;
+}
+.login-title {
+  font-size: 20px; font-weight: 700; color: var(--ink);
+  text-align: center; margin: 0 0 4px;
+}
+.login-subtitle {
+  font-size: 12px; color: var(--ink-3);
+  text-align: center; margin: 0 0 28px;
+}
+.login-form { display: flex; flex-direction: column; gap: 14px; }
+.login-field { display: flex; flex-direction: column; gap: 5px; }
+.login-field label { font-size: 12px; font-weight: 500; color: var(--ink-2); }
+.login-field input {
+  height: 36px; padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg); color: var(--ink);
+  font-size: 13px; outline: none;
+  transition: border-color .15s;
+}
+.login-field input:focus { border-color: var(--blue); }
+.login-error {
+  font-size: 12px; color: var(--red);
+  background: rgba(220,38,38,0.08);
+  border: 1px solid rgba(220,38,38,0.2);
+  border-radius: var(--r-sm);
+  padding: 7px 10px;
+}
+.login-btn {
+  height: 38px; background: var(--ink); color: var(--bg);
+  border: none; border-radius: var(--r-md);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  margin-top: 4px; transition: opacity .15s;
+}
+.login-btn:hover:not(:disabled) { opacity: 0.82; }
+.login-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.login-hint {
+  font-size: 11px; color: var(--ink-4);
+  text-align: center; margin: 14px 0 0;
+}
+
+/* ===== TOPBAR USER ===== */
+.topbar-user {
+  display: flex; align-items: center; gap: 6px;
+  padding: 0 6px;
+  border-left: 1px solid var(--border);
+  margin-left: 4px;
+}
+.topbar-username {
+  font-size: 12px; color: var(--ink-3);
+  max-width: 80px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar-logout {
+  color: var(--ink-4) !important;
+  border-color: var(--border) !important;
+  font-size: 11px;
+}
+.topbar-logout:hover { color: var(--red) !important; border-color: var(--red) !important; }
