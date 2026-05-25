@@ -1,13 +1,6 @@
 /* eslint-disable no-undef */
 // Sidebar + Top Bar
-
-const STATUS_LABELS = {
-  all: { label: '全部', color: '#6b6b6b' },
-  active: { label: '进行中', color: '#16a34a' },
-  hold: { label: '已暂停', color: '#ea580c' },
-  done: { label: '已完成', color: '#2563eb' },
-  cancel: { label: '已取消', color: '#9a9a96' },
-};
+// STATUS_LABELS 定义在 data.jsx 中，此处直接使用全局声明
 
 function useSyncLabel() {
   const ctx = useProducts ? useProducts() : null;
@@ -171,4 +164,3 @@ function TopBar({ view, product, theme, onToggleTheme, onNewProduct }) {
 
 window.Sidebar = Sidebar;
 window.TopBar = TopBar;
-window.STATUS_LABELS = STATUS_LABELS;
