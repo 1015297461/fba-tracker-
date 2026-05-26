@@ -1645,6 +1645,33 @@ select.meta-edit { cursor: pointer; }
 .sku-items-table .cell { width: 100%; }
 .topbar-logout:hover { color: var(--red) !important; border-color: var(--red) !important; }
 
+/* ===== 生产批次：付款条款区块 ===== */
+.payment-section {
+  margin-top: 12px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+.payment-section-title {
+  font-size: 11.5px; font-weight: 600; color: var(--ink-3);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+/* 自动计算字段（只读显示，与 EditField 等高对齐） */
+.calc-field {
+  display: flex; flex-direction: column; gap: 3px;
+}
+.calc-field-label {
+  font-size: 10.5px; font-weight: 600; color: var(--ink-4);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.calc-field-value {
+  display: flex; align-items: center;
+  min-height: 28px; padding: 0 8px;
+  font-size: 13px; color: var(--ink);
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: 6px; opacity: 0.85;
+}
+
 /* ===== Phase 3: View layer variant adaptations ===== */
 
 /* ProductList card variant badge */

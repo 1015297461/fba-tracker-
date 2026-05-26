@@ -283,74 +283,130 @@ function TabProd({ p }) {
     <>
       <StageCard stage={STAGES[9]} productId={p.id} stageKey="production" stageData={prod}>
         <div className="record-list">
-          {(prod.batches || []).map((b, idx) => (
-            <RecordCard key={b.id} index={b.batchNo || ('B'+(idx+1))} title={`生产批次 ${b.batchNo || 'B'+(idx+1)}`}
-              color={STAGES[9].color} status={b.status}
-              onStatusChange={v => updateRecord(p.id, 'production', 'batches', b.id, { status:v })}
-              onRemove={() => removeRecord(p.id, 'production', 'batches', b.id)}>
-              <div className="fieldgrid cols-4">
-                <EditField label="批次号" value={b.batchNo}
-                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { batchNo:v })} />
-                <EditField label="工厂" value={b.factory}
-                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { factory:v })} />
-                <EditField label="下单日期" type="date" mono value={b.orderDate}
-                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { orderDate:v })} />
-                <EditField label="预计出货" type="date" mono value={b.expectedShip}
-                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { expectedShip:v })} />
-                <EditField label="数量" type="number" mono suffix="pcs" value={b.qty}
-                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { qty:v })} />
-                <EditField label="单价 (¥)" type="number" mono prefix="¥" value={b.unitPrice}
-                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { unitPrice:v })} />
-                <EditField label="预付款比例" type="number" mono suffix="%" value={b.depositPct}
-                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositPct:v })} />
-                <EditField label="预付款金额 (¥)" type="number" mono prefix="¥" value={b.depositAmt}
-                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositAmt:v })} />
-                <EditField label="批次备注" wide multi value={b.note}
-                  onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { note:v })} />
-              </div>
-              {hasVariants && (
-                <div className="sku-items-block">
-                  <div className="sku-items-hdr">
-                    <span className="sku-items-title">SKU 明细</span>
-                    <span className="sku-items-sum mono">
-                      共 {(b.items||[]).reduce((s,i)=>s+(Number(i.qty)||0),0)} pcs
-                    </span>
-                    <button className="btn btn-sm btn-add" onClick={() => {
-                      const v0 = variants[0];
-                      addBatchItem(p.id, b.id, { variantId:v0?.id||'', variantName:v0?.name||v0?.sku||'SKU', qty:0, unitPrice:0 });
-                    }}>+ 添加 SKU</button>
-                  </div>
-                  <table className="sku-items-table">
-                    <thead><tr><th>变体</th><th className="num">数量</th><th className="num">单价(¥)</th><th className="num">小计(¥)</th><th></th></tr></thead>
-                    <tbody>
-                      {(b.items||[]).map(item => (
-                        <tr key={item.id}>
-                          <td>
-                            <select className="cell" value={item.variantId}
-                              onChange={e => {
-                                const v = variants.find(v => v.id === e.target.value);
-                                updateBatchItem(p.id, b.id, item.id, { variantId:v?.id||'', variantName:v?.name||v?.sku||'SKU' });
-                              }}>
-                              {variants.map(v => <option key={v.id} value={v.id}>{v.name||v.colorOrSize||v.sku||'SKU'}</option>)}
-                            </select>
-                          </td>
-                          <td className="num"><input className="cell mono" type="number" value={item.qty} onChange={e => updateBatchItem(p.id, b.id, item.id, { qty:Number(e.target.value) })} /></td>
-                          <td className="num"><input className="cell mono" type="number" step="0.01" value={item.unitPrice} onChange={e => updateBatchItem(p.id, b.id, item.id, { unitPrice:Number(e.target.value) })} /></td>
-                          <td className="num">¥{((Number(item.qty)||0)*(Number(item.unitPrice)||0)).toFixed(2)}</td>
-                          <td><button className="row-del" onClick={() => removeBatchItem(p.id, b.id, item.id)}>✕</button></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+          {(prod.batches || []).map((b, idx) => {
+            const skuTotal = hasVariants && (b.items||[]).length > 0
+              ? (b.items||[]).reduce((s,i) => s + (Number(i.qty)||0)*(Number(i.unitPrice)||0), 0)
+              : (Number(b.qty)||0) * (Number(b.unitPrice)||0);
+            const depositPct  = Number(b.depositPct) || 0;
+            const balancePct  = b.balancePct != null ? Number(b.balancePct) : Math.max(0, 100 - depositPct);
+            const theorDeposit = +(skuTotal * depositPct  / 100).toFixed(2);
+            const theorBalance = +(skuTotal * balancePct  / 100).toFixed(2);
+            return (
+              <RecordCard key={b.id} index={b.batchNo || ('B'+(idx+1))} title={`生产批次 ${b.batchNo || 'B'+(idx+1)}`}
+                color={STAGES[9].color} status={b.status}
+                onStatusChange={v => updateRecord(p.id, 'production', 'batches', b.id, { status:v })}
+                onRemove={() => removeRecord(p.id, 'production', 'batches', b.id)}>
+
+                {/* 基本信息 */}
+                <div className="fieldgrid cols-4">
+                  <EditField label="批次号" value={b.batchNo}
+                    onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { batchNo:v })} />
+                  <EditField label="工厂" value={b.factory}
+                    onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { factory:v })} />
+                  <EditField label="下单日期" type="date" mono value={b.orderDate}
+                    onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { orderDate:v })} />
+                  <EditField label="预计出货" type="date" mono value={b.expectedShip}
+                    onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { expectedShip:v })} />
                 </div>
-              )}
-            </RecordCard>
-          ))}
+
+                {/* 单SKU：数量 + 单价 + 订单总金额 */}
+                {!hasVariants && (
+                  <div className="fieldgrid cols-4" style={{marginTop:8}}>
+                    <EditField label="数量" type="number" mono suffix="pcs" value={b.qty}
+                      onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { qty:v })} />
+                    <EditField label="单价 (¥)" type="number" mono prefix="¥" value={b.unitPrice}
+                      onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { unitPrice:v })} />
+                    <div />
+                    <div className="calc-field">
+                      <span className="calc-field-label">订单总金额</span>
+                      <span className="calc-field-value mono">¥{skuTotal.toFixed(2)}</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* 多SKU：明细表 + 总金额汇总 */}
+                {hasVariants && (
+                  <div className="sku-items-block">
+                    <div className="sku-items-hdr">
+                      <span className="sku-items-title">SKU 明细</span>
+                      <span className="sku-items-sum mono">
+                        共 {(b.items||[]).reduce((s,i)=>s+(Number(i.qty)||0),0)} pcs
+                        &nbsp;·&nbsp;订单总金额 <strong>¥{skuTotal.toFixed(2)}</strong>
+                      </span>
+                      <button className="btn btn-sm btn-add" onClick={() => {
+                        const v0 = variants[0];
+                        addBatchItem(p.id, b.id, { variantId:v0?.id||'', variantName:v0?.name||v0?.sku||'SKU', qty:0, unitPrice:0 });
+                      }}>+ 添加 SKU</button>
+                    </div>
+                    <table className="sku-items-table">
+                      <thead><tr><th>变体</th><th className="num">数量</th><th className="num">单价(¥)</th><th className="num">小计(¥)</th><th></th></tr></thead>
+                      <tbody>
+                        {(b.items||[]).map(item => (
+                          <tr key={item.id}>
+                            <td>
+                              <select className="cell" value={item.variantId}
+                                onChange={e => {
+                                  const v = variants.find(v => v.id === e.target.value);
+                                  updateBatchItem(p.id, b.id, item.id, { variantId:v?.id||'', variantName:v?.name||v?.sku||'SKU' });
+                                }}>
+                                {variants.map(v => <option key={v.id} value={v.id}>{v.name||v.colorOrSize||v.sku||'SKU'}</option>)}
+                              </select>
+                            </td>
+                            <td className="num"><input className="cell mono" type="number" value={item.qty} onChange={e => updateBatchItem(p.id, b.id, item.id, { qty:Number(e.target.value) })} /></td>
+                            <td className="num"><input className="cell mono" type="number" step="0.01" value={item.unitPrice} onChange={e => updateBatchItem(p.id, b.id, item.id, { unitPrice:Number(e.target.value) })} /></td>
+                            <td className="num">¥{((Number(item.qty)||0)*(Number(item.unitPrice)||0)).toFixed(2)}</td>
+                            <td><button className="row-del" onClick={() => removeBatchItem(p.id, b.id, item.id)}>✕</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* 付款条款 */}
+                <div className="payment-section">
+                  <div className="payment-section-title">付款条款</div>
+                  <div className="fieldgrid cols-4">
+                    <EditField label="预付款比例" type="number" mono suffix="%" value={b.depositPct}
+                      onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositPct:v })} />
+                    <div className="calc-field">
+                      <span className="calc-field-label">理论预付款</span>
+                      <span className="calc-field-value mono">¥{theorDeposit.toFixed(2)}</span>
+                    </div>
+                    <EditField label="实际预付款 (¥)" type="number" mono prefix="¥" value={b.depositActual||0}
+                      onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositActual:v })} />
+                    <EditField label="预付款日期" type="date" mono value={b.depositDate||''}
+                      onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositDate:v })} />
+                    <EditField label="尾款比例" type="number" mono suffix="%" value={balancePct}
+                      onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { balancePct:Number(v) })} />
+                    <div className="calc-field">
+                      <span className="calc-field-label">理论尾款</span>
+                      <span className="calc-field-value mono">¥{theorBalance.toFixed(2)}</span>
+                    </div>
+                    <EditField label="实际尾款 (¥)" type="number" mono prefix="¥" value={b.balanceAmt||0}
+                      onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { balanceAmt:v })} />
+                    <EditField label="尾款支付日期" type="date" mono value={b.balanceDate||''}
+                      onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { balanceDate:v })} />
+                  </div>
+                </div>
+
+                <div className="fieldgrid cols-4" style={{marginTop:8}}>
+                  <EditField label="批次备注" wide multi value={b.note}
+                    onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { note:v })} />
+                </div>
+              </RecordCard>
+            );
+          })}
         </div>
         <div style={{marginTop:10}}>
           <AddRecordButton label="添加生产批次" onClick={() => {
             const idx = (prod.batches || []).length + 1;
-            addRecord(p.id, 'production', 'batches', { batchNo:'B'+idx, orderDate:'', factory:'', qty:0, unitPrice:0, depositPct:30, depositAmt:0, expectedShip:'', note:'', items:[] });
+            addRecord(p.id, 'production', 'batches', {
+              batchNo: 'B'+idx, orderDate: '', factory: '', qty: 0, unitPrice: 0,
+              depositPct: 30, depositActual: 0, depositDate: '',
+              balancePct: 70, balanceAmt: 0, balanceDate: '',
+              expectedShip: '', note: '', items: [],
+            });
           }} />
         </div>
       </StageCard>
