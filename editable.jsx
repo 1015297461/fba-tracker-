@@ -66,10 +66,21 @@ function loadFromStorage(fallback) {
   return fallback;
 }
 
-function saveToStorage(products) {
+function saveToStorage(products, syncedServerVersion) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ __v: STORAGE_VERSION, savedAt: new Date().toISOString(), products }));
+    const record = { __v: STORAGE_VERSION, savedAt: new Date().toISOString(), products };
+    if (typeof syncedServerVersion === 'number') record.syncedServerVersion = syncedServerVersion;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(record));
   } catch (e) { console.warn('[FBA] localStorage save failed', e); }
+}
+
+function loadSyncedVersion() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return -1;
+    const p = JSON.parse(raw);
+    return typeof p?.syncedServerVersion === 'number' ? p.syncedServerVersion : -1;
+  } catch { return -1; }
 }
 
 function ProductsProvider({ children, initial }) {
@@ -80,6 +91,7 @@ function ProductsProvider({ children, initial }) {
   const versionRef = React.useRef(0);
   const lastSentRef = React.useRef(null);
   const skipNextPutRef = React.useRef(false);
+  const syncedVersionRef = React.useRef(loadSyncedVersion()); // -1 = never synced to server
   const [needLogin, setNeedLogin] = React.useState(false);
   const [currentUser, setCurrentUser] = React.useState(() => {
     try { return JSON.parse(localStorage.getItem(AUTH_USER_KEY) || 'null'); }
@@ -106,10 +118,22 @@ function ProductsProvider({ children, initial }) {
         const data = await res.json();
         if (cancelled) return;
         if (Array.isArray(data?.products) && data.products.length > 0) {
-          versionRef.current = data.version || 0;
-          skipNextPutRef.current = true;
-          setProducts(data.products);
-          lastSentRef.current = JSON.stringify(data.products);
+          const serverV = data.version || 0;
+          const localSyncedV = syncedVersionRef.current; // -1 = never synced
+          if (localSyncedV >= 0 && localSyncedV >= serverV) {
+            // Local has unsent changes newer than or equal to last known server version
+            // Keep current products (from localStorage), force a push to server
+            versionRef.current = serverV;
+            syncedVersionRef.current = serverV;
+            lastSentRef.current = null; // forces PUT effect to run
+          } else {
+            // Server is newer → use server data
+            versionRef.current = serverV;
+            syncedVersionRef.current = serverV;
+            skipNextPutRef.current = true;
+            setProducts(data.products);
+            lastSentRef.current = JSON.stringify(data.products);
+          }
         } else {
           // Server is empty — push our local copy as seed
           versionRef.current = data?.version || 0;
@@ -126,7 +150,8 @@ function ProductsProvider({ children, initial }) {
   // localStorage 立即写入（无防抖）：防止刷新时数据丢失
   // 同时作为服务器模式的本地缓存，两种模式均生效
   React.useEffect(() => {
-    saveToStorage(products);
+    const sv = syncedVersionRef.current >= 0 ? syncedVersionRef.current : undefined;
+    saveToStorage(products, sv);
   }, [products]);
 
   // 本地模式：更新"已保存"时间戳
@@ -155,6 +180,7 @@ function ProductsProvider({ children, initial }) {
         if (res.ok) {
           const data = await res.json().catch(() => ({ version: versionRef.current + 1 }));
           versionRef.current = data.version;
+          syncedVersionRef.current = data.version;
           lastSentRef.current = serialized;
           setSyncStatus('saved');
           setSavedAt(new Date());
@@ -204,6 +230,22 @@ function ProductsProvider({ children, initial }) {
     const interval = setInterval(tick, 4000);
     return () => { stopped = true; clearInterval(interval); };
   }, [syncMode, syncStatus]);
+
+  // beforeunload flush：页面关闭/刷新前强制推送未发送的本地变更
+  React.useEffect(() => {
+    if (syncMode !== 'server') return;
+    const flush = () => {
+      if (JSON.stringify(products) === lastSentRef.current) return;
+      fetch(SYNC_URL, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ products, baseVersion: versionRef.current }),
+        keepalive: true,
+      }).catch(() => {});
+    };
+    window.addEventListener('beforeunload', flush);
+    return () => window.removeEventListener('beforeunload', flush);
+  }, [products, syncMode]);
 
   const resetToDefaults = React.useCallback(() => {
     if (confirm('确定要恢复初始示例数据吗？当前所有编辑将丢失。')) {

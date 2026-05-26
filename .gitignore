@@ -24,3 +24,8 @@ __pycache__/
 
 # Node.js (Babel 编译输出)
 node_modules/
+
+# 单文件导出快照（按需用 export 功能重新生成）
+export/
+# 编译产物（npm run build 重新生成）
+compiled/
