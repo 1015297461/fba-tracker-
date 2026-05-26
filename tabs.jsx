@@ -272,6 +272,7 @@ function TabDesign({ p }) {
 function TabProd({ p }) {
   const { addRecord, updateRecord, removeRecord,
           addBatchItem, updateBatchItem, removeBatchItem,
+          addBatchExtra, updateBatchExtra, removeBatchExtra,
           addShipmentItem, updateShipmentItem, removeShipmentItem } = useProducts();
   const prod = p.stages.production || { batches:[] };
   const qc = p.stages.qc || { records:[] };
@@ -284,9 +285,11 @@ function TabProd({ p }) {
       <StageCard stage={STAGES[9]} productId={p.id} stageKey="production" stageData={prod}>
         <div className="record-list">
           {(prod.batches || []).map((b, idx) => {
-            const skuTotal = hasVariants && (b.items||[]).length > 0
+            const skuSubtotal = hasVariants && (b.items||[]).length > 0
               ? (b.items||[]).reduce((s,i) => s + (Number(i.qty)||0)*(Number(i.unitPrice)||0), 0)
               : (Number(b.qty)||0) * (Number(b.unitPrice)||0);
+            const extraSubtotal = (b.extraCosts||[]).reduce((s,c) => s + (Number(c.qty)||0)*(Number(c.unitPrice)||0), 0);
+            const skuTotal = skuSubtotal + extraSubtotal;
             const depositPct  = Number(b.depositPct) || 0;
             const balancePct  = b.balancePct != null ? Number(b.balancePct) : Math.max(0, 100 - depositPct);
             const theorDeposit = +(skuTotal * depositPct  / 100).toFixed(2);
@@ -309,7 +312,7 @@ function TabProd({ p }) {
                     onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { expectedShip:v })} />
                 </div>
 
-                {/* 单SKU：数量 + 单价 + 订单总金额 */}
+                {/* 单SKU：数量 + 单价 + SKU小计 */}
                 {!hasVariants && (
                   <div className="fieldgrid cols-4" style={{marginTop:8}}>
                     <EditField label="数量" type="number" mono suffix="pcs" value={b.qty}
@@ -318,8 +321,8 @@ function TabProd({ p }) {
                       onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { unitPrice:v })} />
                     <div />
                     <div className="calc-field">
-                      <span className="calc-field-label">订单总金额</span>
-                      <span className="calc-field-value mono">¥{skuTotal.toFixed(2)}</span>
+                      <span className="calc-field-label">SKU 小计</span>
+                      <span className="calc-field-value mono">¥{skuSubtotal.toFixed(2)}</span>
                     </div>
                   </div>
                 )}
@@ -331,7 +334,7 @@ function TabProd({ p }) {
                       <span className="sku-items-title">SKU 明细</span>
                       <span className="sku-items-sum mono">
                         共 {(b.items||[]).reduce((s,i)=>s+(Number(i.qty)||0),0)} pcs
-                        &nbsp;·&nbsp;订单总金额 <strong>¥{skuTotal.toFixed(2)}</strong>
+                        &nbsp;·&nbsp;SKU 小计 <strong>¥{skuSubtotal.toFixed(2)}</strong>
                       </span>
                       <button className="btn btn-sm btn-add" onClick={() => {
                         const v0 = variants[0];
@@ -362,6 +365,48 @@ function TabProd({ p }) {
                     </table>
                   </div>
                 )}
+
+                {/* 其他费用（代采配件/运费等） */}
+                <div className="sku-items-block">
+                  <div className="sku-items-hdr">
+                    <span className="sku-items-title">其他费用</span>
+                    <span className="sku-items-sum mono">
+                      {(b.extraCosts||[]).length > 0
+                        ? <>小计 <strong>¥{extraSubtotal.toFixed(2)}</strong></>
+                        : '代采配件 / 运费 / 其他'}
+                    </span>
+                    <button className="btn btn-sm btn-add" onClick={() =>
+                      addBatchExtra(p.id, b.id, { name:'', qty:1, unitPrice:0 })
+                    }>+ 添加费用</button>
+                  </div>
+                  {(b.extraCosts||[]).length > 0 && (
+                    <table className="sku-items-table">
+                      <thead>
+                        <tr>
+                          <th style={{width:'40%'}}>名称</th>
+                          <th className="num">数量</th>
+                          <th className="num">单价(¥)</th>
+                          <th className="num">小计(¥)</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(b.extraCosts||[]).map(c => (
+                          <tr key={c.id}>
+                            <td><input className="cell" value={c.name} placeholder="费用名称"
+                              onChange={e => updateBatchExtra(p.id, b.id, c.id, { name:e.target.value })} /></td>
+                            <td className="num"><input className="cell mono" type="number" value={c.qty}
+                              onChange={e => updateBatchExtra(p.id, b.id, c.id, { qty:Number(e.target.value) })} /></td>
+                            <td className="num"><input className="cell mono" type="number" step="0.01" value={c.unitPrice}
+                              onChange={e => updateBatchExtra(p.id, b.id, c.id, { unitPrice:Number(e.target.value) })} /></td>
+                            <td className="num">¥{((Number(c.qty)||0)*(Number(c.unitPrice)||0)).toFixed(2)}</td>
+                            <td><button className="row-del" onClick={() => removeBatchExtra(p.id, b.id, c.id)}>✕</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
 
                 {/* 付款条款 */}
                 <div className="payment-section">
@@ -405,7 +450,7 @@ function TabProd({ p }) {
               batchNo: 'B'+idx, orderDate: '', factory: '', qty: 0, unitPrice: 0,
               depositPct: 30, depositActual: 0, depositDate: '',
               balancePct: 70, balanceAmt: 0, balanceDate: '',
-              expectedShip: '', note: '', items: [],
+              expectedShip: '', note: '', items: [], extraCosts: [],
             });
           }} />
         </div>

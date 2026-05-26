@@ -616,6 +616,41 @@ function ProductsProvider({ children, initial }) {
     }));
   }, []);
 
+  // ─── 生产批次 其他费用 ────────────────────────────────────────────────────
+
+  const addBatchExtra = React.useCallback((productId, batchId, item) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const batches = (p.stages?.production?.batches || []).map(b => {
+        if (b.id !== batchId) return b;
+        return { ...b, extraCosts: [...(b.extraCosts || []), { id: window.uid(), ...item }] };
+      });
+      return { ...p, stages: { ...p.stages, production: { ...p.stages.production, batches } } };
+    }));
+  }, []);
+
+  const updateBatchExtra = React.useCallback((productId, batchId, itemId, patch) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const batches = (p.stages?.production?.batches || []).map(b => {
+        if (b.id !== batchId) return b;
+        return { ...b, extraCosts: (b.extraCosts || []).map(c => c.id === itemId ? { ...c, ...patch } : c) };
+      });
+      return { ...p, stages: { ...p.stages, production: { ...p.stages.production, batches } } };
+    }));
+  }, []);
+
+  const removeBatchExtra = React.useCallback((productId, batchId, itemId) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const batches = (p.stages?.production?.batches || []).map(b => {
+        if (b.id !== batchId) return b;
+        return { ...b, extraCosts: (b.extraCosts || []).filter(c => c.id !== itemId) };
+      });
+      return { ...p, stages: { ...p.stages, production: { ...p.stages.production, batches } } };
+    }));
+  }, []);
+
   // ─── 出货记录 SKU 明细 ────────────────────────────────────────────────────
 
   const addShipmentItem = React.useCallback((productId, recordId, item) => {
@@ -744,6 +779,7 @@ function ProductsProvider({ children, initial }) {
     addVariant, updateVariant, updateVariantStage, removeVariant,
     addVariantRecord, updateVariantRecord, removeVariantRecord,
     addBatchItem, updateBatchItem, removeBatchItem,
+    addBatchExtra, updateBatchExtra, removeBatchExtra,
     addShipmentItem, updateShipmentItem, removeShipmentItem,
     addReorderItem, updateReorderItem, removeReorderItem,
     addSubShipmentItem, updateSubShipmentItem, removeSubShipmentItem,
@@ -755,6 +791,7 @@ function ProductsProvider({ children, initial }) {
     addVariant, updateVariant, updateVariantStage, removeVariant,
     addVariantRecord, updateVariantRecord, removeVariantRecord,
     addBatchItem, updateBatchItem, removeBatchItem,
+    addBatchExtra, updateBatchExtra, removeBatchExtra,
     addShipmentItem, updateShipmentItem, removeShipmentItem,
     addReorderItem, updateReorderItem, removeReorderItem,
     addSubShipmentItem, updateSubShipmentItem, removeSubShipmentItem,
