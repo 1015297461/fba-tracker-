@@ -169,7 +169,6 @@ function TableView({ onSelectProduct, filter }) {
                       const vm = calcVariantProfit(v, p.fxRate);
                       const vpr = v.stages?.profit || {};
                       const vBomTotal = (v.stages?.bom?.items || []).reduce((s,i) => s + (Number(i.qty)||0)*(Number(i.unitCost)||0), 0);
-                      const vProgress = _variantProgress(v);
                       return (
                         <tr key={v.id} className="variant-row" onClick={() => onSelectProduct(p.id)} style={{cursor:'pointer'}}>
                           <td className="sticky pname variant-row-name">
@@ -180,8 +179,7 @@ function TableView({ onSelectProduct, filter }) {
                           <td className="num" style={{textAlign:'left', color:'var(--ink-4)', fontSize:11}}>{v.sku || '—'}</td>
                           <td>—</td>
                           <td className="num gcol">
-                            <span className="tbar"><span className="tbar-f" style={{width: vProgress + '%', background:'var(--blue)'}}></span></span>
-                            {vProgress}%
+                            {v.colorOrSize && <span style={{fontSize:11,color:'var(--ink-4)'}}>{v.colorOrSize}</span>}
                           </td>
                           <td>—</td><td>—</td>
                           <td style={{borderRight:'1px solid var(--border)'}}>—</td>

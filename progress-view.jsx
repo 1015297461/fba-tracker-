@@ -147,7 +147,7 @@ function GanttAll({ products, onSelectProduct }) {
                     <div key={v.id} className="gantt-label gantt-variant-label" onClick={() => onSelectProduct(p.id)} style={{cursor:'pointer'}}>
                       <span className="gantt-variant-prefix">└</span>
                       <span className="pn" style={{color:'var(--ink-3)', fontSize:11}}>{v.name || v.colorOrSize || v.sku || 'SKU '+(vi+1)}</span>
-                      <span className="gantt-variant-pct">{_variantProgress(v)}%</span>
+                      {v.sku && <span className="gantt-variant-pct" style={{fontFamily:'var(--font-mono)'}}>{v.sku}</span>}
                     </div>
                   ))}
                 </React.Fragment>

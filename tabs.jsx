@@ -15,37 +15,42 @@ function TabVariants({ p }) {
         </span>
       </div>
       <div className="stage-card-body">
-        {variants.length === 0 && (
+        {variants.length === 0 ? (
           <p className="variants-empty-hint">
             当前为单 SKU 模式。添加变体后，利润测算、BOM、打样、Listing、推广将支持按变体独立记录；生产订单 / 返单可同时包含多个 SKU。
           </p>
+        ) : (
+          <table className="variant-list-table">
+            <thead>
+              <tr>
+                <th style={{width:36}}>#</th>
+                <th>变体名称</th>
+                <th>子 SKU / 型号</th>
+                <th>颜色 / 尺寸 / 配置</th>
+                <th style={{width:36}}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {variants.map((v, idx) => (
+                <tr key={v.id}>
+                  <td className="variant-list-no">{idx + 1}</td>
+                  <td><input className="cell" value={v.name}
+                    onChange={e => updateVariant(p.id, v.id, { name: e.target.value })} /></td>
+                  <td><input className="cell mono" value={v.sku}
+                    onChange={e => updateVariant(p.id, v.id, { sku: e.target.value })} /></td>
+                  <td><input className="cell" value={v.colorOrSize}
+                    onChange={e => updateVariant(p.id, v.id, { colorOrSize: e.target.value })} /></td>
+                  <td>
+                    <button className="row-del" onClick={() => {
+                      if (_variantInUse(p, v.id)) { alert('该变体已在订单/出货/返单中被引用，无法删除。'); return; }
+                      if (confirm('确定删除变体「' + (v.name || v.sku || 'SKU ' + (idx+1)) + '」？')) removeVariant(p.id, v.id);
+                    }}>✕</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
-        <div className="variant-cards">
-          {variants.map((v, idx) => (
-            <div key={v.id} className="variant-card">
-              <div className="variant-card-no">{idx + 1}</div>
-              <div className="variant-card-body">
-                <div className="fieldgrid cols-3">
-                  <EditField label="变体名称" value={v.name}
-                    onChange={val => updateVariant(p.id, v.id, { name: val })} />
-                  <EditField label="子 SKU / 型号" mono value={v.sku}
-                    onChange={val => updateVariant(p.id, v.id, { sku: val })} />
-                  <EditField label="颜色/尺寸/配置" value={v.colorOrSize}
-                    onChange={val => updateVariant(p.id, v.id, { colorOrSize: val })} />
-                </div>
-              </div>
-              <div className="variant-card-progress">
-                <div className="vp-bar"><div className="vp-fill" style={{width: _variantProgress(v) + '%'}}></div></div>
-                <span className="vp-pct">{_variantProgress(v)}%</span>
-              </div>
-              <button className="variant-del"
-                onClick={() => {
-                  if (_variantInUse(p, v.id)) { alert('该变体已在订单/出货/返单中被引用，无法删除。'); return; }
-                  if (confirm('确定删除变体「' + (v.name || v.sku || 'SKU ' + (idx+1)) + '」？')) removeVariant(p.id, v.id);
-                }}>✕</button>
-            </div>
-          ))}
-        </div>
         <div style={{marginTop:12}}>
           <AddRecordButton label="添加变体" onClick={() => addVariant(p.id, { name:'', sku:'', colorOrSize:'' })} />
         </div>

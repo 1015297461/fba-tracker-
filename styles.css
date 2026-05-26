@@ -1584,37 +1584,24 @@ select.meta-edit { cursor: pointer; }
   border: 1px dashed var(--border); border-radius: 6px;
   margin-bottom: 12px;
 }
-.variant-cards { display: flex; flex-direction: column; gap: 8px; }
-.variant-card {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 12px; background: var(--bg-2);
-  border: 1px solid var(--border); border-radius: 6px;
+/* SKU 变体列表表格 */
+.variant-list-table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
 }
-.variant-card-no {
-  width: 24px; height: 24px; border-radius: 50%;
-  background: var(--blue); color: #fff;
-  font-size: 11px; font-weight: 700;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
+.variant-list-table th {
+  font-size: 11px; font-weight: 600; color: var(--ink-4);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 6px 8px; border-bottom: 2px solid var(--border);
+  text-align: left; white-space: nowrap;
 }
-.variant-card-body { flex: 1; min-width: 0; }
-.variant-card-progress {
-  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+.variant-list-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.variant-list-table tbody tr:last-child td { border-bottom: none; }
+.variant-list-table tbody tr:hover { background: var(--bg-2); }
+.variant-list-no {
+  font-size: 11px; font-weight: 700; color: var(--ink-4);
+  text-align: center; width: 36px;
 }
-.vp-bar {
-  width: 80px; height: 6px; border-radius: 3px;
-  background: var(--border); overflow: hidden;
-}
-.vp-fill { height: 100%; background: var(--blue); border-radius: 3px; transition: width 0.3s; }
-.vp-pct { font-size: 11px; font-weight: 600; color: var(--ink-3); min-width: 28px; text-align: right; }
-.variant-del {
-  width: 22px; height: 22px; border-radius: 50%;
-  background: transparent; border: 1px solid var(--border);
-  color: var(--ink-4); cursor: pointer; font-size: 10px;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0; transition: all 0.15s;
-}
-.variant-del:hover { background: var(--red); border-color: var(--red); color: #fff; }
+.variant-list-table .cell { width: 100%; }
 
 /* ===== SKU Items Table (production batches, shipment, reorder) ===== */
 .sku-items-block {

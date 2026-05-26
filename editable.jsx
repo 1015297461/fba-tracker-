@@ -519,10 +519,7 @@ function ProductsProvider({ children, initial }) {
         const next = typeof patch === 'function' ? patch(s) : { ...s, ...patch };
         return { ...v, stages: { ...v.stages, [stageKey]: next } };
       });
-      // 产品整体进度 = 最慢变体进度
-      const progresses = variants.map(v => _variantProgress(v));
-      const progress   = progresses.length ? Math.min(...progresses) : p.progress;
-      return { ...p, variants, progress };
+      return { ...p, variants };
     }));
   }, []);
 
@@ -535,9 +532,7 @@ function ProductsProvider({ children, initial }) {
         return p;
       }
       const variants = (p.variants || []).filter(v => v.id !== variantId);
-      const progresses = variants.map(v => _variantProgress(v));
-      const progress   = progresses.length ? Math.min(...progresses) : p.progress;
-      return { ...p, variants, progress };
+      return { ...p, variants };
     }));
   }, []);
 
