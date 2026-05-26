@@ -1617,6 +1617,73 @@ function calcProfit(p) {
     margin
   };
 }
+
+// 收集产品所有"截止日期"（用于到期/逾期统计）
+// 只统计对应批次/记录/阶段尚未完成的计划日期
+function _collectDeadlines(p) {
+  const dates = [];
+  // 生产批次 预计出货
+  (p.stages.production?.batches || []).forEach(b => {
+    if (b.expectedShip && b.status !== 'done') dates.push(b.expectedShip);
+  });
+  // 出货记录 入仓 ETA
+  (p.stages.shipment?.records || []).forEach(r => {
+    if (r.status !== 'done') {
+      if (r.etaFBA) dates.push(r.etaFBA);else if (r.etaPort) dates.push(r.etaPort);
+    }
+  });
+  // 返单记录 预计到货
+  (p.stages.reorder?.records || []).forEach(r => {
+    if (r.etaDate && r.status !== 'done') dates.push(r.etaDate);
+  });
+  // Listing 上架日期
+  if (p.stages.listing?.launchDate && p.stages.listing?.status !== 'done') {
+    dates.push(p.stages.listing.launchDate);
+  }
+  // 各阶段处于 active 状态时的计划结束日期
+  Object.values(p.stages || {}).forEach(s => {
+    if (s?.status === 'active' && s?.endDate) dates.push(s.endDate);
+  });
+  return dates.filter(Boolean);
+}
+
+// 统计产品运营关键指标（真实计算，无 mock）
+function computeStats(products) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayStr = today.toISOString().slice(0, 10);
+  const y = today.getFullYear(),
+    mo = today.getMonth();
+  const monthStart = new Date(y, mo, 1).toISOString().slice(0, 10);
+  const monthEnd = new Date(y, mo + 1, 0).toISOString().slice(0, 10);
+  const plus30 = new Date(today);
+  plus30.setDate(plus30.getDate() + 30);
+  const plus30Str = plus30.toISOString().slice(0, 10);
+
+  // 本月完成：状态为 done，且当月有阶段完成（endDate/doneDate 在本月内）
+  const monthDone = products.filter(p => {
+    if (p.status !== 'done') return false;
+    const ends = Object.values(p.stages || {}).map(s => s?.endDate || s?.doneDate).filter(Boolean);
+    return ends.some(d => d >= monthStart && d <= monthEnd);
+  }).length;
+
+  // 30天到期：active 产品中，有截止日期在 [today, today+30] 范围内
+  const due30 = products.filter(p => {
+    if (p.status !== 'active') return false;
+    return _collectDeadlines(p).some(d => d >= todayStr && d <= plus30Str);
+  }).length;
+
+  // 已逾期：active 产品中，有截止日期 < today
+  const overdue = products.filter(p => {
+    if (p.status !== 'active') return false;
+    return _collectDeadlines(p).some(d => d < todayStr);
+  }).length;
+  return {
+    monthDone,
+    due30,
+    overdue
+  };
+}
 function calcVariantProfit(variant, fxRate) {
   const pr = variant?.stages?.profit;
   if (!pr || !Number(pr.targetPrice)) return null;
@@ -1658,5 +1725,6 @@ Object.assign(window, {
   getDone,
   DEFAULT_FX,
   calcProfit,
-  calcVariantProfit
+  calcVariantProfit,
+  computeStats
 });

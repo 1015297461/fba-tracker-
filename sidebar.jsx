@@ -40,9 +40,7 @@ function Sidebar({ view, setView, filter, setFilter, products }) {
     done: products.filter(p => p.status === 'done').length,
     cancel: products.filter(p => p.status === 'cancel').length,
   };
-  const monthDone = 2; // mock
-  const overdue = 1;
-  const due30 = 4;
+  const { monthDone, overdue, due30 } = computeStats(products);
 
   const ctx = useProducts ? useProducts() : null;
   const syncMode = ctx?.syncMode;

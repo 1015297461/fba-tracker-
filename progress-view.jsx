@@ -6,9 +6,7 @@ function ProgressKPIs({ products }) {
   const active = products.filter(p => p.status === 'active').length;
   const done = products.filter(p => p.status === 'done').length;
   const hold = products.filter(p => p.status === 'hold').length;
-  const monthDone = 2;
-  const due30 = 4;
-  const overdue = 1;
+  const { monthDone, due30, overdue } = computeStats(products);
 
   const kpis = [
     { l: '总产品', v: total, c: '' },
