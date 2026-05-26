@@ -742,7 +742,10 @@ function LogAdder({ onAdd }) {
     <div style={{marginTop:12, display:'flex', gap:8}}>
       <input className="input"
         value={v} onChange={e => setV(e.target.value)}
-        onKeyDown={e => { if (e.key === 'Enter' && v.trim()) { onAdd(v.trim()); setV(''); }}}
+        onKeyDown={e => {
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+          if (e.key === 'Enter' && v.trim()) { onAdd(v.trim()); setV(''); }
+        }}
         placeholder="添加一条日志…(回车提交)"
         style={{flex:1, height:30, padding:'0 10px', border:'1px solid var(--border)', borderRadius:4, background:'var(--bg)', color:'var(--ink)', fontSize:12.5, outline:'none'}} />
       <button className="btn btn-sm btn-primary" onClick={() => { if (v.trim()) { onAdd(v.trim()); setV(''); } }}>添加</button>

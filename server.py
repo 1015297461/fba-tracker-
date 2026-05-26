@@ -112,6 +112,7 @@ class DbState:
                     fx_rate       REAL    DEFAULT 7.2,
                     stages        TEXT    DEFAULT '{}',
                     logs          TEXT    DEFAULT '[]',
+                    variants      TEXT    DEFAULT '[]',
                     updated_at    TEXT
                 );
 
@@ -123,6 +124,10 @@ class DbState:
                     changed_at TEXT DEFAULT (datetime('now'))
                 );
             """)
+            # 兼容旧版数据库：若 variants 列不存在则追加（幂等）
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
+            if "variants" not in existing:
+                conn.execute("ALTER TABLE products ADD COLUMN variants TEXT DEFAULT '[]'")
 
     # ---- 内部辅助 ----
 
@@ -142,8 +147,9 @@ class DbState:
             "currentStage": row["current_stage"],
             "progress":     row["progress"] or 0,
             "fxRate":       row["fx_rate"] or 7.20,
-            "stages":       json.loads(row["stages"] or "{}"),
-            "logs":         json.loads(row["logs"] or "[]"),
+            "stages":       json.loads(row["stages"]   or "{}"),
+            "logs":         json.loads(row["logs"]     or "[]"),
+            "variants":     json.loads(row["variants"] or "[]"),
         }
 
     # ---- 公开接口 ----
@@ -181,8 +187,8 @@ class DbState:
                     conn.execute(
                         """INSERT OR REPLACE INTO products
                            (id, name, sku, category, status, lead, created_at,
-                            current_stage, progress, fx_rate, stages, logs, updated_at)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            current_stage, progress, fx_rate, stages, logs, variants, updated_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         [
                             p.get("id"),
                             p.get("name"),
@@ -194,8 +200,9 @@ class DbState:
                             p.get("currentStage"),
                             p.get("progress", 0),
                             p.get("fxRate", 7.20),
-                            json.dumps(p.get("stages", {}), ensure_ascii=False),
-                            json.dumps(p.get("logs",   []), ensure_ascii=False),
+                            json.dumps(p.get("stages",   {}), ensure_ascii=False),
+                            json.dumps(p.get("logs",     []), ensure_ascii=False),
+                            json.dumps(p.get("variants", []), ensure_ascii=False),
                             now,
                         ],
                     )
@@ -471,7 +478,7 @@ class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 def main():
     p = argparse.ArgumentParser(description="FBA Tracker 局域网协作服务器 v2")
-    p.add_argument("--port",    type=int, default=8000,           help="监听端口 (默认 8000)")
+    p.add_argument("--port",    type=int, default=8002,           help="监听端口 (默认 8002)")
     p.add_argument("--host",    default="0.0.0.0",                help="监听地址 (默认 0.0.0.0)")
     p.add_argument("--db",      default="fba-data.db",            help="SQLite 数据库 (默认 ./fba-data.db)")
     p.add_argument("--users",   default="fba-users.json",         help="用户配置文件 (默认 ./fba-users.json)")

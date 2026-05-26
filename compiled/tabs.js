@@ -1669,6 +1669,7 @@ function LogAdder({
     value: v,
     onChange: e => setV(e.target.value),
     onKeyDown: e => {
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
       if (e.key === 'Enter' && v.trim()) {
         onAdd(v.trim());
         setV('');

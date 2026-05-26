@@ -123,14 +123,16 @@ function ProductsProvider({ children, initial }) {
     return () => { cancelled = true; };
   }, [syncMode]);
 
-  // Local debounced save (when not in server mode)
+  // localStorage 立即写入（无防抖）：防止刷新时数据丢失
+  // 同时作为服务器模式的本地缓存，两种模式均生效
+  React.useEffect(() => {
+    saveToStorage(products);
+  }, [products]);
+
+  // 本地模式：更新"已保存"时间戳
   React.useEffect(() => {
     if (syncMode !== 'local') return;
-    const t = setTimeout(() => {
-      saveToStorage(products);
-      setSavedAt(new Date());
-    }, 600);
-    return () => clearTimeout(t);
+    setSavedAt(new Date());
   }, [products, syncMode]);
 
   // Server debounced PUT
@@ -156,7 +158,6 @@ function ProductsProvider({ children, initial }) {
           lastSentRef.current = serialized;
           setSyncStatus('saved');
           setSavedAt(new Date());
-          saveToStorage(products); // also cache locally
         } else if (res.status === 409) {
           // conflict — take server's state
           const data = await res.json();
@@ -170,7 +171,6 @@ function ProductsProvider({ children, initial }) {
         }
       } catch (e) {
         setSyncStatus('offline');
-        saveToStorage(products);
       }
     }, 600);
     return () => clearTimeout(t);
@@ -776,7 +776,10 @@ function EditField({ label, value, onChange, type, mono, placeholder, wide, mult
             value={local}
             onChange={e => setLocal(e.target.value)}
             onBlur={commit}
-            onKeyDown={e => { if (e.key === 'Enter' && !multi) e.target.blur(); }}
+            onKeyDown={e => {
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+              if (e.key === 'Enter' && !multi) e.target.blur();
+            }}
             placeholder={placeholder}
             step={type === 'number' ? 'any' : undefined} />
         )}
