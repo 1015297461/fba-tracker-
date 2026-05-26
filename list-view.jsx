@@ -122,10 +122,16 @@ function TabEval({ p }) {
 
 // ============ Profit (with tax on product cost, return rate, dual currency) ============
 function ProfitCard({ p }) {
-  const { updateStage, update } = useProducts();
-  const pr = p.stages.profit;
+  const { updateStage, update, updateVariantStage } = useProducts();
+  const variants = p.variants || [];
+  const hasVariants = variants.length > 0;
+  const [profitVId, setProfitVId] = React.useState(variants[0]?.id || null);
+  const selectedPV = variants.find(v => v.id === profitVId) || variants[0] || null;
+  const pr = hasVariants ? (selectedPV?.stages?.profit || {}) : p.stages.profit;
   const fx = Number(p.fxRate) || window.DEFAULT_FX || 7.20;
-  const set = (patch) => updateStage(p.id, 'profit', patch);
+  const set = hasVariants
+    ? (patch) => updateVariantStage(p.id, selectedPV.id, 'profit', patch)
+    : (patch) => updateStage(p.id, 'profit', patch);
 
   // Inputs
   const targetPrice = Number(pr.targetPrice) || 0;           // USD
@@ -156,13 +162,16 @@ function ProfitCard({ p }) {
   const margin = targetPrice ? (netProfit / targetPrice * 100) : 0;
   const marginCls = margin >= 20 ? 'green' : margin >= 10 ? 'orange' : 'red';
 
+  const bomRef = hasVariants ? (selectedPV?.stages?.bom || {}) : p.stages.bom;
+
   return (
-    <StageCard stage={STAGES[2]} productId={p.id} stageKey="profit" stageData={pr}
+    <StageCard stage={STAGES[2]} productId={p.id} stageKey="profit" stageData={p.stages.profit}
       extraHeader={
         <span className={`decision-pill ${pr.decision || 'hold'}`} style={{marginLeft: 6}}>
           {pr.decision === 'pass' ? '✓ 通过立项' : pr.decision === 'hold' ? '⏸ 暂缓观察' : pr.decision === 'reject' ? '✗ 否决' : '— 待决策'}
         </span>
       }>
+      {hasVariants && <VariantSelector p={p} selectedId={selectedPV?.id} onSelect={setProfitVId} />}
       {/* FX rate bar */}
       <div className="currency-bar">
         <span className="cb-label">汇率</span>
@@ -218,9 +227,9 @@ function ProfitCard({ p }) {
 
       {/* BOM sync */}
       <div style={{marginTop:12, padding:'10px 12px', background:'var(--bg-2)', border:'1px solid var(--border)', borderRadius:6, fontSize:11.5, color:'var(--ink-3)', display:'flex', alignItems:'center', gap:10}}>
-        <span>💡 BOM 参考成本 (¥): <strong className="mono" style={{color:'var(--ink)'}}>¥{(p.stages.bom.items||[]).reduce((s,i)=>s+i.qty*i.unitCost,0).toFixed(2)}</strong></span>
+        <span>💡 BOM 参考成本 (¥): <strong className="mono" style={{color:'var(--ink)'}}>¥{(bomRef.items||[]).reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i.unitCost)||0),0).toFixed(2)}</strong></span>
         <button className="btn btn-sm" onClick={() => {
-          const total = (p.stages.bom.items||[]).reduce((s,i)=>s+i.qty*i.unitCost,0);
+          const total = (bomRef.items||[]).reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i.unitCost)||0),0);
           set({ cogs: +total.toFixed(2) });
         }}>🔄 同步到产品成本</button>
       </div>
@@ -288,22 +297,37 @@ function ProfitCard({ p }) {
 const BOM_CATS = ['面料/布料','电机/马达','电源/电池','开关/控制','LED/灯珠','模具/外壳','包装材料','认证费','物流/运费','其他'];
 
 function BomCard({ p }) {
-  const { updateStage } = useProducts();
+  const { updateStage, updateVariantStage } = useProducts();
   const stage = STAGES[3];
-  const bom = p.stages.bom || { items:[] };
+  const variants = p.variants || [];
+  const hasVariants = variants.length > 0;
+  const [bomVId, setBomVId] = React.useState(variants[0]?.id || null);
+  const selectedBV = variants.find(v => v.id === bomVId) || variants[0] || null;
+  const bom = hasVariants ? (selectedBV?.stages?.bom || { items:[] }) : (p.stages.bom || { items:[] });
   const items = bom.items || [];
 
   const updateItem = (id, patch) => {
     const next = items.map(i => i.id === id ? { ...i, ...patch } : i);
-    updateStage(p.id, 'bom', { items: next });
+    hasVariants
+      ? updateVariantStage(p.id, selectedBV.id, 'bom', { items: next })
+      : updateStage(p.id, 'bom', { items: next });
   };
-  const removeItem = (id) => updateStage(p.id, 'bom', { items: items.filter(i => i.id !== id) });
-  const addItem = () => updateStage(p.id, 'bom', {
-    items: [...items, { id: window.uid(), name:'', spec:'', cat:'其他', qty:1, unitCost:0 }]
-  });
+  const removeItem = (id) => {
+    const next = items.filter(i => i.id !== id);
+    hasVariants
+      ? updateVariantStage(p.id, selectedBV.id, 'bom', { items: next })
+      : updateStage(p.id, 'bom', { items: next });
+  };
+  const addItem = () => {
+    const next = [...items, { id: window.uid(), name:'', spec:'', cat:'其他', qty:1, unitCost:0 }];
+    hasVariants
+      ? updateVariantStage(p.id, selectedBV.id, 'bom', { items: next })
+      : updateStage(p.id, 'bom', { items: next });
+  };
 
   const total = items.reduce((s, i) => s + (Number(i.qty)||0) * (Number(i.unitCost)||0), 0);
-  const cogs = Number(p.stages.profit.cogs) || total;
+  const profitData = hasVariants ? (selectedBV?.stages?.profit || {}) : p.stages.profit;
+  const cogs = Number(profitData.cogs) || total;
   const coverage = cogs > 0 ? Math.min(100, total / cogs * 100) : 0;
 
   const catMap = {};
@@ -329,8 +353,9 @@ function BomCard({ p }) {
   });
 
   return (
-    <StageCard stage={stage} productId={p.id} stageKey="bom" stageData={bom}
+    <StageCard stage={stage} productId={p.id} stageKey="bom" stageData={p.stages.bom || {}}
       extraHeader={<span className="bom-cov-badge mono">{coverage.toFixed(0)}% 覆盖 · ¥{total.toFixed(2)}</span>}>
+      {hasVariants && <VariantSelector p={p} selectedId={selectedBV?.id} onSelect={setBomVId} />}
       <div className="bom-section">
         <div>
           <table className="bom-table editable">
@@ -373,7 +398,9 @@ function BomCard({ p }) {
           </div>
           <div style={{marginTop:12}}>
             <EditField label="BOM 备注" multi wide value={bom.notes}
-              onChange={v => updateStage(p.id, 'bom', { notes:v })} />
+              onChange={v => hasVariants
+                ? updateVariantStage(p.id, selectedBV.id, 'bom', { notes:v })
+                : updateStage(p.id, 'bom', { notes:v })} />
           </div>
         </div>
         <div>
@@ -420,7 +447,7 @@ function BomCard({ p }) {
           </div>
 
           {items.length > 0 && (
-            <SensitivityPanel items={items} profit={p.stages.profit} fxRate={p.fxRate} />
+            <SensitivityPanel items={items} profit={profitData} fxRate={p.fxRate} />
           )}
         </div>
       </div>

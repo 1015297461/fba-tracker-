@@ -23,12 +23,13 @@ const STAGES = [
 ];
 
 const TABS = [
-  { key: 'eval',    icon: '📋', name: '立项评估' },
-  { key: 'sup',     icon: '🏭', name: '供应商/打样' },
-  { key: 'design',  icon: '🎨', name: '内容设计' },
-  { key: 'prod',    icon: '📦', name: '生产出货' },
-  { key: 'ops',     icon: '🛒', name: '上架运营' },
-  { key: 'review',  icon: '🔄', name: '返单复盘' },
+  { key: 'eval',     icon: '📋', name: '立项评估' },
+  { key: 'variants', icon: '🔢', name: 'SKU 变体' },
+  { key: 'sup',      icon: '🏭', name: '供应商/打样' },
+  { key: 'design',   icon: '🎨', name: '内容设计' },
+  { key: 'prod',     icon: '📦', name: '生产出货' },
+  { key: 'ops',      icon: '🛒', name: '上架运营' },
+  { key: 'review',   icon: '🔄', name: '返单复盘' },
 ];
 
 const STAGE_STATUSES = [

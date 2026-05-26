@@ -1,6 +1,101 @@
 /* eslint-disable no-undef */
 // Tabs: 供应商/打样, 内容设计, 生产出货, 上架运营, 返单复盘 — fully editable
 
+// ============ TAB: SKU 变体管理 ============
+function TabVariants({
+  p
+}) {
+  const {
+    addVariant,
+    updateVariant,
+    removeVariant
+  } = useProducts();
+  const variants = p.variants || [];
+  return /*#__PURE__*/React.createElement("div", {
+    className: "stage-card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "stage-card-hdr"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "stage-card-bar",
+    style: {
+      background: '#3b82f6'
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "stage-card-title"
+  }, "SKU \u53D8\u4F53\u7BA1\u7406"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      marginLeft: 'auto',
+      fontSize: 11,
+      color: 'var(--ink-4)'
+    }
+  }, variants.length ? variants.length + ' 个变体' : '单 SKU（无变体）')), /*#__PURE__*/React.createElement("div", {
+    className: "stage-card-body"
+  }, variants.length === 0 && /*#__PURE__*/React.createElement("p", {
+    className: "variants-empty-hint"
+  }, "\u5F53\u524D\u4E3A\u5355 SKU \u6A21\u5F0F\u3002\u6DFB\u52A0\u53D8\u4F53\u540E\uFF0C\u5229\u6DA6\u6D4B\u7B97\u3001BOM\u3001\u6253\u6837\u3001Listing\u3001\u63A8\u5E7F\u5C06\u652F\u6301\u6309\u53D8\u4F53\u72EC\u7ACB\u8BB0\u5F55\uFF1B\u751F\u4EA7\u8BA2\u5355 / \u8FD4\u5355\u53EF\u540C\u65F6\u5305\u542B\u591A\u4E2A SKU\u3002"), /*#__PURE__*/React.createElement("div", {
+    className: "variant-cards"
+  }, variants.map((v, idx) => /*#__PURE__*/React.createElement("div", {
+    key: v.id,
+    className: "variant-card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "variant-card-no"
+  }, idx + 1), /*#__PURE__*/React.createElement("div", {
+    className: "variant-card-body"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "fieldgrid cols-3"
+  }, /*#__PURE__*/React.createElement(EditField, {
+    label: "\u53D8\u4F53\u540D\u79F0",
+    value: v.name,
+    onChange: val => updateVariant(p.id, v.id, {
+      name: val
+    })
+  }), /*#__PURE__*/React.createElement(EditField, {
+    label: "\u5B50 SKU / \u578B\u53F7",
+    mono: true,
+    value: v.sku,
+    onChange: val => updateVariant(p.id, v.id, {
+      sku: val
+    })
+  }), /*#__PURE__*/React.createElement(EditField, {
+    label: "\u989C\u8272/\u5C3A\u5BF8/\u914D\u7F6E",
+    value: v.colorOrSize,
+    onChange: val => updateVariant(p.id, v.id, {
+      colorOrSize: val
+    })
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "variant-card-progress"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "vp-bar"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "vp-fill",
+    style: {
+      width: _variantProgress(v) + '%'
+    }
+  })), /*#__PURE__*/React.createElement("span", {
+    className: "vp-pct"
+  }, _variantProgress(v), "%")), /*#__PURE__*/React.createElement("button", {
+    className: "variant-del",
+    onClick: () => {
+      if (_variantInUse(p, v.id)) {
+        alert('该变体已在订单/出货/返单中被引用，无法删除。');
+        return;
+      }
+      if (confirm('确定删除变体「' + (v.name || v.sku || 'SKU ' + (idx + 1)) + '」？')) removeVariant(p.id, v.id);
+    }
+  }, "\u2715")))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 12
+    }
+  }, /*#__PURE__*/React.createElement(AddRecordButton, {
+    label: "\u6DFB\u52A0\u53D8\u4F53",
+    onClick: () => addVariant(p.id, {
+      name: '',
+      sku: '',
+      colorOrSize: ''
+    })
+  }))));
+}
+
 // ============ TAB: 供应商/打样 ============
 function TabSup({
   p
@@ -9,7 +104,11 @@ function TabSup({
     updateStage,
     addRecord,
     updateRecord,
-    removeRecord
+    removeRecord,
+    updateVariantStage,
+    addVariantRecord,
+    updateVariantRecord,
+    removeVariantRecord
   } = useProducts();
   const sup = p.stages.supplier || {
     suppliers: []
@@ -18,6 +117,28 @@ function TabSup({
     rounds: []
   };
   const cert = p.stages.cert || {};
+  const variants = p.variants || [];
+  const hasVariants = variants.length > 0;
+  const [samplingVId, setSamplingVId] = React.useState(variants[0]?.id || null);
+  const selectedSV = variants.find(v => v.id === samplingVId) || variants[0] || null;
+  const samplingData = hasVariants ? selectedSV?.stages?.sampling || {
+    rounds: []
+  } : sampling;
+  const samplingRounds = samplingData.rounds || [];
+  const doAddRound = data => hasVariants ? addVariantRecord(p.id, selectedSV.id, 'sampling', 'rounds', data) : addRecord(p.id, 'sampling', 'rounds', data);
+  const doUpdateRound = (rid, patch) => hasVariants ? updateVariantRecord(p.id, selectedSV.id, 'sampling', 'rounds', rid, patch) : updateRecord(p.id, 'sampling', 'rounds', rid, patch);
+  const doRemoveRound = rid => hasVariants ? removeVariantRecord(p.id, selectedSV.id, 'sampling', 'rounds', rid) : removeRecord(p.id, 'sampling', 'rounds', rid);
+  const doSetFinal = (rid, checked) => {
+    const next = samplingRounds.map(x => ({
+      ...x,
+      isFinal: x.id === rid ? checked : checked ? false : x.isFinal
+    }));
+    hasVariants ? updateVariantStage(p.id, selectedSV.id, 'sampling', {
+      rounds: next
+    }) : updateStage(p.id, 'sampling', {
+      rounds: next
+    });
+  };
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(StageCard, {
     stage: STAGES[4],
     productId: p.id,
@@ -155,20 +276,24 @@ function TabSup({
     stage: STAGES[5],
     productId: p.id,
     stageKey: "sampling",
-    stageData: sampling
-  }, /*#__PURE__*/React.createElement("div", {
+    stageData: p.stages.sampling || {}
+  }, hasVariants && /*#__PURE__*/React.createElement(VariantSelector, {
+    p: p,
+    selectedId: selectedSV?.id,
+    onSelect: setSamplingVId
+  }), /*#__PURE__*/React.createElement("div", {
     className: "record-list"
-  }, (sampling.rounds || []).map((r, idx) => /*#__PURE__*/React.createElement(RecordCard, {
+  }, samplingRounds.map((r, idx) => /*#__PURE__*/React.createElement(RecordCard, {
     key: r.id,
     index: r.round || idx + 1,
     title: `打样轮次 #${r.round || idx + 1}`,
     color: STAGES[5].color,
     status: r.status,
     isFinal: r.isFinal,
-    onStatusChange: v => updateRecord(p.id, 'sampling', 'rounds', r.id, {
+    onStatusChange: v => doUpdateRound(r.id, {
       status: v
     }),
-    onRemove: () => removeRecord(p.id, 'sampling', 'rounds', r.id)
+    onRemove: () => doRemoveRound(r.id)
   }, /*#__PURE__*/React.createElement("div", {
     className: "fieldgrid cols-4"
   }, /*#__PURE__*/React.createElement(EditField, {
@@ -176,7 +301,7 @@ function TabSup({
     type: "date",
     mono: true,
     value: r.orderDate,
-    onChange: v => updateRecord(p.id, 'sampling', 'rounds', r.id, {
+    onChange: v => doUpdateRound(r.id, {
       orderDate: v
     })
   }), /*#__PURE__*/React.createElement(EditField, {
@@ -185,7 +310,7 @@ function TabSup({
     mono: true,
     value: r.qty,
     suffix: "pcs",
-    onChange: v => updateRecord(p.id, 'sampling', 'rounds', r.id, {
+    onChange: v => doUpdateRound(r.id, {
       qty: v
     })
   }), /*#__PURE__*/React.createElement(EditField, {
@@ -194,7 +319,7 @@ function TabSup({
     mono: true,
     prefix: "\xA5",
     value: r.cost,
-    onChange: v => updateRecord(p.id, 'sampling', 'rounds', r.id, {
+    onChange: v => doUpdateRound(r.id, {
       cost: v
     })
   }), /*#__PURE__*/React.createElement(EditField, {
@@ -202,7 +327,7 @@ function TabSup({
     type: "date",
     mono: true,
     value: r.receivedDate,
-    onChange: v => updateRecord(p.id, 'sampling', 'rounds', r.id, {
+    onChange: v => doUpdateRound(r.id, {
       receivedDate: v
     })
   }), /*#__PURE__*/React.createElement(EditField, {
@@ -210,7 +335,7 @@ function TabSup({
     wide: true,
     multi: true,
     value: r.result,
-    onChange: v => updateRecord(p.id, 'sampling', 'rounds', r.id, {
+    onChange: v => doUpdateRound(r.id, {
       result: v
     })
   })), /*#__PURE__*/React.createElement("label", {
@@ -218,15 +343,7 @@ function TabSup({
   }, /*#__PURE__*/React.createElement("input", {
     type: "checkbox",
     checked: !!r.isFinal,
-    onChange: e => {
-      const next = (sampling.rounds || []).map(x => ({
-        ...x,
-        isFinal: x.id === r.id ? e.target.checked : e.target.checked ? false : x.isFinal
-      }));
-      updateStage(p.id, 'sampling', {
-        rounds: next
-      });
-    }
+    onChange: e => doSetFinal(r.id, e.target.checked)
   }), /*#__PURE__*/React.createElement("span", null, "\u6807\u8BB0\u4E3A\u6700\u7EC8\u7248\u672C"))))), /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 10
@@ -234,8 +351,8 @@ function TabSup({
   }, /*#__PURE__*/React.createElement(AddRecordButton, {
     label: "\u6DFB\u52A0\u6253\u6837\u8F6E\u6B21",
     onClick: () => {
-      const nextRound = (sampling.rounds || []).reduce((m, r) => Math.max(m, r.round || 0), 0) + 1;
-      addRecord(p.id, 'sampling', 'rounds', {
+      const nextRound = samplingRounds.reduce((m, r) => Math.max(m, r.round || 0), 0) + 1;
+      doAddRound({
         round: nextRound,
         orderDate: '',
         qty: 0,
@@ -477,7 +594,13 @@ function TabProd({
   const {
     addRecord,
     updateRecord,
-    removeRecord
+    removeRecord,
+    addBatchItem,
+    updateBatchItem,
+    removeBatchItem,
+    addShipmentItem,
+    updateShipmentItem,
+    removeShipmentItem
   } = useProducts();
   const prod = p.stages.production || {
     batches: []
@@ -488,6 +611,8 @@ function TabProd({
   const ship = p.stages.shipment || {
     records: []
   };
+  const variants = p.variants || [];
+  const hasVariants = variants.length > 0;
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(StageCard, {
     stage: STAGES[9],
     productId: p.id,
@@ -579,7 +704,73 @@ function TabProd({
     onChange: v => updateRecord(p.id, 'production', 'batches', b.id, {
       note: v
     })
-  }))))), /*#__PURE__*/React.createElement("div", {
+  })), hasVariants && /*#__PURE__*/React.createElement("div", {
+    className: "sku-items-block"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "sku-items-hdr"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "sku-items-title"
+  }, "SKU \u660E\u7EC6"), /*#__PURE__*/React.createElement("span", {
+    className: "sku-items-sum mono"
+  }, "\u5171 ", (b.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0), " pcs"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-sm btn-add",
+    onClick: () => {
+      const v0 = variants[0];
+      addBatchItem(p.id, b.id, {
+        variantId: v0?.id || '',
+        variantName: v0?.name || v0?.sku || 'SKU',
+        qty: 0,
+        unitPrice: 0
+      });
+    }
+  }, "+ \u6DFB\u52A0 SKU")), /*#__PURE__*/React.createElement("table", {
+    className: "sku-items-table"
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "\u53D8\u4F53"), /*#__PURE__*/React.createElement("th", {
+    className: "num"
+  }, "\u6570\u91CF"), /*#__PURE__*/React.createElement("th", {
+    className: "num"
+  }, "\u5355\u4EF7(\xA5)"), /*#__PURE__*/React.createElement("th", {
+    className: "num"
+  }, "\u5C0F\u8BA1(\xA5)"), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, (b.items || []).map(item => /*#__PURE__*/React.createElement("tr", {
+    key: item.id
+  }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("select", {
+    className: "cell",
+    value: item.variantId,
+    onChange: e => {
+      const v = variants.find(v => v.id === e.target.value);
+      updateBatchItem(p.id, b.id, item.id, {
+        variantId: v?.id || '',
+        variantName: v?.name || v?.sku || 'SKU'
+      });
+    }
+  }, variants.map(v => /*#__PURE__*/React.createElement("option", {
+    key: v.id,
+    value: v.id
+  }, v.name || v.colorOrSize || v.sku || 'SKU')))), /*#__PURE__*/React.createElement("td", {
+    className: "num"
+  }, /*#__PURE__*/React.createElement("input", {
+    className: "cell mono",
+    type: "number",
+    value: item.qty,
+    onChange: e => updateBatchItem(p.id, b.id, item.id, {
+      qty: Number(e.target.value)
+    })
+  })), /*#__PURE__*/React.createElement("td", {
+    className: "num"
+  }, /*#__PURE__*/React.createElement("input", {
+    className: "cell mono",
+    type: "number",
+    step: "0.01",
+    value: item.unitPrice,
+    onChange: e => updateBatchItem(p.id, b.id, item.id, {
+      unitPrice: Number(e.target.value)
+    })
+  })), /*#__PURE__*/React.createElement("td", {
+    className: "num"
+  }, "\xA5", ((Number(item.qty) || 0) * (Number(item.unitPrice) || 0)).toFixed(2)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("button", {
+    className: "row-del",
+    onClick: () => removeBatchItem(p.id, b.id, item.id)
+  }, "\u2715")))))))))), /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 10
     }
@@ -596,7 +787,8 @@ function TabProd({
         depositPct: 30,
         depositAmt: 0,
         expectedShip: '',
-        note: ''
+        note: '',
+        items: []
       });
     }
   }))), /*#__PURE__*/React.createElement(StageCard, {
@@ -731,7 +923,56 @@ function TabProd({
     onChange: v => updateRecord(p.id, 'shipment', 'records', r.id, {
       etaFBA: v
     })
-  }))))), /*#__PURE__*/React.createElement("div", {
+  })), hasVariants && /*#__PURE__*/React.createElement("div", {
+    className: "sku-items-block"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "sku-items-hdr"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "sku-items-title"
+  }, "SKU \u660E\u7EC6"), /*#__PURE__*/React.createElement("span", {
+    className: "sku-items-sum mono"
+  }, "\u5171 ", (r.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0), " pcs"), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-sm btn-add",
+    onClick: () => {
+      const v0 = variants[0];
+      addShipmentItem(p.id, r.id, {
+        variantId: v0?.id || '',
+        variantName: v0?.name || v0?.sku || 'SKU',
+        qty: 0
+      });
+    }
+  }, "+ \u6DFB\u52A0 SKU")), /*#__PURE__*/React.createElement("table", {
+    className: "sku-items-table"
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "\u53D8\u4F53"), /*#__PURE__*/React.createElement("th", {
+    className: "num"
+  }, "\u6570\u91CF"), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, (r.items || []).map(item => /*#__PURE__*/React.createElement("tr", {
+    key: item.id
+  }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("select", {
+    className: "cell",
+    value: item.variantId,
+    onChange: e => {
+      const v = variants.find(v => v.id === e.target.value);
+      updateShipmentItem(p.id, r.id, item.id, {
+        variantId: v?.id || '',
+        variantName: v?.name || v?.sku || 'SKU'
+      });
+    }
+  }, variants.map(v => /*#__PURE__*/React.createElement("option", {
+    key: v.id,
+    value: v.id
+  }, v.name || v.colorOrSize || v.sku || 'SKU')))), /*#__PURE__*/React.createElement("td", {
+    className: "num"
+  }, /*#__PURE__*/React.createElement("input", {
+    className: "cell mono",
+    type: "number",
+    value: item.qty,
+    onChange: e => updateShipmentItem(p.id, r.id, item.id, {
+      qty: Number(e.target.value)
+    })
+  })), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("button", {
+    className: "row-del",
+    onClick: () => removeShipmentItem(p.id, r.id, item.id)
+  }, "\u2715")))))))))), /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 10
     }
@@ -744,7 +985,8 @@ function TabProd({
       tracking: '',
       qty: 0,
       etaPort: '',
-      etaFBA: ''
+      etaFBA: '',
+      items: []
     })
   }))));
 }
@@ -754,13 +996,22 @@ function TabOps({
   p
 }) {
   const {
-    updateStage
+    updateStage,
+    updateVariantStage
   } = useProducts();
+  const variants = p.variants || [];
+  const hasVariants = variants.length > 0;
+  const [listingVId, setListingVId] = React.useState(variants[0]?.id || null);
+  const [promoVId, setPromoVId] = React.useState(variants[0]?.id || null);
+  const selectedLV = variants.find(v => v.id === listingVId) || variants[0] || null;
+  const selectedPV = variants.find(v => v.id === promoVId) || variants[0] || null;
   const set = (k, patch) => updateStage(p.id, k, patch);
   const kw = p.stages.keywords || {};
-  const lst = p.stages.listing || {};
   const ho = p.stages.handover || {};
-  const pr = p.stages.promotion || {};
+  const lst = hasVariants ? selectedLV?.stages?.listing || {} : p.stages.listing || {};
+  const pr = hasVariants ? selectedPV?.stages?.promotion || {} : p.stages.promotion || {};
+  const setLst = patch => hasVariants ? updateVariantStage(p.id, selectedLV.id, 'listing', patch) : updateStage(p.id, 'listing', patch);
+  const setPr = patch => hasVariants ? updateVariantStage(p.id, selectedPV.id, 'promotion', patch) : updateStage(p.id, 'promotion', patch);
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(StageCard, {
     stage: STAGES[12],
     productId: p.id,
@@ -793,34 +1044,38 @@ function TabOps({
     stage: STAGES[13],
     productId: p.id,
     stageKey: "listing",
-    stageData: lst
-  }, /*#__PURE__*/React.createElement("div", {
+    stageData: p.stages.listing || {}
+  }, hasVariants && /*#__PURE__*/React.createElement(VariantSelector, {
+    p: p,
+    selectedId: selectedLV?.id,
+    onSelect: setListingVId
+  }), /*#__PURE__*/React.createElement("div", {
     className: "fieldgrid cols-3"
   }, /*#__PURE__*/React.createElement(EditField, {
     label: "ASIN",
     mono: true,
     value: lst.asin,
-    onChange: v => set('listing', {
+    onChange: v => setLst({
       asin: v
     })
   }), /*#__PURE__*/React.createElement(EditField, {
     label: "\u7236 ASIN",
     mono: true,
     value: lst.parentAsin,
-    onChange: v => set('listing', {
+    onChange: v => setLst({
       parentAsin: v
     })
   }), /*#__PURE__*/React.createElement(EditField, {
     label: "SKU",
     mono: true,
-    value: p.sku,
+    value: hasVariants ? selectedLV?.sku || p.sku : p.sku,
     onChange: () => {}
   }), /*#__PURE__*/React.createElement(EditField, {
     label: "\u4E0A\u67B6\u65E5\u671F",
     type: "date",
     mono: true,
     value: lst.launchDate,
-    onChange: v => set('listing', {
+    onChange: v => setLst({
       launchDate: v
     })
   }), /*#__PURE__*/React.createElement(EditField, {
@@ -829,7 +1084,7 @@ function TabOps({
     mono: true,
     prefix: "$",
     value: lst.price,
-    onChange: v => set('listing', {
+    onChange: v => setLst({
       price: v
     })
   })), /*#__PURE__*/React.createElement(EditField, {
@@ -837,7 +1092,7 @@ function TabOps({
     wide: true,
     multi: true,
     value: lst.title,
-    onChange: v => set('listing', {
+    onChange: v => setLst({
       title: v
     })
   })), /*#__PURE__*/React.createElement(StageCard, {
@@ -879,15 +1134,19 @@ function TabOps({
     stage: STAGES[15],
     productId: p.id,
     stageKey: "promotion",
-    stageData: pr
-  }, /*#__PURE__*/React.createElement("div", {
+    stageData: p.stages.promotion || {}
+  }, hasVariants && /*#__PURE__*/React.createElement(VariantSelector, {
+    p: p,
+    selectedId: selectedPV?.id,
+    onSelect: setPromoVId
+  }), /*#__PURE__*/React.createElement("div", {
     className: "fieldgrid cols-3"
   }, /*#__PURE__*/React.createElement(EditField, {
     label: "\u5E7F\u544A\u5F00\u59CB",
     type: "date",
     mono: true,
     value: pr.adStartDate,
-    onChange: v => set('promotion', {
+    onChange: v => setPr({
       adStartDate: v
     })
   }), /*#__PURE__*/React.createElement(EditField, {
@@ -896,7 +1155,7 @@ function TabOps({
     mono: true,
     prefix: "$",
     value: pr.adBudget,
-    onChange: v => set('promotion', {
+    onChange: v => setPr({
       adBudget: v
     })
   }), /*#__PURE__*/React.createElement(EditField, {
@@ -904,7 +1163,7 @@ function TabOps({
     type: "date",
     mono: true,
     value: pr.vineDate,
-    onChange: v => set('promotion', {
+    onChange: v => setPr({
       vineDate: v
     })
   }), /*#__PURE__*/React.createElement(EditField, {
@@ -912,7 +1171,7 @@ function TabOps({
     type: "number",
     mono: true,
     value: pr.vineUnits,
-    onChange: v => set('promotion', {
+    onChange: v => setPr({
       vineUnits: v
     })
   }), /*#__PURE__*/React.createElement(EditField, {
@@ -920,7 +1179,7 @@ function TabOps({
     type: "date",
     mono: true,
     value: pr.firstReviewDate,
-    onChange: v => set('promotion', {
+    onChange: v => setPr({
       firstReviewDate: v
     })
   }), /*#__PURE__*/React.createElement(EditField, {
@@ -928,7 +1187,7 @@ function TabOps({
     wide: true,
     multi: true,
     value: pr.strategy,
-    onChange: v => set('promotion', {
+    onChange: v => setPr({
       strategy: v
     })
   }))));
@@ -946,8 +1205,13 @@ function TabReview({
     addSubShipment,
     updateSubShipment,
     removeSubShipment,
-    addLog
+    addLog,
+    addReorderItem,
+    updateReorderItem,
+    removeReorderItem
   } = useProducts();
+  const variants = p.variants || [];
+  const hasVariants = variants.length > 0;
   const ro = p.stages.reorder || {
     records: []
   };
@@ -1107,7 +1371,73 @@ function TabReview({
       onChange: v => updateRecord(p.id, 'reorder', 'records', r.id, {
         actualEta: v
       })
-    })), /*#__PURE__*/React.createElement("div", {
+    })), hasVariants && /*#__PURE__*/React.createElement("div", {
+      className: "sku-items-block"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "sku-items-hdr"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "sku-items-title"
+    }, "SKU \u660E\u7EC6"), /*#__PURE__*/React.createElement("span", {
+      className: "sku-items-sum mono"
+    }, "\u5171 ", (r.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0), " pcs \xB7 \xA5", (r.items || []).reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.unitPrice) || 0), 0).toFixed(2)), /*#__PURE__*/React.createElement("button", {
+      className: "btn btn-sm btn-add",
+      onClick: () => {
+        const v0 = variants[0];
+        addReorderItem(p.id, r.id, {
+          variantId: v0?.id || '',
+          variantName: v0?.name || v0?.sku || 'SKU',
+          qty: 0,
+          unitPrice: 0
+        });
+      }
+    }, "+ \u6DFB\u52A0 SKU")), /*#__PURE__*/React.createElement("table", {
+      className: "sku-items-table"
+    }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "\u53D8\u4F53"), /*#__PURE__*/React.createElement("th", {
+      className: "num"
+    }, "\u6570\u91CF"), /*#__PURE__*/React.createElement("th", {
+      className: "num"
+    }, "\u5355\u4EF7(\xA5)"), /*#__PURE__*/React.createElement("th", {
+      className: "num"
+    }, "\u5C0F\u8BA1(\xA5)"), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, (r.items || []).map(item => /*#__PURE__*/React.createElement("tr", {
+      key: item.id
+    }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("select", {
+      className: "cell",
+      value: item.variantId,
+      onChange: e => {
+        const v = variants.find(v => v.id === e.target.value);
+        updateReorderItem(p.id, r.id, item.id, {
+          variantId: v?.id || '',
+          variantName: v?.name || v?.sku || 'SKU'
+        });
+      }
+    }, variants.map(v => /*#__PURE__*/React.createElement("option", {
+      key: v.id,
+      value: v.id
+    }, v.name || v.colorOrSize || v.sku || 'SKU')))), /*#__PURE__*/React.createElement("td", {
+      className: "num"
+    }, /*#__PURE__*/React.createElement("input", {
+      className: "cell mono",
+      type: "number",
+      value: item.qty,
+      onChange: e => updateReorderItem(p.id, r.id, item.id, {
+        qty: Number(e.target.value)
+      })
+    })), /*#__PURE__*/React.createElement("td", {
+      className: "num"
+    }, /*#__PURE__*/React.createElement("input", {
+      className: "cell mono",
+      type: "number",
+      step: "0.01",
+      value: item.unitPrice,
+      onChange: e => updateReorderItem(p.id, r.id, item.id, {
+        unitPrice: Number(e.target.value)
+      })
+    })), /*#__PURE__*/React.createElement("td", {
+      className: "num"
+    }, "\xA5", ((Number(item.qty) || 0) * (Number(item.unitPrice) || 0)).toFixed(2)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("button", {
+      className: "row-del",
+      onClick: () => removeReorderItem(p.id, r.id, item.id)
+    }, "\u2715"))))))), /*#__PURE__*/React.createElement("div", {
       className: "sub-ship-block"
     }, /*#__PURE__*/React.createElement("div", {
       className: "sub-ship-hdr"
@@ -1225,6 +1555,7 @@ function TabReview({
       carrier: '',
       etaDate: '',
       actualEta: '',
+      items: [],
       subShipments: []
     })
   }))), /*#__PURE__*/React.createElement(StageCard, {
@@ -1386,6 +1717,7 @@ function Detail({
     }
   }, "\u8BF7\u4ECE\u5DE6\u4FA7\u9009\u62E9\u4E00\u4E2A\u4EA7\u54C1"));
   const tabCounts = {
+    variants: (p.variants || []).length,
     eval: STAGES.filter(s => s.tab === 'eval').length,
     sup: STAGES.filter(s => s.tab === 'sup').length,
     design: STAGES.filter(s => s.tab === 'design').length,
@@ -1560,6 +1892,8 @@ function Detail({
     className: "detail-body"
   }, tab === 'eval' && /*#__PURE__*/React.createElement(TabEval, {
     p: p
+  }), tab === 'variants' && /*#__PURE__*/React.createElement(TabVariants, {
+    p: p
   }), tab === 'sup' && /*#__PURE__*/React.createElement(TabSup, {
     p: p
   }), tab === 'design' && /*#__PURE__*/React.createElement(TabDesign, {
@@ -1573,6 +1907,7 @@ function Detail({
   })));
 }
 window.Detail = Detail;
+window.TabVariants = TabVariants;
 window.TabSup = TabSup;
 window.TabDesign = TabDesign;
 window.TabProd = TabProd;

@@ -115,6 +115,10 @@ const TABS = [{
   icon: '📋',
   name: '立项评估'
 }, {
+  key: 'variants',
+  icon: '🔢',
+  name: 'SKU 变体'
+}, {
   key: 'sup',
   icon: '🏭',
   name: '供应商/打样'

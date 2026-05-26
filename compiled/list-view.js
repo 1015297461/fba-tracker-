@@ -248,11 +248,16 @@ function ProfitCard({
 }) {
   const {
     updateStage,
-    update
+    update,
+    updateVariantStage
   } = useProducts();
-  const pr = p.stages.profit;
+  const variants = p.variants || [];
+  const hasVariants = variants.length > 0;
+  const [profitVId, setProfitVId] = React.useState(variants[0]?.id || null);
+  const selectedPV = variants.find(v => v.id === profitVId) || variants[0] || null;
+  const pr = hasVariants ? selectedPV?.stages?.profit || {} : p.stages.profit;
   const fx = Number(p.fxRate) || window.DEFAULT_FX || 7.20;
-  const set = patch => updateStage(p.id, 'profit', patch);
+  const set = hasVariants ? patch => updateVariantStage(p.id, selectedPV.id, 'profit', patch) : patch => updateStage(p.id, 'profit', patch);
 
   // Inputs
   const targetPrice = Number(pr.targetPrice) || 0; // USD
@@ -281,18 +286,23 @@ function ProfitCard({
   const netProfit = grossProfit - referralFee - adFee - returnCost - otherUsd;
   const margin = targetPrice ? netProfit / targetPrice * 100 : 0;
   const marginCls = margin >= 20 ? 'green' : margin >= 10 ? 'orange' : 'red';
+  const bomRef = hasVariants ? selectedPV?.stages?.bom || {} : p.stages.bom;
   return /*#__PURE__*/React.createElement(StageCard, {
     stage: STAGES[2],
     productId: p.id,
     stageKey: "profit",
-    stageData: pr,
+    stageData: p.stages.profit,
     extraHeader: /*#__PURE__*/React.createElement("span", {
       className: `decision-pill ${pr.decision || 'hold'}`,
       style: {
         marginLeft: 6
       }
     }, pr.decision === 'pass' ? '✓ 通过立项' : pr.decision === 'hold' ? '⏸ 暂缓观察' : pr.decision === 'reject' ? '✗ 否决' : '— 待决策')
-  }, /*#__PURE__*/React.createElement("div", {
+  }, hasVariants && /*#__PURE__*/React.createElement(VariantSelector, {
+    p: p,
+    selectedId: selectedPV?.id,
+    onSelect: setProfitVId
+  }), /*#__PURE__*/React.createElement("div", {
     className: "currency-bar"
   }, /*#__PURE__*/React.createElement("span", {
     className: "cb-label"
@@ -498,10 +508,10 @@ function ProfitCard({
     style: {
       color: 'var(--ink)'
     }
-  }, "\xA5", (p.stages.bom.items || []).reduce((s, i) => s + i.qty * i.unitCost, 0).toFixed(2))), /*#__PURE__*/React.createElement("button", {
+  }, "\xA5", (bomRef.items || []).reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.unitCost) || 0), 0).toFixed(2))), /*#__PURE__*/React.createElement("button", {
     className: "btn btn-sm",
     onClick: () => {
-      const total = (p.stages.bom.items || []).reduce((s, i) => s + i.qty * i.unitCost, 0);
+      const total = (bomRef.items || []).reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.unitCost) || 0), 0);
       set({
         cogs: +total.toFixed(2)
       });
@@ -599,10 +609,17 @@ function BomCard({
   p
 }) {
   const {
-    updateStage
+    updateStage,
+    updateVariantStage
   } = useProducts();
   const stage = STAGES[3];
-  const bom = p.stages.bom || {
+  const variants = p.variants || [];
+  const hasVariants = variants.length > 0;
+  const [bomVId, setBomVId] = React.useState(variants[0]?.id || null);
+  const selectedBV = variants.find(v => v.id === bomVId) || variants[0] || null;
+  const bom = hasVariants ? selectedBV?.stages?.bom || {
+    items: []
+  } : p.stages.bom || {
     items: []
   };
   const items = bom.items || [];
@@ -611,25 +628,38 @@ function BomCard({
       ...i,
       ...patch
     } : i);
-    updateStage(p.id, 'bom', {
+    hasVariants ? updateVariantStage(p.id, selectedBV.id, 'bom', {
+      items: next
+    }) : updateStage(p.id, 'bom', {
       items: next
     });
   };
-  const removeItem = id => updateStage(p.id, 'bom', {
-    items: items.filter(i => i.id !== id)
-  });
-  const addItem = () => updateStage(p.id, 'bom', {
-    items: [...items, {
+  const removeItem = id => {
+    const next = items.filter(i => i.id !== id);
+    hasVariants ? updateVariantStage(p.id, selectedBV.id, 'bom', {
+      items: next
+    }) : updateStage(p.id, 'bom', {
+      items: next
+    });
+  };
+  const addItem = () => {
+    const next = [...items, {
       id: window.uid(),
       name: '',
       spec: '',
       cat: '其他',
       qty: 1,
       unitCost: 0
-    }]
-  });
+    }];
+    hasVariants ? updateVariantStage(p.id, selectedBV.id, 'bom', {
+      items: next
+    }) : updateStage(p.id, 'bom', {
+      items: next
+    });
+  };
   const total = items.reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.unitCost) || 0), 0);
-  const cogs = Number(p.stages.profit.cogs) || total;
+  const profitData = hasVariants ? selectedBV?.stages?.profit || {} : p.stages.profit;
+  const cogs = Number(profitData.cogs) || total;
   const coverage = cogs > 0 ? Math.min(100, total / cogs * 100) : 0;
   const catMap = {};
   items.forEach(i => {
@@ -677,11 +707,15 @@ function BomCard({
     stage: stage,
     productId: p.id,
     stageKey: "bom",
-    stageData: bom,
+    stageData: p.stages.bom || {},
     extraHeader: /*#__PURE__*/React.createElement("span", {
       className: "bom-cov-badge mono"
     }, coverage.toFixed(0), "% \u8986\u76D6 \xB7 \xA5", total.toFixed(2))
-  }, /*#__PURE__*/React.createElement("div", {
+  }, hasVariants && /*#__PURE__*/React.createElement(VariantSelector, {
+    p: p,
+    selectedId: selectedBV?.id,
+    onSelect: setBomVId
+  }), /*#__PURE__*/React.createElement("div", {
     className: "bom-section"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("table", {
     className: "bom-table editable"
@@ -791,7 +825,9 @@ function BomCard({
     multi: true,
     wide: true,
     value: bom.notes,
-    onChange: v => updateStage(p.id, 'bom', {
+    onChange: v => hasVariants ? updateVariantStage(p.id, selectedBV.id, 'bom', {
+      notes: v
+    }) : updateStage(p.id, 'bom', {
       notes: v
     })
   }))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
@@ -890,7 +926,7 @@ function BomCard({
     }, pct.toFixed(0), "%"));
   }))), items.length > 0 && /*#__PURE__*/React.createElement(SensitivityPanel, {
     items: items,
-    profit: p.stages.profit,
+    profit: profitData,
     fxRate: p.fxRate
   }))));
 }

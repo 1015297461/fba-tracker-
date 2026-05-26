@@ -1385,7 +1385,29 @@ function AddRecordButton({
     onClick: onClick
   }, "+ ", label);
 }
+
+// ===== Variant selector (shared across list-view.jsx and tabs.jsx) =====
+function VariantSelector({
+  p,
+  selectedId,
+  onSelect
+}) {
+  const variants = p.variants || [];
+  if (!variants.length) return null;
+  return /*#__PURE__*/React.createElement("div", {
+    className: "variant-selector"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "vs-label"
+  }, "\u53D8\u4F53\uFF1A"), variants.map(v => /*#__PURE__*/React.createElement("button", {
+    key: v.id,
+    className: 'vs-tab' + (selectedId === v.id ? ' active' : ''),
+    onClick: () => onSelect(v.id)
+  }, v.name || v.colorOrSize || v.sku || 'SKU')));
+}
 Object.assign(window, {
+  _variantProgress,
+  _variantInUse,
+  _buildBlankVariant,
   ProductCtx,
   ProductsProvider,
   useProducts,
@@ -1394,5 +1416,6 @@ Object.assign(window, {
   EditField,
   StageCard,
   RecordCard,
-  AddRecordButton
+  AddRecordButton,
+  VariantSelector
 });

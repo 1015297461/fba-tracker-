@@ -850,7 +850,26 @@ function AddRecordButton({ label, onClick }) {
   );
 }
 
+// ===== Variant selector (shared across list-view.jsx and tabs.jsx) =====
+function VariantSelector({ p, selectedId, onSelect }) {
+  const variants = p.variants || [];
+  if (!variants.length) return null;
+  return (
+    <div className="variant-selector">
+      <span className="vs-label">变体：</span>
+      {variants.map(v => (
+        <button key={v.id}
+          className={'vs-tab' + (selectedId === v.id ? ' active' : '')}
+          onClick={() => onSelect(v.id)}>
+          {v.name || v.colorOrSize || v.sku || 'SKU'}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 Object.assign(window, {
+  _variantProgress, _variantInUse, _buildBlankVariant,
   ProductCtx, ProductsProvider, useProducts,
-  StatusChip, StatusSelect, EditField, StageCard, RecordCard, AddRecordButton,
+  StatusChip, StatusSelect, EditField, StageCard, RecordCard, AddRecordButton, VariantSelector,
 });

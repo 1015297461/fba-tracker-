@@ -1,12 +1,88 @@
 /* eslint-disable no-undef */
 // Tabs: 供应商/打样, 内容设计, 生产出货, 上架运营, 返单复盘 — fully editable
 
+// ============ TAB: SKU 变体管理 ============
+function TabVariants({ p }) {
+  const { addVariant, updateVariant, removeVariant } = useProducts();
+  const variants = p.variants || [];
+  return (
+    <div className="stage-card">
+      <div className="stage-card-hdr">
+        <div className="stage-card-bar" style={{background:'#3b82f6'}}></div>
+        <span className="stage-card-title">SKU 变体管理</span>
+        <span style={{marginLeft:'auto', fontSize:11, color:'var(--ink-4)'}}>
+          {variants.length ? variants.length + ' 个变体' : '单 SKU（无变体）'}
+        </span>
+      </div>
+      <div className="stage-card-body">
+        {variants.length === 0 && (
+          <p className="variants-empty-hint">
+            当前为单 SKU 模式。添加变体后，利润测算、BOM、打样、Listing、推广将支持按变体独立记录；生产订单 / 返单可同时包含多个 SKU。
+          </p>
+        )}
+        <div className="variant-cards">
+          {variants.map((v, idx) => (
+            <div key={v.id} className="variant-card">
+              <div className="variant-card-no">{idx + 1}</div>
+              <div className="variant-card-body">
+                <div className="fieldgrid cols-3">
+                  <EditField label="变体名称" value={v.name}
+                    onChange={val => updateVariant(p.id, v.id, { name: val })} />
+                  <EditField label="子 SKU / 型号" mono value={v.sku}
+                    onChange={val => updateVariant(p.id, v.id, { sku: val })} />
+                  <EditField label="颜色/尺寸/配置" value={v.colorOrSize}
+                    onChange={val => updateVariant(p.id, v.id, { colorOrSize: val })} />
+                </div>
+              </div>
+              <div className="variant-card-progress">
+                <div className="vp-bar"><div className="vp-fill" style={{width: _variantProgress(v) + '%'}}></div></div>
+                <span className="vp-pct">{_variantProgress(v)}%</span>
+              </div>
+              <button className="variant-del"
+                onClick={() => {
+                  if (_variantInUse(p, v.id)) { alert('该变体已在订单/出货/返单中被引用，无法删除。'); return; }
+                  if (confirm('确定删除变体「' + (v.name || v.sku || 'SKU ' + (idx+1)) + '」？')) removeVariant(p.id, v.id);
+                }}>✕</button>
+            </div>
+          ))}
+        </div>
+        <div style={{marginTop:12}}>
+          <AddRecordButton label="添加变体" onClick={() => addVariant(p.id, { name:'', sku:'', colorOrSize:'' })} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ============ TAB: 供应商/打样 ============
 function TabSup({ p }) {
-  const { updateStage, addRecord, updateRecord, removeRecord } = useProducts();
+  const { updateStage, addRecord, updateRecord, removeRecord,
+          updateVariantStage, addVariantRecord, updateVariantRecord, removeVariantRecord } = useProducts();
   const sup = p.stages.supplier || { suppliers:[] };
   const sampling = p.stages.sampling || { rounds:[] };
   const cert = p.stages.cert || {};
+  const variants = p.variants || [];
+  const hasVariants = variants.length > 0;
+  const [samplingVId, setSamplingVId] = React.useState(variants[0]?.id || null);
+  const selectedSV = variants.find(v => v.id === samplingVId) || variants[0] || null;
+  const samplingData = hasVariants ? (selectedSV?.stages?.sampling || { rounds:[] }) : sampling;
+  const samplingRounds = samplingData.rounds || [];
+
+  const doAddRound = (data) => hasVariants
+    ? addVariantRecord(p.id, selectedSV.id, 'sampling', 'rounds', data)
+    : addRecord(p.id, 'sampling', 'rounds', data);
+  const doUpdateRound = (rid, patch) => hasVariants
+    ? updateVariantRecord(p.id, selectedSV.id, 'sampling', 'rounds', rid, patch)
+    : updateRecord(p.id, 'sampling', 'rounds', rid, patch);
+  const doRemoveRound = (rid) => hasVariants
+    ? removeVariantRecord(p.id, selectedSV.id, 'sampling', 'rounds', rid)
+    : removeRecord(p.id, 'sampling', 'rounds', rid);
+  const doSetFinal = (rid, checked) => {
+    const next = samplingRounds.map(x => ({ ...x, isFinal: x.id === rid ? checked : (checked ? false : x.isFinal) }));
+    hasVariants
+      ? updateVariantStage(p.id, selectedSV.id, 'sampling', { rounds: next })
+      : updateStage(p.id, 'sampling', { rounds: next });
+  };
 
   return (
     <>
@@ -55,33 +131,31 @@ function TabSup({ p }) {
         </div>
       </StageCard>
 
-      <StageCard stage={STAGES[5]} productId={p.id} stageKey="sampling" stageData={sampling}>
+      <StageCard stage={STAGES[5]} productId={p.id} stageKey="sampling" stageData={p.stages.sampling || {}}>
+        {hasVariants && <VariantSelector p={p} selectedId={selectedSV?.id} onSelect={setSamplingVId} />}
         <div className="record-list">
-          {(sampling.rounds || []).map((r, idx) => (
+          {samplingRounds.map((r, idx) => (
             <RecordCard key={r.id} index={r.round || idx+1} title={`打样轮次 #${r.round || idx+1}`}
               color={STAGES[5].color}
               status={r.status}
               isFinal={r.isFinal}
-              onStatusChange={v => updateRecord(p.id, 'sampling', 'rounds', r.id, { status:v })}
-              onRemove={() => removeRecord(p.id, 'sampling', 'rounds', r.id)}>
+              onStatusChange={v => doUpdateRound(r.id, { status:v })}
+              onRemove={() => doRemoveRound(r.id)}>
               <div className="fieldgrid cols-4">
                 <EditField label="下单日期" type="date" mono value={r.orderDate}
-                  onChange={v => updateRecord(p.id, 'sampling', 'rounds', r.id, { orderDate:v })} />
+                  onChange={v => doUpdateRound(r.id, { orderDate:v })} />
                 <EditField label="数量" type="number" mono value={r.qty} suffix="pcs"
-                  onChange={v => updateRecord(p.id, 'sampling', 'rounds', r.id, { qty:v })} />
+                  onChange={v => doUpdateRound(r.id, { qty:v })} />
                 <EditField label="费用 (¥)" type="number" mono prefix="¥" value={r.cost}
-                  onChange={v => updateRecord(p.id, 'sampling', 'rounds', r.id, { cost:v })} />
+                  onChange={v => doUpdateRound(r.id, { cost:v })} />
                 <EditField label="收样日期" type="date" mono value={r.receivedDate}
-                  onChange={v => updateRecord(p.id, 'sampling', 'rounds', r.id, { receivedDate:v })} />
+                  onChange={v => doUpdateRound(r.id, { receivedDate:v })} />
                 <EditField label="评审结果" wide multi value={r.result}
-                  onChange={v => updateRecord(p.id, 'sampling', 'rounds', r.id, { result:v })} />
+                  onChange={v => doUpdateRound(r.id, { result:v })} />
               </div>
               <label className="final-toggle">
                 <input type="checkbox" checked={!!r.isFinal}
-                  onChange={e => {
-                    const next = (sampling.rounds || []).map(x => ({ ...x, isFinal: x.id === r.id ? e.target.checked : (e.target.checked ? false : x.isFinal) }));
-                    updateStage(p.id, 'sampling', { rounds: next });
-                  }} />
+                  onChange={e => doSetFinal(r.id, e.target.checked)} />
                 <span>标记为最终版本</span>
               </label>
             </RecordCard>
@@ -89,8 +163,8 @@ function TabSup({ p }) {
         </div>
         <div style={{marginTop:10}}>
           <AddRecordButton label="添加打样轮次" onClick={() => {
-            const nextRound = ((sampling.rounds || []).reduce((m, r) => Math.max(m, r.round || 0), 0)) + 1;
-            addRecord(p.id, 'sampling', 'rounds', { round: nextRound, orderDate:'', qty:0, cost:0, receivedDate:'', result:'', isFinal:false });
+            const nextRound = (samplingRounds.reduce((m, r) => Math.max(m, r.round || 0), 0)) + 1;
+            doAddRound({ round: nextRound, orderDate:'', qty:0, cost:0, receivedDate:'', result:'', isFinal:false });
           }} />
         </div>
       </StageCard>
@@ -194,10 +268,14 @@ function TabDesign({ p }) {
 
 // ============ TAB: 生产出货 ============
 function TabProd({ p }) {
-  const { addRecord, updateRecord, removeRecord } = useProducts();
+  const { addRecord, updateRecord, removeRecord,
+          addBatchItem, updateBatchItem, removeBatchItem,
+          addShipmentItem, updateShipmentItem, removeShipmentItem } = useProducts();
   const prod = p.stages.production || { batches:[] };
   const qc = p.stages.qc || { records:[] };
   const ship = p.stages.shipment || { records:[] };
+  const variants = p.variants || [];
+  const hasVariants = variants.length > 0;
 
   return (
     <>
@@ -228,13 +306,49 @@ function TabProd({ p }) {
                 <EditField label="批次备注" wide multi value={b.note}
                   onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { note:v })} />
               </div>
+              {hasVariants && (
+                <div className="sku-items-block">
+                  <div className="sku-items-hdr">
+                    <span className="sku-items-title">SKU 明细</span>
+                    <span className="sku-items-sum mono">
+                      共 {(b.items||[]).reduce((s,i)=>s+(Number(i.qty)||0),0)} pcs
+                    </span>
+                    <button className="btn btn-sm btn-add" onClick={() => {
+                      const v0 = variants[0];
+                      addBatchItem(p.id, b.id, { variantId:v0?.id||'', variantName:v0?.name||v0?.sku||'SKU', qty:0, unitPrice:0 });
+                    }}>+ 添加 SKU</button>
+                  </div>
+                  <table className="sku-items-table">
+                    <thead><tr><th>变体</th><th className="num">数量</th><th className="num">单价(¥)</th><th className="num">小计(¥)</th><th></th></tr></thead>
+                    <tbody>
+                      {(b.items||[]).map(item => (
+                        <tr key={item.id}>
+                          <td>
+                            <select className="cell" value={item.variantId}
+                              onChange={e => {
+                                const v = variants.find(v => v.id === e.target.value);
+                                updateBatchItem(p.id, b.id, item.id, { variantId:v?.id||'', variantName:v?.name||v?.sku||'SKU' });
+                              }}>
+                              {variants.map(v => <option key={v.id} value={v.id}>{v.name||v.colorOrSize||v.sku||'SKU'}</option>)}
+                            </select>
+                          </td>
+                          <td className="num"><input className="cell mono" type="number" value={item.qty} onChange={e => updateBatchItem(p.id, b.id, item.id, { qty:Number(e.target.value) })} /></td>
+                          <td className="num"><input className="cell mono" type="number" step="0.01" value={item.unitPrice} onChange={e => updateBatchItem(p.id, b.id, item.id, { unitPrice:Number(e.target.value) })} /></td>
+                          <td className="num">¥{((Number(item.qty)||0)*(Number(item.unitPrice)||0)).toFixed(2)}</td>
+                          <td><button className="row-del" onClick={() => removeBatchItem(p.id, b.id, item.id)}>✕</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </RecordCard>
           ))}
         </div>
         <div style={{marginTop:10}}>
           <AddRecordButton label="添加生产批次" onClick={() => {
             const idx = (prod.batches || []).length + 1;
-            addRecord(p.id, 'production', 'batches', { batchNo:'B'+idx, orderDate:'', factory:'', qty:0, unitPrice:0, depositPct:30, depositAmt:0, expectedShip:'', note:'' });
+            addRecord(p.id, 'production', 'batches', { batchNo:'B'+idx, orderDate:'', factory:'', qty:0, unitPrice:0, depositPct:30, depositAmt:0, expectedShip:'', note:'', items:[] });
           }} />
         </div>
       </StageCard>
@@ -289,11 +403,45 @@ function TabProd({ p }) {
                 <EditField label="入仓 ETA" type="date" mono value={r.etaFBA}
                   onChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { etaFBA:v })} />
               </div>
+              {hasVariants && (
+                <div className="sku-items-block">
+                  <div className="sku-items-hdr">
+                    <span className="sku-items-title">SKU 明细</span>
+                    <span className="sku-items-sum mono">
+                      共 {(r.items||[]).reduce((s,i)=>s+(Number(i.qty)||0),0)} pcs
+                    </span>
+                    <button className="btn btn-sm btn-add" onClick={() => {
+                      const v0 = variants[0];
+                      addShipmentItem(p.id, r.id, { variantId:v0?.id||'', variantName:v0?.name||v0?.sku||'SKU', qty:0 });
+                    }}>+ 添加 SKU</button>
+                  </div>
+                  <table className="sku-items-table">
+                    <thead><tr><th>变体</th><th className="num">数量</th><th></th></tr></thead>
+                    <tbody>
+                      {(r.items||[]).map(item => (
+                        <tr key={item.id}>
+                          <td>
+                            <select className="cell" value={item.variantId}
+                              onChange={e => {
+                                const v = variants.find(v => v.id === e.target.value);
+                                updateShipmentItem(p.id, r.id, item.id, { variantId:v?.id||'', variantName:v?.name||v?.sku||'SKU' });
+                              }}>
+                              {variants.map(v => <option key={v.id} value={v.id}>{v.name||v.colorOrSize||v.sku||'SKU'}</option>)}
+                            </select>
+                          </td>
+                          <td className="num"><input className="cell mono" type="number" value={item.qty} onChange={e => updateShipmentItem(p.id, r.id, item.id, { qty:Number(e.target.value) })} /></td>
+                          <td><button className="row-del" onClick={() => removeShipmentItem(p.id, r.id, item.id)}>✕</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </RecordCard>
           ))}
         </div>
         <div style={{marginTop:10}}>
-          <AddRecordButton label="添加出货记录" onClick={() => addRecord(p.id, 'shipment', 'records', { shipDate:'', method:'海运', carrier:'', tracking:'', qty:0, etaPort:'', etaFBA:'' })} />
+          <AddRecordButton label="添加出货记录" onClick={() => addRecord(p.id, 'shipment', 'records', { shipDate:'', method:'海运', carrier:'', tracking:'', qty:0, etaPort:'', etaFBA:'', items:[] })} />
         </div>
       </StageCard>
     </>
@@ -302,12 +450,25 @@ function TabProd({ p }) {
 
 // ============ TAB: 上架运营 ============
 function TabOps({ p }) {
-  const { updateStage } = useProducts();
+  const { updateStage, updateVariantStage } = useProducts();
+  const variants = p.variants || [];
+  const hasVariants = variants.length > 0;
+  const [listingVId, setListingVId] = React.useState(variants[0]?.id || null);
+  const [promoVId, setPromoVId] = React.useState(variants[0]?.id || null);
+  const selectedLV = variants.find(v => v.id === listingVId) || variants[0] || null;
+  const selectedPV = variants.find(v => v.id === promoVId) || variants[0] || null;
+
   const set = (k, patch) => updateStage(p.id, k, patch);
   const kw = p.stages.keywords || {};
-  const lst = p.stages.listing || {};
   const ho = p.stages.handover || {};
-  const pr = p.stages.promotion || {};
+  const lst = hasVariants ? (selectedLV?.stages?.listing || {}) : (p.stages.listing || {});
+  const pr = hasVariants ? (selectedPV?.stages?.promotion || {}) : (p.stages.promotion || {});
+  const setLst = (patch) => hasVariants
+    ? updateVariantStage(p.id, selectedLV.id, 'listing', patch)
+    : updateStage(p.id, 'listing', patch);
+  const setPr = (patch) => hasVariants
+    ? updateVariantStage(p.id, selectedPV.id, 'promotion', patch)
+    : updateStage(p.id, 'promotion', patch);
 
   return (
     <>
@@ -321,15 +482,16 @@ function TabOps({ p }) {
         </div>
       </StageCard>
 
-      <StageCard stage={STAGES[13]} productId={p.id} stageKey="listing" stageData={lst}>
+      <StageCard stage={STAGES[13]} productId={p.id} stageKey="listing" stageData={p.stages.listing || {}}>
+        {hasVariants && <VariantSelector p={p} selectedId={selectedLV?.id} onSelect={setListingVId} />}
         <div className="fieldgrid cols-3">
-          <EditField label="ASIN" mono value={lst.asin} onChange={v => set('listing', { asin:v })} />
-          <EditField label="父 ASIN" mono value={lst.parentAsin} onChange={v => set('listing', { parentAsin:v })} />
-          <EditField label="SKU" mono value={p.sku} onChange={() => {}} />
-          <EditField label="上架日期" type="date" mono value={lst.launchDate} onChange={v => set('listing', { launchDate:v })} />
-            <EditField label="售价 ($)" type="number" mono prefix="$" value={lst.price} onChange={v => set('listing', { price:v })} />
+          <EditField label="ASIN" mono value={lst.asin} onChange={v => setLst({ asin:v })} />
+          <EditField label="父 ASIN" mono value={lst.parentAsin} onChange={v => setLst({ parentAsin:v })} />
+          <EditField label="SKU" mono value={hasVariants ? (selectedLV?.sku || p.sku) : p.sku} onChange={() => {}} />
+          <EditField label="上架日期" type="date" mono value={lst.launchDate} onChange={v => setLst({ launchDate:v })} />
+          <EditField label="售价 ($)" type="number" mono prefix="$" value={lst.price} onChange={v => setLst({ price:v })} />
         </div>
-        <EditField label="Listing 标题" wide multi value={lst.title} onChange={v => set('listing', { title:v })} />
+        <EditField label="Listing 标题" wide multi value={lst.title} onChange={v => setLst({ title:v })} />
       </StageCard>
 
       <StageCard stage={STAGES[14]} productId={p.id} stageKey="handover" stageData={ho}>
@@ -342,20 +504,21 @@ function TabOps({ p }) {
         </div>
       </StageCard>
 
-      <StageCard stage={STAGES[15]} productId={p.id} stageKey="promotion" stageData={pr}>
+      <StageCard stage={STAGES[15]} productId={p.id} stageKey="promotion" stageData={p.stages.promotion || {}}>
+        {hasVariants && <VariantSelector p={p} selectedId={selectedPV?.id} onSelect={setPromoVId} />}
         <div className="fieldgrid cols-3">
           <EditField label="广告开始" type="date" mono value={pr.adStartDate}
-            onChange={v => set('promotion', { adStartDate:v })} />
+            onChange={v => setPr({ adStartDate:v })} />
           <EditField label="日预算 ($)" type="number" mono prefix="$" value={pr.adBudget}
-            onChange={v => set('promotion', { adBudget:v })} />
+            onChange={v => setPr({ adBudget:v })} />
           <EditField label="Vine 投放日" type="date" mono value={pr.vineDate}
-            onChange={v => set('promotion', { vineDate:v })} />
+            onChange={v => setPr({ vineDate:v })} />
           <EditField label="Vine 数量" type="number" mono value={pr.vineUnits}
-            onChange={v => set('promotion', { vineUnits:v })} />
+            onChange={v => setPr({ vineUnits:v })} />
           <EditField label="首条评价日" type="date" mono value={pr.firstReviewDate}
-            onChange={v => set('promotion', { firstReviewDate:v })} />
+            onChange={v => setPr({ firstReviewDate:v })} />
           <EditField label="广告策略" wide multi value={pr.strategy}
-            onChange={v => set('promotion', { strategy:v })} />
+            onChange={v => setPr({ strategy:v })} />
         </div>
       </StageCard>
     </>
@@ -364,7 +527,10 @@ function TabOps({ p }) {
 
 // ============ TAB: 返单复盘 ============
 function TabReview({ p }) {
-  const { updateStage, addRecord, updateRecord, removeRecord, addSubShipment, updateSubShipment, removeSubShipment, addLog } = useProducts();
+  const { updateStage, addRecord, updateRecord, removeRecord, addSubShipment, updateSubShipment, removeSubShipment, addLog,
+          addReorderItem, updateReorderItem, removeReorderItem } = useProducts();
+  const variants = p.variants || [];
+  const hasVariants = variants.length > 0;
   const ro = p.stages.reorder || { records:[] };
   const rv = p.stages.review || {};
 
@@ -424,6 +590,45 @@ function TabReview({ p }) {
                     <EditField label="实际到货" type="date" mono value={r.actualEta}
                       onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { actualEta:v })} />
                   </div>
+
+                  {/* SKU 明细 (多变体模式) */}
+                  {hasVariants && (
+                    <div className="sku-items-block">
+                      <div className="sku-items-hdr">
+                        <span className="sku-items-title">SKU 明细</span>
+                        <span className="sku-items-sum mono">
+                          共 {(r.items||[]).reduce((s,i)=>s+(Number(i.qty)||0),0)} pcs ·
+                          ¥{(r.items||[]).reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i.unitPrice)||0),0).toFixed(2)}
+                        </span>
+                        <button className="btn btn-sm btn-add" onClick={() => {
+                          const v0 = variants[0];
+                          addReorderItem(p.id, r.id, { variantId:v0?.id||'', variantName:v0?.name||v0?.sku||'SKU', qty:0, unitPrice:0 });
+                        }}>+ 添加 SKU</button>
+                      </div>
+                      <table className="sku-items-table">
+                        <thead><tr><th>变体</th><th className="num">数量</th><th className="num">单价(¥)</th><th className="num">小计(¥)</th><th></th></tr></thead>
+                        <tbody>
+                          {(r.items||[]).map(item => (
+                            <tr key={item.id}>
+                              <td>
+                                <select className="cell" value={item.variantId}
+                                  onChange={e => {
+                                    const v = variants.find(v => v.id === e.target.value);
+                                    updateReorderItem(p.id, r.id, item.id, { variantId:v?.id||'', variantName:v?.name||v?.sku||'SKU' });
+                                  }}>
+                                  {variants.map(v => <option key={v.id} value={v.id}>{v.name||v.colorOrSize||v.sku||'SKU'}</option>)}
+                                </select>
+                              </td>
+                              <td className="num"><input className="cell mono" type="number" value={item.qty} onChange={e => updateReorderItem(p.id, r.id, item.id, { qty:Number(e.target.value) })} /></td>
+                              <td className="num"><input className="cell mono" type="number" step="0.01" value={item.unitPrice} onChange={e => updateReorderItem(p.id, r.id, item.id, { unitPrice:Number(e.target.value) })} /></td>
+                              <td className="num">¥{((Number(item.qty)||0)*(Number(item.unitPrice)||0)).toFixed(2)}</td>
+                              <td><button className="row-del" onClick={() => removeReorderItem(p.id, r.id, item.id)}>✕</button></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
 
                   {/* Sub-shipments (分批到货) */}
                   <div className="sub-ship-block">
@@ -485,7 +690,7 @@ function TabReview({ p }) {
             orderNo: 'RO-' + new Date().toISOString().slice(0,7).replace('-', '-'),
             supplier:'', orderDate:'', triggerInv:0, qty:0, unitPrice:0, taxRate:13, totalAmount:0,
             shipDate:'', method:'海运', carrier:'', etaDate:'', actualEta:'',
-            subShipments:[],
+            items:[], subShipments:[],
           })} />
         </div>
       </StageCard>
@@ -552,6 +757,7 @@ function Detail({ p }) {
   if (!p) return <div className="detail"><div className="empty-hint" style={{margin:40}}>请从左侧选择一个产品</div></div>;
 
   const tabCounts = {
+    variants: (p.variants || []).length,
     eval: STAGES.filter(s => s.tab === 'eval').length,
     sup: STAGES.filter(s => s.tab === 'sup').length,
     design: STAGES.filter(s => s.tab === 'design').length,
@@ -654,6 +860,7 @@ function Detail({ p }) {
 
       <div className="detail-body">
         {tab === 'eval' && <TabEval p={p} />}
+        {tab === 'variants' && <TabVariants p={p} />}
         {tab === 'sup' && <TabSup p={p} />}
         {tab === 'design' && <TabDesign p={p} />}
         {tab === 'prod' && <TabProd p={p} />}
@@ -665,6 +872,7 @@ function Detail({ p }) {
 }
 
 window.Detail = Detail;
+window.TabVariants = TabVariants;
 window.TabSup = TabSup;
 window.TabDesign = TabDesign;
 window.TabProd = TabProd;
