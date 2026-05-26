@@ -90,12 +90,13 @@ function TabSup({ p }) {
         <table className="sup-table editable">
           <thead>
             <tr>
-              <th style={{width:'22%'}}>供应商</th>
-              <th style={{width:'24%'}}>联系方式</th>
+              <th style={{width:'18%'}}>供应商</th>
+              <th style={{width:'20%'}}>联系方式</th>
               <th style={{textAlign:'right'}}>报价(¥)</th>
               <th style={{textAlign:'right'}}>MOQ</th>
               <th style={{textAlign:'right'}}>周期(天)</th>
               <th style={{textAlign:'right'}}>评分</th>
+              <th style={{width:'20%'}}>备注</th>
               <th></th>
               <th></th>
             </tr>
@@ -109,6 +110,7 @@ function TabSup({ p }) {
                 <td className="num"><input className="cell mono" type="number" value={s.moq} onChange={e => updateRecord(p.id, 'supplier', 'suppliers', s.id, { moq:Number(e.target.value) })} /></td>
                 <td className="num"><input className="cell mono" type="number" value={s.lead} onChange={e => updateRecord(p.id, 'supplier', 'suppliers', s.id, { lead:Number(e.target.value) })} /></td>
                 <td className="num"><input className="cell mono" type="number" value={s.score} onChange={e => updateRecord(p.id, 'supplier', 'suppliers', s.id, { score:Number(e.target.value) })} /></td>
+                <td><input className="cell" value={s.remark||''} placeholder="备注" onChange={e => updateRecord(p.id, 'supplier', 'suppliers', s.id, { remark:e.target.value })} /></td>
                 <td>
                   {s.selected
                     ? <span style={{color:'var(--blue)',fontWeight:600,fontSize:11}}>✓ 已选定</span>
@@ -123,7 +125,7 @@ function TabSup({ p }) {
           </tbody>
         </table>
         <div style={{marginTop:10}}>
-          <AddRecordButton label="添加供应商" onClick={() => addRecord(p.id, 'supplier', 'suppliers', { name:'', contact:'', price:0, moq:0, lead:0, score:0, selected:false })} />
+          <AddRecordButton label="添加供应商" onClick={() => addRecord(p.id, 'supplier', 'suppliers', { name:'', contact:'', price:0, moq:0, lead:0, score:0, remark:'', selected:false })} />
         </div>
         <div style={{marginTop:12}}>
           <EditField label="最终确认备注 (账期/质保/包装要求)" multi wide value={sup.finalNote}
