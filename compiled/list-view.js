@@ -29,7 +29,9 @@ function ProductList({
       className: "pcard-row1"
     }, /*#__PURE__*/React.createElement("span", {
       className: "pcard-name"
-    }, p.name), /*#__PURE__*/React.createElement("span", {
+    }, p.name), (p.variants || []).length > 0 && /*#__PURE__*/React.createElement("span", {
+      className: "pcard-variant-badge"
+    }, p.variants.length, " SKU"), /*#__PURE__*/React.createElement("span", {
       className: `badge badge-${p.status}`
     }, STATUS_LABELS[p.status].label)), /*#__PURE__*/React.createElement("div", {
       className: "pcard-row2"

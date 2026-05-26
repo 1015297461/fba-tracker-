@@ -1617,6 +1617,35 @@ function calcProfit(p) {
     margin
   };
 }
+function calcVariantProfit(variant, fxRate) {
+  const pr = variant?.stages?.profit;
+  if (!pr || !Number(pr.targetPrice)) return null;
+  const fx = Number(fxRate) || window.DEFAULT_FX || 7.20;
+  const price = Number(pr.targetPrice) || 0;
+  const cogsUsd = fx > 0 ? (Number(pr.cogs) || 0) / fx : 0;
+  const shipUsd = fx > 0 ? (Number(pr.shipping) || 0) / fx : 0;
+  const otherUsd = fx > 0 ? (Number(pr.otherCost) || 0) / fx : 0;
+  const fbaFee = Number(pr.fbaFee) || 0;
+  const referral = price * (Number(pr.referralPct || 0) / 100);
+  const adFee = price * (Number(pr.adPct || 0) / 100);
+  const returnCost = price * (Number(pr.returnRate || 0) / 100);
+  const gross = price - fbaFee - shipUsd - cogsUsd;
+  const net = gross - referral - adFee - returnCost - otherUsd;
+  const margin = price ? net / price * 100 : 0;
+  return {
+    price,
+    cogsUsd,
+    shipUsd,
+    otherUsd,
+    fbaFee,
+    referral,
+    adFee,
+    returnCost,
+    gross,
+    net,
+    margin
+  };
+}
 Object.assign(window, {
   STAGES,
   TABS,
@@ -1628,5 +1657,6 @@ Object.assign(window, {
   uid,
   getDone,
   DEFAULT_FX,
-  calcProfit
+  calcProfit,
+  calcVariantProfit
 });

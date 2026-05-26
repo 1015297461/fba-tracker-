@@ -57,6 +57,12 @@ function GanttAll({
   onSelectProduct
 }) {
   const [zoom, setZoom] = React.useState('month');
+  const [expandedGantt, setExpandedGantt] = React.useState(new Set());
+  const toggleGantt = id => setExpandedGantt(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
 
   // Dynamic today (no hardcoding)
   const now = React.useMemo(() => {
@@ -207,22 +213,53 @@ function GanttAll({
       textTransform: 'uppercase',
       letterSpacing: '0.04em'
     }
-  }, "\u4EA7\u54C1"), products.map(p => /*#__PURE__*/React.createElement("div", {
-    key: p.id,
-    className: "gantt-label",
-    onClick: () => onSelectProduct(p.id),
-    style: {
-      cursor: 'pointer'
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    className: `badge badge-${p.status}`,
-    style: {
-      padding: '1px 5px',
-      fontSize: 9
-    }
-  }), /*#__PURE__*/React.createElement("span", {
-    className: "pn"
-  }, p.name)))), /*#__PURE__*/React.createElement("div", {
+  }, "\u4EA7\u54C1"), products.map(p => {
+    const hasV = (p.variants || []).length > 0;
+    const isExp = expandedGantt.has(p.id);
+    return /*#__PURE__*/React.createElement(React.Fragment, {
+      key: p.id
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "gantt-label",
+      onClick: () => onSelectProduct(p.id),
+      style: {
+        cursor: 'pointer'
+      }
+    }, hasV && /*#__PURE__*/React.createElement("button", {
+      className: "gantt-expand-btn",
+      title: isExp ? '收起变体' : '展开变体',
+      onClick: e => {
+        e.stopPropagation();
+        toggleGantt(p.id);
+      }
+    }, isExp ? '▾' : '▸'), /*#__PURE__*/React.createElement("span", {
+      className: `badge badge-${p.status}`,
+      style: {
+        padding: '1px 5px',
+        fontSize: 9
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      className: "pn"
+    }, p.name), hasV && /*#__PURE__*/React.createElement("span", {
+      className: "gantt-variant-count"
+    }, p.variants.length)), hasV && isExp && (p.variants || []).map((v, vi) => /*#__PURE__*/React.createElement("div", {
+      key: v.id,
+      className: "gantt-label gantt-variant-label",
+      onClick: () => onSelectProduct(p.id),
+      style: {
+        cursor: 'pointer'
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "gantt-variant-prefix"
+    }, "\u2514"), /*#__PURE__*/React.createElement("span", {
+      className: "pn",
+      style: {
+        color: 'var(--ink-3)',
+        fontSize: 11
+      }
+    }, v.name || v.colorOrSize || v.sku || 'SKU ' + (vi + 1)), /*#__PURE__*/React.createElement("span", {
+      className: "gantt-variant-pct"
+    }, _variantProgress(v), "%"))));
+  })), /*#__PURE__*/React.createElement("div", {
     className: "gantt-canvas"
   }, /*#__PURE__*/React.createElement("div", {
     className: "gantt-axis",
@@ -245,6 +282,8 @@ function GanttAll({
       }
     }, unit.label);
   })), products.map(p => {
+    const hasV = (p.variants || []).length > 0;
+    const isExp = expandedGantt.has(p.id);
     const segs = [];
     let prevDate = p.createdAt;
     STAGES.forEach(s => {
@@ -288,8 +327,9 @@ function GanttAll({
         });
       }
     });
-    return /*#__PURE__*/React.createElement("div", {
-      key: p.id,
+    return /*#__PURE__*/React.createElement(React.Fragment, {
+      key: p.id
+    }, /*#__PURE__*/React.createElement("div", {
       className: "gantt-row"
     }, segs.map((seg, i) => {
       const l = pct(seg.start);
@@ -308,6 +348,57 @@ function GanttAll({
         },
         title: `${seg.name}: ${seg.start} → ${seg.end}${seg.planned ? ' (计划)' : ''}`
       }, w > 4 ? seg.name : '');
+    })), hasV && isExp && (p.variants || []).map(v => {
+      const variantKeys = VARIANT_STAGE_KEYS;
+      const doneKeys = variantKeys.filter(k => v.stages?.[k]?.status === 'done');
+      const activeKey = variantKeys.find(k => v.stages?.[k]?.status === 'active');
+      const lastDoneKey = doneKeys[doneKeys.length - 1];
+      const fillColor = (lastDoneKey ? STAGES.find(s => s.key === lastDoneKey)?.color : null) || (activeKey ? STAGES.find(s => s.key === activeKey)?.color : '#3b82f6');
+      const barStart = p.createdAt ? pct(p.createdAt) : todayPct;
+      const barEnd = todayPct;
+      const barW = Math.max(0, barEnd - barStart);
+      const fillW = barW * (doneKeys.length / variantKeys.length);
+      return /*#__PURE__*/React.createElement("div", {
+        key: v.id,
+        className: "gantt-row gantt-variant-row"
+      }, barW > 0.5 && /*#__PURE__*/React.createElement("div", {
+        style: {
+          position: 'absolute',
+          left: barStart + '%',
+          width: barW + '%',
+          height: '50%',
+          top: '25%',
+          background: 'var(--border)',
+          borderRadius: 3
+        }
+      }), fillW > 0.3 && /*#__PURE__*/React.createElement("div", {
+        style: {
+          position: 'absolute',
+          left: barStart + '%',
+          width: fillW + '%',
+          height: '50%',
+          top: '25%',
+          background: fillColor,
+          borderRadius: 3,
+          opacity: 0.8
+        },
+        title: `${doneKeys.length}/${variantKeys.length} 变体阶段完成`
+      }), activeKey && /*#__PURE__*/React.createElement("div", {
+        style: {
+          position: 'absolute',
+          left: barStart + fillW + '%',
+          width: 8,
+          height: 8,
+          background: STAGES.find(s => s.key === activeKey)?.color || fillColor,
+          borderRadius: '50%',
+          top: '50%',
+          marginTop: -4,
+          marginLeft: -4,
+          border: '1.5px solid var(--bg)',
+          boxShadow: '0 0 0 2px ' + fillColor
+        },
+        title: '进行中: ' + activeKey
+      }));
     }));
   }), /*#__PURE__*/React.createElement("div", {
     className: "gantt-today",

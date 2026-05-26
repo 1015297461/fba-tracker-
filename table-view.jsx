@@ -26,6 +26,12 @@ function TableView({ onSelectProduct, filter }) {
 
   const [sortKey, setSortKey] = React.useState('createdAt');
   const [sortDir, setSortDir] = React.useState('desc');
+  const [expandedRows, setExpandedRows] = React.useState(new Set());
+  const toggleExpand = (id) => setExpandedRows(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
 
   const rows = [...products].sort((a, b) => {
     const av = getColVal(a, sortKey);
@@ -108,47 +114,100 @@ function TableView({ onSelectProduct, filter }) {
               {rows.map(p => {
                 const m = calcProfit(p);
                 const pr = p.stages.profit;
+                const hasV = (p.variants || []).length > 0;
+                const isExp = expandedRows.has(p.id);
                 return (
-                  <tr key={p.id} onClick={() => onSelectProduct(p.id)} style={{cursor:'pointer'}}>
-                    <td className="sticky pname">
-                      <span className="lock">🔒</span>
-                      {p.name}
-                    </td>
-                    <td className="num" style={{textAlign:'left', color:'var(--ink-3)'}}>{p.sku}</td>
-                    <td><span className={`badge badge-${p.status}`}>{STATUS_LABELS[p.status].label}</span></td>
-                    <td className="num gcol">
-                      <span className="tbar"><span className="tbar-f" style={{width: p.progress + '%'}}></span></span>
-                      {p.progress}%
-                    </td>
-                    <td className="num" style={{textAlign:'left'}}>{p.createdAt}</td>
-                    <td>{p.lead}</td>
-                    <td style={{color:'var(--ink-3)', borderRight:'1px solid var(--border)'}}>{p.category}</td>
+                  <React.Fragment key={p.id}>
+                    <tr onClick={() => onSelectProduct(p.id)} style={{cursor:'pointer'}}>
+                      <td className="sticky pname">
+                        {hasV && (
+                          <button className="variant-expand-btn" title={isExp ? '收起变体' : '展开变体'}
+                            onClick={e => { e.stopPropagation(); toggleExpand(p.id); }}>
+                            {isExp ? '▾' : '▸'}
+                          </button>
+                        )}
+                        <span className="lock">🔒</span>
+                        {p.name}
+                        {hasV && <span className="table-variant-badge">{p.variants.length} SKU</span>}
+                      </td>
+                      <td className="num" style={{textAlign:'left', color:'var(--ink-3)'}}>{p.sku}</td>
+                      <td><span className={`badge badge-${p.status}`}>{STATUS_LABELS[p.status].label}</span></td>
+                      <td className="num gcol">
+                        <span className="tbar"><span className="tbar-f" style={{width: p.progress + '%'}}></span></span>
+                        {p.progress}%
+                      </td>
+                      <td className="num" style={{textAlign:'left'}}>{p.createdAt}</td>
+                      <td>{p.lead}</td>
+                      <td style={{color:'var(--ink-3)', borderRight:'1px solid var(--border)'}}>{p.category}</td>
 
-                    <td style={{color:'var(--ink-3)'}}>{p.stages.initiation.source || '—'}</td>
-                    <td style={{color:'var(--ink-3)', borderRight:'1px solid var(--border)'}}>{p.stages.initiation.market || '—'}</td>
+                      <td style={{color:'var(--ink-3)'}}>{p.stages.initiation.source || '—'}</td>
+                      <td style={{color:'var(--ink-3)', borderRight:'1px solid var(--border)'}}>{p.stages.initiation.market || '—'}</td>
 
-                    <td className="num">{p.stages.research.avgPrice ? `$${p.stages.research.avgPrice.toFixed(2)}` : '—'}</td>
+                      <td className="num">{p.stages.research.avgPrice ? `$${p.stages.research.avgPrice.toFixed(2)}` : '—'}</td>
 
-                    <td className="num">{pr.targetPrice ? `$${Number(pr.targetPrice).toFixed(2)}` : '—'}</td>
-                    <td className="num">{pr.cogs ? `¥${Number(pr.cogs).toFixed(2)}` : '—'}</td>
-                    <td className="num">{p.stages.bom.items?.length ? `¥${(p.stages.bom.items||[]).reduce((s,i)=>s+i.qty*i.unitCost,0).toFixed(2)}` : '—'}</td>
-                    <td className="num">{m ? `$${m.net.toFixed(2)}` : '—'}</td>
-                    <td className={"num " + (m ? marginClass(m.margin) : '')}>{m ? `${m.margin.toFixed(1)}%` : '—'}</td>
-                    <td style={{borderRight:'1px solid var(--border)'}}>
-                      {pr.decision === 'pass' && <span className="decision-pill pass">✓ 通过</span>}
-                      {pr.decision === 'hold' && <span className="decision-pill hold">⏸ 暂缓</span>}
-                      {pr.decision === 'reject' && <span className="decision-pill reject">✗ 否决</span>}
-                      {!pr.decision && '—'}
-                    </td>
+                      <td className="num">{pr.targetPrice ? `$${Number(pr.targetPrice).toFixed(2)}` : '—'}</td>
+                      <td className="num">{pr.cogs ? `¥${Number(pr.cogs).toFixed(2)}` : '—'}</td>
+                      <td className="num">{p.stages.bom.items?.length ? `¥${(p.stages.bom.items||[]).reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i.unitCost)||0),0).toFixed(2)}` : '—'}</td>
+                      <td className="num">{m ? `$${m.net.toFixed(2)}` : '—'}</td>
+                      <td className={"num " + (m ? marginClass(m.margin) : '')}>{m ? `${m.margin.toFixed(1)}%` : '—'}</td>
+                      <td style={{borderRight:'1px solid var(--border)'}}>
+                        {pr.decision === 'pass' && <span className="decision-pill pass">✓ 通过</span>}
+                        {pr.decision === 'hold' && <span className="decision-pill hold">⏸ 暂缓</span>}
+                        {pr.decision === 'reject' && <span className="decision-pill reject">✗ 否决</span>}
+                        {!pr.decision && '—'}
+                      </td>
 
-                    <td className="num">{(p.stages.supplier.suppliers || []).length || '—'}</td>
-                    <td className="num" style={{borderRight:'1px solid var(--border)'}}>{(p.stages.sampling.rounds || []).length || '—'}</td>
+                      <td className="num">{(p.stages.supplier.suppliers || []).length || '—'}</td>
+                      <td className="num" style={{borderRight:'1px solid var(--border)'}}>{(p.stages.sampling.rounds || []).length || '—'}</td>
 
-                    <td className="num" style={{textAlign:'left', borderRight:'1px solid var(--border)'}}>{firstExpectedShip(p) || p.stages.shipment.endDate || '—'}</td>
+                      <td className="num" style={{textAlign:'left', borderRight:'1px solid var(--border)'}}>{firstExpectedShip(p) || p.stages.shipment.endDate || '—'}</td>
 
-                    <td className="num" style={{textAlign:'left'}}>{p.stages.listing.launchDate || p.stages.listing.endDate || '—'}</td>
-                    <td className="num">{(p.stages.reorder.records || []).length || '—'}</td>
-                  </tr>
+                      <td className="num" style={{textAlign:'left'}}>{p.stages.listing.launchDate || p.stages.listing.endDate || '—'}</td>
+                      <td className="num">{(p.stages.reorder.records || []).length || '—'}</td>
+                    </tr>
+                    {hasV && isExp && (p.variants || []).map((v, vi) => {
+                      const vm = calcVariantProfit(v, p.fxRate);
+                      const vpr = v.stages?.profit || {};
+                      const vBomTotal = (v.stages?.bom?.items || []).reduce((s,i) => s + (Number(i.qty)||0)*(Number(i.unitCost)||0), 0);
+                      const vProgress = _variantProgress(v);
+                      return (
+                        <tr key={v.id} className="variant-row" onClick={() => onSelectProduct(p.id)} style={{cursor:'pointer'}}>
+                          <td className="sticky pname variant-row-name">
+                            <span className="variant-row-prefix">└</span>
+                            <span>{v.name || v.colorOrSize || v.sku || 'SKU '+(vi+1)}</span>
+                            {v.sku && <span className="variant-row-sku mono">{v.sku}</span>}
+                          </td>
+                          <td className="num" style={{textAlign:'left', color:'var(--ink-4)', fontSize:11}}>{v.sku || '—'}</td>
+                          <td>—</td>
+                          <td className="num gcol">
+                            <span className="tbar"><span className="tbar-f" style={{width: vProgress + '%', background:'var(--blue)'}}></span></span>
+                            {vProgress}%
+                          </td>
+                          <td>—</td><td>—</td>
+                          <td style={{borderRight:'1px solid var(--border)'}}>—</td>
+                          <td>—</td>
+                          <td style={{borderRight:'1px solid var(--border)'}}>—</td>
+                          <td>—</td>
+                          <td className="num">{vpr.targetPrice ? `$${Number(vpr.targetPrice).toFixed(2)}` : '—'}</td>
+                          <td className="num">{vpr.cogs ? `¥${Number(vpr.cogs).toFixed(2)}` : '—'}</td>
+                          <td className="num">{vBomTotal ? `¥${vBomTotal.toFixed(2)}` : '—'}</td>
+                          <td className="num">{vm ? `$${vm.net.toFixed(2)}` : '—'}</td>
+                          <td className={"num " + (vm ? marginClass(vm.margin) : '')}>{vm ? `${vm.margin.toFixed(1)}%` : '—'}</td>
+                          <td style={{borderRight:'1px solid var(--border)'}}>
+                            {vpr.decision === 'pass' && <span className="decision-pill pass">✓ 通过</span>}
+                            {vpr.decision === 'hold' && <span className="decision-pill hold">⏸ 暂缓</span>}
+                            {vpr.decision === 'reject' && <span className="decision-pill reject">✗ 否决</span>}
+                            {!vpr.decision && '—'}
+                          </td>
+                          <td>—</td>
+                          <td className="num" style={{borderRight:'1px solid var(--border)'}}>{(v.stages?.sampling?.rounds||[]).length || '—'}</td>
+                          <td>—</td>
+                          <td className="num" style={{textAlign:'left'}}>{v.stages?.listing?.launchDate || '—'}</td>
+                          <td>—</td>
+                        </tr>
+                      );
+                    })}
+                  </React.Fragment>
                 );
               })}
             </tbody>

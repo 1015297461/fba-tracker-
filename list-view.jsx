@@ -25,6 +25,9 @@ function ProductList({ products, activeId, setActiveId }) {
               onClick={() => setActiveId(p.id)}>
               <div className="pcard-row1">
                 <span className="pcard-name">{p.name}</span>
+                {(p.variants || []).length > 0 && (
+                  <span className="pcard-variant-badge">{p.variants.length} SKU</span>
+                )}
                 <span className={`badge badge-${p.status}`}>{STATUS_LABELS[p.status].label}</span>
               </div>
               <div className="pcard-row2">

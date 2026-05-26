@@ -27,6 +27,12 @@ function TableView({
   const products = filter && filter !== 'all' ? allProducts.filter(p => p.status === filter) : allProducts;
   const [sortKey, setSortKey] = React.useState('createdAt');
   const [sortDir, setSortDir] = React.useState('desc');
+  const [expandedRows, setExpandedRows] = React.useState(new Set());
+  const toggleExpand = id => setExpandedRows(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
   const rows = [...products].sort((a, b) => {
     const av = getColVal(a, sortKey);
     const bv = getColVal(b, sortKey);
@@ -184,17 +190,29 @@ function TableView({
   }))), /*#__PURE__*/React.createElement("tbody", null, rows.map(p => {
     const m = calcProfit(p);
     const pr = p.stages.profit;
-    return /*#__PURE__*/React.createElement("tr", {
-      key: p.id,
+    const hasV = (p.variants || []).length > 0;
+    const isExp = expandedRows.has(p.id);
+    return /*#__PURE__*/React.createElement(React.Fragment, {
+      key: p.id
+    }, /*#__PURE__*/React.createElement("tr", {
       onClick: () => onSelectProduct(p.id),
       style: {
         cursor: 'pointer'
       }
     }, /*#__PURE__*/React.createElement("td", {
       className: "sticky pname"
-    }, /*#__PURE__*/React.createElement("span", {
+    }, hasV && /*#__PURE__*/React.createElement("button", {
+      className: "variant-expand-btn",
+      title: isExp ? '收起变体' : '展开变体',
+      onClick: e => {
+        e.stopPropagation();
+        toggleExpand(p.id);
+      }
+    }, isExp ? '▾' : '▸'), /*#__PURE__*/React.createElement("span", {
       className: "lock"
-    }, "\uD83D\uDD12"), p.name), /*#__PURE__*/React.createElement("td", {
+    }, "\uD83D\uDD12"), p.name, hasV && /*#__PURE__*/React.createElement("span", {
+      className: "table-variant-badge"
+    }, p.variants.length, " SKU")), /*#__PURE__*/React.createElement("td", {
       className: "num",
       style: {
         textAlign: 'left',
@@ -238,7 +256,7 @@ function TableView({
       className: "num"
     }, pr.cogs ? `¥${Number(pr.cogs).toFixed(2)}` : '—'), /*#__PURE__*/React.createElement("td", {
       className: "num"
-    }, p.stages.bom.items?.length ? `¥${(p.stages.bom.items || []).reduce((s, i) => s + i.qty * i.unitCost, 0).toFixed(2)}` : '—'), /*#__PURE__*/React.createElement("td", {
+    }, p.stages.bom.items?.length ? `¥${(p.stages.bom.items || []).reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.unitCost) || 0), 0).toFixed(2)}` : '—'), /*#__PURE__*/React.createElement("td", {
       className: "num"
     }, m ? `$${m.net.toFixed(2)}` : '—'), /*#__PURE__*/React.createElement("td", {
       className: "num " + (m ? marginClass(m.margin) : '')
@@ -272,7 +290,81 @@ function TableView({
       }
     }, p.stages.listing.launchDate || p.stages.listing.endDate || '—'), /*#__PURE__*/React.createElement("td", {
       className: "num"
-    }, (p.stages.reorder.records || []).length || '—'));
+    }, (p.stages.reorder.records || []).length || '—')), hasV && isExp && (p.variants || []).map((v, vi) => {
+      const vm = calcVariantProfit(v, p.fxRate);
+      const vpr = v.stages?.profit || {};
+      const vBomTotal = (v.stages?.bom?.items || []).reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.unitCost) || 0), 0);
+      const vProgress = _variantProgress(v);
+      return /*#__PURE__*/React.createElement("tr", {
+        key: v.id,
+        className: "variant-row",
+        onClick: () => onSelectProduct(p.id),
+        style: {
+          cursor: 'pointer'
+        }
+      }, /*#__PURE__*/React.createElement("td", {
+        className: "sticky pname variant-row-name"
+      }, /*#__PURE__*/React.createElement("span", {
+        className: "variant-row-prefix"
+      }, "\u2514"), /*#__PURE__*/React.createElement("span", null, v.name || v.colorOrSize || v.sku || 'SKU ' + (vi + 1)), v.sku && /*#__PURE__*/React.createElement("span", {
+        className: "variant-row-sku mono"
+      }, v.sku)), /*#__PURE__*/React.createElement("td", {
+        className: "num",
+        style: {
+          textAlign: 'left',
+          color: 'var(--ink-4)',
+          fontSize: 11
+        }
+      }, v.sku || '—'), /*#__PURE__*/React.createElement("td", null, "\u2014"), /*#__PURE__*/React.createElement("td", {
+        className: "num gcol"
+      }, /*#__PURE__*/React.createElement("span", {
+        className: "tbar"
+      }, /*#__PURE__*/React.createElement("span", {
+        className: "tbar-f",
+        style: {
+          width: vProgress + '%',
+          background: 'var(--blue)'
+        }
+      })), vProgress, "%"), /*#__PURE__*/React.createElement("td", null, "\u2014"), /*#__PURE__*/React.createElement("td", null, "\u2014"), /*#__PURE__*/React.createElement("td", {
+        style: {
+          borderRight: '1px solid var(--border)'
+        }
+      }, "\u2014"), /*#__PURE__*/React.createElement("td", null, "\u2014"), /*#__PURE__*/React.createElement("td", {
+        style: {
+          borderRight: '1px solid var(--border)'
+        }
+      }, "\u2014"), /*#__PURE__*/React.createElement("td", null, "\u2014"), /*#__PURE__*/React.createElement("td", {
+        className: "num"
+      }, vpr.targetPrice ? `$${Number(vpr.targetPrice).toFixed(2)}` : '—'), /*#__PURE__*/React.createElement("td", {
+        className: "num"
+      }, vpr.cogs ? `¥${Number(vpr.cogs).toFixed(2)}` : '—'), /*#__PURE__*/React.createElement("td", {
+        className: "num"
+      }, vBomTotal ? `¥${vBomTotal.toFixed(2)}` : '—'), /*#__PURE__*/React.createElement("td", {
+        className: "num"
+      }, vm ? `$${vm.net.toFixed(2)}` : '—'), /*#__PURE__*/React.createElement("td", {
+        className: "num " + (vm ? marginClass(vm.margin) : '')
+      }, vm ? `${vm.margin.toFixed(1)}%` : '—'), /*#__PURE__*/React.createElement("td", {
+        style: {
+          borderRight: '1px solid var(--border)'
+        }
+      }, vpr.decision === 'pass' && /*#__PURE__*/React.createElement("span", {
+        className: "decision-pill pass"
+      }, "\u2713 \u901A\u8FC7"), vpr.decision === 'hold' && /*#__PURE__*/React.createElement("span", {
+        className: "decision-pill hold"
+      }, "\u23F8 \u6682\u7F13"), vpr.decision === 'reject' && /*#__PURE__*/React.createElement("span", {
+        className: "decision-pill reject"
+      }, "\u2717 \u5426\u51B3"), !vpr.decision && '—'), /*#__PURE__*/React.createElement("td", null, "\u2014"), /*#__PURE__*/React.createElement("td", {
+        className: "num",
+        style: {
+          borderRight: '1px solid var(--border)'
+        }
+      }, (v.stages?.sampling?.rounds || []).length || '—'), /*#__PURE__*/React.createElement("td", null, "\u2014"), /*#__PURE__*/React.createElement("td", {
+        className: "num",
+        style: {
+          textAlign: 'left'
+        }
+      }, v.stages?.listing?.launchDate || '—'), /*#__PURE__*/React.createElement("td", null, "\u2014"));
+    }));
   }))))), /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 14,
