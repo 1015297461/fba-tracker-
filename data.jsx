@@ -46,6 +46,9 @@ const STATUS_LABELS = {
   cancel: { label: '已取消', color: '#9a9a96' },
 };
 
+// 变体级阶段：每个 SKU 独立跟踪，其余阶段保持产品级
+const VARIANT_STAGE_KEYS = ['profit', 'bom', 'sampling', 'listing', 'promotion'];
+
 // helper to build a stage with status/dates
 function S(opts) {
   return Object.assign({
@@ -427,5 +430,6 @@ function calcProfit(p) {
 }
 
 Object.assign(window, {
-  STAGES, TABS, STAGE_STATUSES, STATUS_LABELS, PRODUCTS, S, uid, getDone, DEFAULT_FX, calcProfit,
+  STAGES, TABS, STAGE_STATUSES, STATUS_LABELS, VARIANT_STAGE_KEYS,
+  PRODUCTS, S, uid, getDone, DEFAULT_FX, calcProfit,
 });

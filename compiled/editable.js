@@ -13,6 +13,53 @@ function getAuthHeaders() {
   } : {};
 }
 const ProductCtx = React.createContext(null);
+
+// 计算单个变体的进度（基于变体级阶段）
+function _variantProgress(variant) {
+  const keys = window.VARIANT_STAGE_KEYS || ['profit', 'bom', 'sampling', 'listing', 'promotion'];
+  const done = keys.filter(k => variant?.stages?.[k]?.status === 'done').length;
+  return Math.round(done / keys.length * 100);
+}
+
+// 检查变体是否被生产/出货/返单订单引用（删除前拦截）
+function _variantInUse(p, variantId) {
+  const batches = p.stages?.production?.batches || [];
+  if (batches.some(b => (b.items || []).some(i => i.variantId === variantId))) return '生产订单';
+  const ships = p.stages?.shipment?.records || [];
+  if (ships.some(s => (s.items || []).some(i => i.variantId === variantId))) return '出货记录';
+  const reorders = p.stages?.reorder?.records || [];
+  if (reorders.some(r => (r.items || []).some(i => i.variantId === variantId))) return '返单';
+  return null;
+}
+
+// 构建空白变体（包含变体级阶段骨架）
+function _buildBlankVariant(seed) {
+  return {
+    id: 'v' + window.uid(),
+    name: seed.name || '新变体',
+    sku: seed.sku || '',
+    colorOrSize: seed.colorOrSize || '',
+    stages: {
+      profit: {
+        status: 'idle'
+      },
+      bom: {
+        status: 'idle',
+        items: []
+      },
+      sampling: {
+        status: 'idle',
+        rounds: []
+      },
+      listing: {
+        status: 'idle'
+      },
+      promotion: {
+        status: 'idle'
+      }
+    }
+  };
+}
 function useProducts() {
   const ctx = React.useContext(ProductCtx);
   return ctx;
@@ -361,6 +408,8 @@ function ProductsProvider({
       currentStage: 'research',
       progress: 5,
       stages,
+      variants: [],
+      // 空 = 单 SKU 模式，向后兼容
       logs: [{
         id: window.uid(),
         date: today,
@@ -406,8 +455,16 @@ function ProductsProvider({
         [stageKey]: next
       };
 
-      // 阶段 status 变化时，自动重算顶层 progress / currentStage，保持表格同步
+      // 阶段 status 变化时，重算顶层 progress / currentStage
       if (typeof patch === 'object' && patch !== null && 'status' in patch) {
+        // 有变体时：进度由变体驱动，产品级阶段变化不影响整体进度
+        if ((p.variants || []).length > 0) {
+          return {
+            ...p,
+            stages: newStages
+          };
+        }
+        // 单 SKU 模式：沿用现有逻辑
         const keys = window.STAGES.map(st => st.key);
         const doneCount = keys.filter(k => newStages[k]?.status === 'done').length;
         const progress = Math.round(doneCount / keys.length * 100);
@@ -576,6 +633,482 @@ function ProductsProvider({
       };
     }));
   }, []);
+
+  // ─── 变体 CRUD ────────────────────────────────────────────────────────────
+
+  const addVariant = React.useCallback((productId, seed) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const v = _buildBlankVariant(seed);
+      return {
+        ...p,
+        variants: [...(p.variants || []), v]
+      };
+    }));
+  }, []);
+  const updateVariant = React.useCallback((productId, variantId, patch) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const variants = (p.variants || []).map(v => v.id === variantId ? {
+        ...v,
+        ...patch
+      } : v);
+      return {
+        ...p,
+        variants
+      };
+    }));
+  }, []);
+
+  // 更新变体内的 stage 数据，并联动重算产品整体进度
+  const updateVariantStage = React.useCallback((productId, variantId, stageKey, patch) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const variants = (p.variants || []).map(v => {
+        if (v.id !== variantId) return v;
+        const s = v.stages?.[stageKey] || {};
+        const next = typeof patch === 'function' ? patch(s) : {
+          ...s,
+          ...patch
+        };
+        return {
+          ...v,
+          stages: {
+            ...v.stages,
+            [stageKey]: next
+          }
+        };
+      });
+      // 产品整体进度 = 最慢变体进度
+      const progresses = variants.map(v => _variantProgress(v));
+      const progress = progresses.length ? Math.min(...progresses) : p.progress;
+      return {
+        ...p,
+        variants,
+        progress
+      };
+    }));
+  }, []);
+  const removeVariant = React.useCallback((productId, variantId) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const inUse = _variantInUse(p, variantId);
+      if (inUse) {
+        alert(`该变体已在「${inUse}」中被引用，请先删除相关订单的该 SKU 明细后再操作。`);
+        return p;
+      }
+      const variants = (p.variants || []).filter(v => v.id !== variantId);
+      const progresses = variants.map(v => _variantProgress(v));
+      const progress = progresses.length ? Math.min(...progresses) : p.progress;
+      return {
+        ...p,
+        variants,
+        progress
+      };
+    }));
+  }, []);
+
+  // 变体内的数组记录操作（sampling rounds / bom items 等）
+  const addVariantRecord = React.useCallback((productId, variantId, stageKey, arrayKey, record) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const variants = (p.variants || []).map(v => {
+        if (v.id !== variantId) return v;
+        const s = v.stages?.[stageKey] || {};
+        const arr = [...(s[arrayKey] || []), {
+          id: window.uid(),
+          status: 'idle',
+          ...record
+        }];
+        return {
+          ...v,
+          stages: {
+            ...v.stages,
+            [stageKey]: {
+              ...s,
+              [arrayKey]: arr
+            }
+          }
+        };
+      });
+      return {
+        ...p,
+        variants
+      };
+    }));
+  }, []);
+  const updateVariantRecord = React.useCallback((productId, variantId, stageKey, arrayKey, recId, patch) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const variants = (p.variants || []).map(v => {
+        if (v.id !== variantId) return v;
+        const s = v.stages?.[stageKey] || {};
+        const arr = (s[arrayKey] || []).map(r => r.id === recId ? {
+          ...r,
+          ...patch
+        } : r);
+        return {
+          ...v,
+          stages: {
+            ...v.stages,
+            [stageKey]: {
+              ...s,
+              [arrayKey]: arr
+            }
+          }
+        };
+      });
+      return {
+        ...p,
+        variants
+      };
+    }));
+  }, []);
+  const removeVariantRecord = React.useCallback((productId, variantId, stageKey, arrayKey, recId) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const variants = (p.variants || []).map(v => {
+        if (v.id !== variantId) return v;
+        const s = v.stages?.[stageKey] || {};
+        const arr = (s[arrayKey] || []).filter(r => r.id !== recId);
+        return {
+          ...v,
+          stages: {
+            ...v.stages,
+            [stageKey]: {
+              ...s,
+              [arrayKey]: arr
+            }
+          }
+        };
+      });
+      return {
+        ...p,
+        variants
+      };
+    }));
+  }, []);
+
+  // ─── 生产批次 SKU 明细 ────────────────────────────────────────────────────
+
+  const addBatchItem = React.useCallback((productId, batchId, item) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const batches = (p.stages?.production?.batches || []).map(b => {
+        if (b.id !== batchId) return b;
+        return {
+          ...b,
+          items: [...(b.items || []), {
+            id: window.uid(),
+            ...item
+          }]
+        };
+      });
+      return {
+        ...p,
+        stages: {
+          ...p.stages,
+          production: {
+            ...p.stages.production,
+            batches
+          }
+        }
+      };
+    }));
+  }, []);
+  const updateBatchItem = React.useCallback((productId, batchId, itemId, patch) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const batches = (p.stages?.production?.batches || []).map(b => {
+        if (b.id !== batchId) return b;
+        return {
+          ...b,
+          items: (b.items || []).map(i => i.id === itemId ? {
+            ...i,
+            ...patch
+          } : i)
+        };
+      });
+      return {
+        ...p,
+        stages: {
+          ...p.stages,
+          production: {
+            ...p.stages.production,
+            batches
+          }
+        }
+      };
+    }));
+  }, []);
+  const removeBatchItem = React.useCallback((productId, batchId, itemId) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const batches = (p.stages?.production?.batches || []).map(b => {
+        if (b.id !== batchId) return b;
+        return {
+          ...b,
+          items: (b.items || []).filter(i => i.id !== itemId)
+        };
+      });
+      return {
+        ...p,
+        stages: {
+          ...p.stages,
+          production: {
+            ...p.stages.production,
+            batches
+          }
+        }
+      };
+    }));
+  }, []);
+
+  // ─── 出货记录 SKU 明细 ────────────────────────────────────────────────────
+
+  const addShipmentItem = React.useCallback((productId, recordId, item) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const records = (p.stages?.shipment?.records || []).map(r => {
+        if (r.id !== recordId) return r;
+        return {
+          ...r,
+          items: [...(r.items || []), {
+            id: window.uid(),
+            ...item
+          }]
+        };
+      });
+      return {
+        ...p,
+        stages: {
+          ...p.stages,
+          shipment: {
+            ...p.stages.shipment,
+            records
+          }
+        }
+      };
+    }));
+  }, []);
+  const updateShipmentItem = React.useCallback((productId, recordId, itemId, patch) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const records = (p.stages?.shipment?.records || []).map(r => {
+        if (r.id !== recordId) return r;
+        return {
+          ...r,
+          items: (r.items || []).map(i => i.id === itemId ? {
+            ...i,
+            ...patch
+          } : i)
+        };
+      });
+      return {
+        ...p,
+        stages: {
+          ...p.stages,
+          shipment: {
+            ...p.stages.shipment,
+            records
+          }
+        }
+      };
+    }));
+  }, []);
+  const removeShipmentItem = React.useCallback((productId, recordId, itemId) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const records = (p.stages?.shipment?.records || []).map(r => {
+        if (r.id !== recordId) return r;
+        return {
+          ...r,
+          items: (r.items || []).filter(i => i.id !== itemId)
+        };
+      });
+      return {
+        ...p,
+        stages: {
+          ...p.stages,
+          shipment: {
+            ...p.stages.shipment,
+            records
+          }
+        }
+      };
+    }));
+  }, []);
+
+  // ─── 返单 SKU 明细 ────────────────────────────────────────────────────────
+
+  const addReorderItem = React.useCallback((productId, recordId, item) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const records = (p.stages?.reorder?.records || []).map(r => {
+        if (r.id !== recordId) return r;
+        return {
+          ...r,
+          items: [...(r.items || []), {
+            id: window.uid(),
+            ...item
+          }]
+        };
+      });
+      return {
+        ...p,
+        stages: {
+          ...p.stages,
+          reorder: {
+            ...p.stages.reorder,
+            records
+          }
+        }
+      };
+    }));
+  }, []);
+  const updateReorderItem = React.useCallback((productId, recordId, itemId, patch) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const records = (p.stages?.reorder?.records || []).map(r => {
+        if (r.id !== recordId) return r;
+        return {
+          ...r,
+          items: (r.items || []).map(i => i.id === itemId ? {
+            ...i,
+            ...patch
+          } : i)
+        };
+      });
+      return {
+        ...p,
+        stages: {
+          ...p.stages,
+          reorder: {
+            ...p.stages.reorder,
+            records
+          }
+        }
+      };
+    }));
+  }, []);
+  const removeReorderItem = React.useCallback((productId, recordId, itemId) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const records = (p.stages?.reorder?.records || []).map(r => {
+        if (r.id !== recordId) return r;
+        return {
+          ...r,
+          items: (r.items || []).filter(i => i.id !== itemId)
+        };
+      });
+      return {
+        ...p,
+        stages: {
+          ...p.stages,
+          reorder: {
+            ...p.stages.reorder,
+            records
+          }
+        }
+      };
+    }));
+  }, []);
+
+  // ─── 返单子分批 SKU 明细 ──────────────────────────────────────────────────
+
+  const addSubShipmentItem = React.useCallback((productId, recordId, ssId, item) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const records = (p.stages?.reorder?.records || []).map(r => {
+        if (r.id !== recordId) return r;
+        const ss = (r.subShipments || []).map(s => {
+          if (s.id !== ssId) return s;
+          return {
+            ...s,
+            items: [...(s.items || []), {
+              id: window.uid(),
+              ...item
+            }]
+          };
+        });
+        return {
+          ...r,
+          subShipments: ss
+        };
+      });
+      return {
+        ...p,
+        stages: {
+          ...p.stages,
+          reorder: {
+            ...p.stages.reorder,
+            records
+          }
+        }
+      };
+    }));
+  }, []);
+  const updateSubShipmentItem = React.useCallback((productId, recordId, ssId, itemId, patch) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const records = (p.stages?.reorder?.records || []).map(r => {
+        if (r.id !== recordId) return r;
+        const ss = (r.subShipments || []).map(s => {
+          if (s.id !== ssId) return s;
+          return {
+            ...s,
+            items: (s.items || []).map(i => i.id === itemId ? {
+              ...i,
+              ...patch
+            } : i)
+          };
+        });
+        return {
+          ...r,
+          subShipments: ss
+        };
+      });
+      return {
+        ...p,
+        stages: {
+          ...p.stages,
+          reorder: {
+            ...p.stages.reorder,
+            records
+          }
+        }
+      };
+    }));
+  }, []);
+  const removeSubShipmentItem = React.useCallback((productId, recordId, ssId, itemId) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const records = (p.stages?.reorder?.records || []).map(r => {
+        if (r.id !== recordId) return r;
+        const ss = (r.subShipments || []).map(s => {
+          if (s.id !== ssId) return s;
+          return {
+            ...s,
+            items: (s.items || []).filter(i => i.id !== itemId)
+          };
+        });
+        return {
+          ...r,
+          subShipments: ss
+        };
+      });
+      return {
+        ...p,
+        stages: {
+          ...p.stages,
+          reorder: {
+            ...p.stages.reorder,
+            records
+          }
+        }
+      };
+    }));
+  }, []);
   const value = React.useMemo(() => ({
     products,
     setProducts,
@@ -602,8 +1135,28 @@ function ProductsProvider({
     needLogin,
     currentUser,
     login,
-    logout
-  }), [products, update, updateStage, updateRecord, addRecord, removeRecord, updateSubShipment, addSubShipment, removeSubShipment, addLog, savedAt, resetToDefaults, exportJSON, importJSON, exportProduct, createProduct, removeProduct, duplicateProduct, syncMode, syncStatus, needLogin, currentUser, login, logout]);
+    logout,
+    // 第一阶段新增
+    addVariant,
+    updateVariant,
+    updateVariantStage,
+    removeVariant,
+    addVariantRecord,
+    updateVariantRecord,
+    removeVariantRecord,
+    addBatchItem,
+    updateBatchItem,
+    removeBatchItem,
+    addShipmentItem,
+    updateShipmentItem,
+    removeShipmentItem,
+    addReorderItem,
+    updateReorderItem,
+    removeReorderItem,
+    addSubShipmentItem,
+    updateSubShipmentItem,
+    removeSubShipmentItem
+  }), [products, update, updateStage, updateRecord, addRecord, removeRecord, updateSubShipment, addSubShipment, removeSubShipment, addLog, savedAt, resetToDefaults, exportJSON, importJSON, exportProduct, createProduct, removeProduct, duplicateProduct, syncMode, syncStatus, needLogin, currentUser, login, logout, addVariant, updateVariant, updateVariantStage, removeVariant, addVariantRecord, updateVariantRecord, removeVariantRecord, addBatchItem, updateBatchItem, removeBatchItem, addShipmentItem, updateShipmentItem, removeShipmentItem, addReorderItem, updateReorderItem, removeReorderItem, addSubShipmentItem, updateSubShipmentItem, removeSubShipmentItem]);
   return /*#__PURE__*/React.createElement(ProductCtx.Provider, {
     value: value
   }, children);
