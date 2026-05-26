@@ -412,6 +412,11 @@ function TabProd({ p }) {
                 <div className="payment-section">
                   <div className="payment-section-title">付款条款</div>
                   <div className="fieldgrid cols-4">
+                    <div className="calc-field">
+                      <span className="calc-field-label">订单总金额</span>
+                      <span className="calc-field-value mono" style={{fontWeight:600,color:'var(--blue)'}}>¥{skuTotal.toFixed(2)}</span>
+                    </div>
+                    <div /><div /><div />
                     <EditField label="预付款比例" type="number" mono suffix="%" value={b.depositPct}
                       onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositPct:v })} />
                     <div className="calc-field">
