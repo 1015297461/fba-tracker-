@@ -18,7 +18,7 @@ const STAGES = [
   { key: 'listing',     name: 'Listing上架',  short: '上架',  color: '#14b8a6', tab: 'ops' },
   { key: 'handover',    name: '产品交接',     short: '交接',  color: '#06b6d4', tab: 'ops' },
   { key: 'promotion',   name: '广告推广',     short: '推广',  color: '#0ea5e9', tab: 'ops' },
-  { key: 'reorder',     name: '返单管理',     short: '返单',  color: '#0284c7', tab: 'review' },
+  { key: 'reorder',     name: '补货物流',     short: '补货',  color: '#0284c7', tab: 'review' },
   { key: 'review',      name: '产品复盘',     short: '复盘',  color: '#64748b', tab: 'review' },
 ];
 
@@ -29,7 +29,7 @@ const TABS = [
   { key: 'design',   icon: '🎨', name: '内容设计' },
   { key: 'prod',     icon: '📦', name: '生产出货' },
   { key: 'ops',      icon: '🛒', name: '上架运营' },
-  { key: 'review',   icon: '🔄', name: '返单复盘' },
+  { key: 'review',   icon: '🔄', name: '物流与复盘' },
 ];
 
 const STAGE_STATUSES = [

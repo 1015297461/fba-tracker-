@@ -17,7 +17,7 @@ function TabVariants({ p }) {
       <div className="stage-card-body">
         {variants.length === 0 ? (
           <p className="variants-empty-hint">
-            当前为单 SKU 模式。添加变体后，利润测算、BOM、打样、Listing、推广将支持按变体独立记录；生产订单 / 返单可同时包含多个 SKU。
+            当前为单 SKU 模式。添加变体后，利润测算、BOM、打样、Listing、推广将支持按变体独立记录；生产订单可同时包含多个 SKU。
           </p>
         ) : (
           <table className="variant-list-table">
@@ -277,11 +277,9 @@ function TabDesign({ p }) {
 function TabProd({ p }) {
   const { addRecord, updateRecord, removeRecord,
           addBatchItem, updateBatchItem, removeBatchItem,
-          addBatchExtra, updateBatchExtra, removeBatchExtra,
-          addShipmentItem, updateShipmentItem, removeShipmentItem } = useProducts();
+          addBatchExtra, updateBatchExtra, removeBatchExtra } = useProducts();
   const prod = p.stages.production || { batches:[] };
   const qc = p.stages.qc || { records:[] };
-  const ship = p.stages.shipment || { records:[] };
   const variants = p.variants || [];
   const hasVariants = variants.length > 0;
 
@@ -309,8 +307,17 @@ function TabProd({ p }) {
                 <div className="fieldgrid cols-4">
                   <EditField label="批次号" value={b.batchNo}
                     onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { batchNo:v })} />
-                  <EditField label="工厂" value={b.factory}
-                    onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { factory:v })} />
+                  {(() => {
+                    const supNames = (p.stages.supplier?.suppliers || []).map(s => s.name).filter(Boolean);
+                    return supNames.length > 0 ? (
+                      <EditField label="工厂" value={b.factory || ''}
+                        options={[{ value:'', label:'— 选择供应商 —' }, ...supNames.map(n => ({ value:n, label:n }))]}
+                        onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { factory:v })} />
+                    ) : (
+                      <EditField label="工厂" value={b.factory || ''}
+                        onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { factory:v })} />
+                    );
+                  })()}
                   <EditField label="下单日期" type="date" mono value={b.orderDate}
                     onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { orderDate:v })} />
                   <EditField label="预计出货" type="date" mono value={b.expectedShip}
@@ -492,71 +499,6 @@ function TabProd({ p }) {
         </div>
       </StageCard>
 
-      <StageCard stage={STAGES[11]} productId={p.id} stageKey="shipment" stageData={ship}>
-        <div className="record-list">
-          {(ship.records || []).map((r, idx) => (
-            <RecordCard key={r.id} index={'SH' + (idx+1)} title={`出货记录 ${idx+1}`}
-              color={STAGES[11].color} status={r.status}
-              onStatusChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { status:v })}
-              onRemove={() => removeRecord(p.id, 'shipment', 'records', r.id)}>
-              <div className="fieldgrid cols-4">
-                <EditField label="出货日期" type="date" mono value={r.shipDate}
-                  onChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { shipDate:v })} />
-                <EditField label="物流方式" value={r.method}
-                  options={['海运','空运','快递','卡车']}
-                  onChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { method:v })} />
-                <EditField label="服务商" value={r.carrier}
-                  onChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { carrier:v })} />
-                <EditField label="运单号" mono value={r.tracking}
-                  onChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { tracking:v })} />
-                <EditField label="数量" type="number" mono suffix="pcs" value={r.qty}
-                  onChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { qty:v })} />
-                <EditField label="到港 ETA" type="date" mono value={r.etaPort}
-                  onChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { etaPort:v })} />
-                <EditField label="入仓 ETA" type="date" mono value={r.etaFBA}
-                  onChange={v => updateRecord(p.id, 'shipment', 'records', r.id, { etaFBA:v })} />
-              </div>
-              {hasVariants && (
-                <div className="sku-items-block">
-                  <div className="sku-items-hdr">
-                    <span className="sku-items-title">SKU 明细</span>
-                    <span className="sku-items-sum mono">
-                      共 {(r.items||[]).reduce((s,i)=>s+(Number(i.qty)||0),0)} pcs
-                    </span>
-                    <button className="btn btn-sm btn-add" onClick={() => {
-                      const v0 = variants[0];
-                      addShipmentItem(p.id, r.id, { variantId:v0?.id||'', variantName:v0?.name||v0?.sku||'SKU', qty:0 });
-                    }}>+ 添加 SKU</button>
-                  </div>
-                  <table className="sku-items-table">
-                    <thead><tr><th>变体</th><th className="num">数量</th><th></th></tr></thead>
-                    <tbody>
-                      {(r.items||[]).map(item => (
-                        <tr key={item.id}>
-                          <td>
-                            <select className="cell" value={item.variantId}
-                              onChange={e => {
-                                const v = variants.find(v => v.id === e.target.value);
-                                updateShipmentItem(p.id, r.id, item.id, { variantId:v?.id||'', variantName:v?.name||v?.sku||'SKU' });
-                              }}>
-                              {variants.map(v => <option key={v.id} value={v.id}>{v.name||v.colorOrSize||v.sku||'SKU'}</option>)}
-                            </select>
-                          </td>
-                          <td className="num"><input className="cell mono" type="number" value={item.qty} onChange={e => updateShipmentItem(p.id, r.id, item.id, { qty:Number(e.target.value) })} /></td>
-                          <td><button className="row-del" onClick={() => removeShipmentItem(p.id, r.id, item.id)}>✕</button></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </RecordCard>
-          ))}
-        </div>
-        <div style={{marginTop:10}}>
-          <AddRecordButton label="添加出货记录" onClick={() => addRecord(p.id, 'shipment', 'records', { shipDate:'', method:'海运', carrier:'', tracking:'', qty:0, etaPort:'', etaFBA:'', items:[] })} />
-        </div>
-      </StageCard>
     </>
   );
 }
@@ -638,12 +580,10 @@ function TabOps({ p }) {
   );
 }
 
-// ============ TAB: 返单复盘 ============
+// ============ TAB: 物流与复盘 ============
 function TabReview({ p }) {
-  const { updateStage, addRecord, updateRecord, removeRecord, addSubShipment, updateSubShipment, removeSubShipment, addLog,
-          addReorderItem, updateReorderItem, removeReorderItem } = useProducts();
-  const variants = p.variants || [];
-  const hasVariants = variants.length > 0;
+  const { updateStage, addRecord, updateRecord, removeRecord, addSubShipment, updateSubShipment, removeSubShipment, addLog } = useProducts();
+  const prod = p.stages.production || { batches: [] };
   const ro = p.stages.reorder || { records:[] };
   const rv = p.stages.review || {};
 
@@ -661,7 +601,7 @@ function TabReview({ p }) {
               <div key={r.id} className="reorder-card">
                 <div className="record-hdr">
                   <div className="record-num" style={{background: STAGES[16].color, color:'#fff'}}>#{idx+1}</div>
-                  <span className="record-title">{r.orderNo || '返单 ' + (idx+1)}</span>
+                  <span className="record-title">{r.orderNo || '物流订单 ' + (idx+1)}</span>
                   <span className="record-dates">{r.orderDate || '—'} · {r.qty || 0} pcs · ¥{total.toFixed(0)}</span>
                   <StatusSelect value={r.status} size="sm"
                     onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { status:v })} />
@@ -669,11 +609,33 @@ function TabReview({ p }) {
                 </div>
                 <div className="record-body">
                   <div className="fieldgrid cols-4">
-                    <EditField label="返单单号" value={r.orderNo}
+                    <EditField label="关联生产批次" value={r.batchRef || ''}
+                      options={[
+                        { value: '', label: '— 不关联 —' },
+                        ...(prod.batches || []).map(b => ({
+                          value: b.id,
+                          label: (b.batchNo || 'B?') + (b.factory ? ' · ' + b.factory : '') + (b.expectedShip ? ' (' + b.expectedShip + ')' : ''),
+                        })),
+                      ]}
+                      onChange={v => {
+                        const patch = { batchRef: v };
+                        if (v) {
+                          const batch = (prod.batches || []).find(b => b.id === v);
+                          if (batch) {
+                            const bQty = batch.items?.length > 0
+                              ? batch.items.reduce((s, i) => s + (Number(i.qty)||0), 0)
+                              : (Number(batch.qty) || 0);
+                            if (bQty) patch.qty = bQty;
+                            if (Number(batch.unitPrice)) patch.unitPrice = Number(batch.unitPrice);
+                          }
+                        }
+                        updateRecord(p.id, 'reorder', 'records', r.id, patch);
+                      }} />
+                    <EditField label="物流单号" value={r.orderNo}
                       onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { orderNo:v })} />
                     <EditField label="供应商" value={r.supplier}
                       onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { supplier:v })} />
-                    <EditField label="返单时间" type="date" mono value={r.orderDate}
+                    <EditField label="下单时间" type="date" mono value={r.orderDate}
                       onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { orderDate:v })} />
                     <EditField label="触发库存" type="number" mono value={r.triggerInv}
                       onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { triggerInv:v })} />
@@ -694,65 +656,26 @@ function TabReview({ p }) {
                     <EditField label="物流方式" value={r.method}
                       options={['海运','空运','空+派','快递','卡车']}
                       onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { method:v })} />
-                    <EditField label="出货时间" type="date" mono value={r.shipDate}
-                      onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { shipDate:v })} />
                     <EditField label="服务商" value={r.carrier}
                       onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { carrier:v })} />
-                    <EditField label="预计到货" type="date" mono value={r.etaDate}
+                    <EditField label="ATD (实际出货)" type="date" mono value={r.shipDate}
+                      onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { shipDate:v })} />
+                    <EditField label="ETA (预计到货)" type="date" mono value={r.etaDate}
                       onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { etaDate:v })} />
-                    <EditField label="实际到货" type="date" mono value={r.actualEta}
+                    <EditField label="ATA (实际到货)" type="date" mono value={r.actualEta}
                       onChange={v => updateRecord(p.id, 'reorder', 'records', r.id, { actualEta:v })} />
                   </div>
 
-                  {/* SKU 明细 (多变体模式) */}
-                  {hasVariants && (
-                    <div className="sku-items-block">
-                      <div className="sku-items-hdr">
-                        <span className="sku-items-title">SKU 明细</span>
-                        <span className="sku-items-sum mono">
-                          共 {(r.items||[]).reduce((s,i)=>s+(Number(i.qty)||0),0)} pcs ·
-                          ¥{(r.items||[]).reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i.unitPrice)||0),0).toFixed(2)}
-                        </span>
-                        <button className="btn btn-sm btn-add" onClick={() => {
-                          const v0 = variants[0];
-                          addReorderItem(p.id, r.id, { variantId:v0?.id||'', variantName:v0?.name||v0?.sku||'SKU', qty:0, unitPrice:0 });
-                        }}>+ 添加 SKU</button>
-                      </div>
-                      <table className="sku-items-table">
-                        <thead><tr><th>变体</th><th className="num">数量</th><th className="num">单价(¥)</th><th className="num">小计(¥)</th><th></th></tr></thead>
-                        <tbody>
-                          {(r.items||[]).map(item => (
-                            <tr key={item.id}>
-                              <td>
-                                <select className="cell" value={item.variantId}
-                                  onChange={e => {
-                                    const v = variants.find(v => v.id === e.target.value);
-                                    updateReorderItem(p.id, r.id, item.id, { variantId:v?.id||'', variantName:v?.name||v?.sku||'SKU' });
-                                  }}>
-                                  {variants.map(v => <option key={v.id} value={v.id}>{v.name||v.colorOrSize||v.sku||'SKU'}</option>)}
-                                </select>
-                              </td>
-                              <td className="num"><input className="cell mono" type="number" value={item.qty} onChange={e => updateReorderItem(p.id, r.id, item.id, { qty:Number(e.target.value) })} /></td>
-                              <td className="num"><input className="cell mono" type="number" step="0.01" value={item.unitPrice} onChange={e => updateReorderItem(p.id, r.id, item.id, { unitPrice:Number(e.target.value) })} /></td>
-                              <td className="num">¥{((Number(item.qty)||0)*(Number(item.unitPrice)||0)).toFixed(2)}</td>
-                              <td><button className="row-del" onClick={() => removeReorderItem(p.id, r.id, item.id)}>✕</button></td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-
-                  {/* Sub-shipments (分批到货) */}
+                  {/* 分批出货明细 */}
                   <div className="sub-ship-block">
                     <div className="sub-ship-hdr">
-                      <span className="sub-ship-title">分批到货明细</span>
+                      <span className="sub-ship-title">分批出货明细</span>
                       <span className={"sub-ship-sum mono" + (!splitOk ? ' warn' : '')}>
                         {subQty} / {r.qty || 0} pcs {splitOk ? '' : '· 数量不一致'}
                       </span>
                       <button className="btn btn-sm btn-add" onClick={() => {
                         const letter = String.fromCharCode(65 + (r.subShipments||[]).length);
-                        addSubShipment(p.id, r.id, { batchNo: letter, qty:0, shipDate:'', method:r.method||'海运', carrier:'', tracking:'', etaDate:'', actualEta:'' });
+                        addSubShipment(p.id, r.id, { batchNo: letter, qty:0, etd:'', shipDate:'', method:r.method||'海运', carrier:'', tracking:'', fbaShipId:'', etaDate:'', actualEta:'' });
                       }}>+ 添加批次</button>
                     </div>
                     <table className="ss-table">
@@ -760,12 +683,14 @@ function TabReview({ p }) {
                         <tr>
                           <th>批次</th>
                           <th>数量</th>
-                          <th>出货日期</th>
+                          <th>ETD</th>
+                          <th>ATD</th>
                           <th>物流方式</th>
                           <th>服务商</th>
                           <th>运单号</th>
-                          <th>预计到货</th>
-                          <th>实际到货</th>
+                          <th>FBA 入仓编号</th>
+                          <th>ETA</th>
+                          <th>ATA</th>
                           <th>状态</th>
                           <th></th>
                         </tr>
@@ -775,17 +700,19 @@ function TabReview({ p }) {
                           <tr key={ss.id}>
                             <td><input className="cell" style={{width:36, textAlign:'center'}} value={ss.batchNo} onChange={e => updateSubShipment(p.id, r.id, ss.id, { batchNo: e.target.value })} /></td>
                             <td><input className="cell mono" type="number" value={ss.qty} onChange={e => updateSubShipment(p.id, r.id, ss.id, { qty: Number(e.target.value) })} /></td>
-                            <td><input className="cell mono" type="date" value={ss.shipDate} onChange={e => updateSubShipment(p.id, r.id, ss.id, { shipDate: e.target.value })} /></td>
+                            <td><input className="cell mono" type="date" value={ss.etd||''} onChange={e => updateSubShipment(p.id, r.id, ss.id, { etd: e.target.value })} /></td>
+                            <td><input className="cell mono" type="date" value={ss.shipDate||''} onChange={e => updateSubShipment(p.id, r.id, ss.id, { shipDate: e.target.value })} /></td>
                             <td>
-                              <select className="cell" value={ss.method} onChange={e => updateSubShipment(p.id, r.id, ss.id, { method: e.target.value })}>
+                              <select className="cell" value={ss.method||''} onChange={e => updateSubShipment(p.id, r.id, ss.id, { method: e.target.value })}>
                                 <option value="">—</option>
                                 <option>海运</option><option>空运</option><option>空+派</option><option>快递</option><option>卡车</option>
                               </select>
                             </td>
-                            <td><input className="cell" value={ss.carrier} onChange={e => updateSubShipment(p.id, r.id, ss.id, { carrier: e.target.value })} /></td>
-                            <td><input className="cell mono" style={{fontSize:11}} value={ss.tracking} onChange={e => updateSubShipment(p.id, r.id, ss.id, { tracking: e.target.value })} /></td>
-                            <td><input className="cell mono" type="date" value={ss.etaDate} onChange={e => updateSubShipment(p.id, r.id, ss.id, { etaDate: e.target.value })} /></td>
-                            <td><input className="cell mono" type="date" value={ss.actualEta} onChange={e => updateSubShipment(p.id, r.id, ss.id, { actualEta: e.target.value })} /></td>
+                            <td><input className="cell" value={ss.carrier||''} onChange={e => updateSubShipment(p.id, r.id, ss.id, { carrier: e.target.value })} /></td>
+                            <td><input className="cell mono" style={{fontSize:11}} value={ss.tracking||''} onChange={e => updateSubShipment(p.id, r.id, ss.id, { tracking: e.target.value })} /></td>
+                            <td><input className="cell mono" style={{fontSize:11}} value={ss.fbaShipId||''} onChange={e => updateSubShipment(p.id, r.id, ss.id, { fbaShipId: e.target.value })} /></td>
+                            <td><input className="cell mono" type="date" value={ss.etaDate||''} onChange={e => updateSubShipment(p.id, r.id, ss.id, { etaDate: e.target.value })} /></td>
+                            <td><input className="cell mono" type="date" value={ss.actualEta||''} onChange={e => updateSubShipment(p.id, r.id, ss.id, { actualEta: e.target.value })} /></td>
                             <td><StatusSelect value={ss.status} size="sm" onChange={v => updateSubShipment(p.id, r.id, ss.id, { status:v })} /></td>
                             <td><button className="row-del" onClick={() => removeSubShipment(p.id, r.id, ss.id)}>✕</button></td>
                           </tr>
@@ -799,9 +726,9 @@ function TabReview({ p }) {
           })}
         </div>
         <div style={{marginTop:10}}>
-          <AddRecordButton label="添加返单" onClick={() => addRecord(p.id, 'reorder', 'records', {
-            orderNo: 'RO-' + new Date().toISOString().slice(0,7).replace('-', '-'),
-            supplier:'', orderDate:'', triggerInv:0, qty:0, unitPrice:0, taxRate:13, totalAmount:0,
+          <AddRecordButton label="添加物流订单" onClick={() => addRecord(p.id, 'reorder', 'records', {
+            orderNo: 'RO-' + new Date().toISOString().slice(0,7),
+            batchRef:'', supplier:'', orderDate:'', triggerInv:0, qty:0, unitPrice:0, taxRate:13, totalAmount:0,
             shipDate:'', method:'海运', carrier:'', etaDate:'', actualEta:'',
             items:[], subShipments:[],
           })} />
