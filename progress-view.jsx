@@ -150,8 +150,35 @@ function GanttAll({ products, onSelectProduct }) {
             {products.map(p => {
               const segs = [];
               let prevDate = p.createdAt;
+              const hasV = (p.variants || []).length > 0;
+
+              // For a stage key, return effective stage data.
+              // Variant-level stages on multi-SKU products are aggregated from variants.
+              function effectiveSd(stageKey) {
+                const baseSd = p.stages[stageKey];
+                if (!hasV || !VARIANT_STAGE_KEYS.includes(stageKey)) return baseSd;
+
+                const vStages = (p.variants || []).map(v => v.stages?.[stageKey]).filter(Boolean);
+                if (vStages.length === 0) return baseSd;
+
+                const allDone = vStages.every(vs => vs.status === 'done');
+                const anyProgress = vStages.some(vs => vs.status === 'done' || vs.status === 'active');
+
+                const starts = vStages.map(vs => vs.startDate).filter(Boolean).sort();
+                const ends   = vStages.map(vs => vs.endDate || vs.doneDate).filter(Boolean).sort();
+
+                if (allDone && ends.length) {
+                  return { status: 'done', startDate: starts[0] || baseSd?.startDate || null, endDate: ends[ends.length - 1] };
+                }
+                if (anyProgress) {
+                  return { status: 'active', startDate: starts[0] || baseSd?.startDate || null, endDate: baseSd?.endDate || null };
+                }
+                // All idle/hold — fall back to product-level for hold case
+                return baseSd;
+              }
+
               STAGES.forEach(s => {
-                const sd = p.stages[s.key];
+                const sd = effectiveSd(s.key);
                 if (!sd) return;
                 const stageEnd = sd.endDate || sd.doneDate;
                 if (sd.status === 'done' && stageEnd) {
@@ -162,7 +189,7 @@ function GanttAll({ products, onSelectProduct }) {
                   const segStart = sd.startDate || prevDate;
                   let plannedEnd = sd.endDate;
                   if (!plannedEnd && s.key === 'production') {
-                    const batch = (sd.batches || []).find(b => b.expectedShip);
+                    const batch = (p.stages.production?.batches || []).find(b => b.expectedShip);
                     if (batch) plannedEnd = batch.expectedShip;
                   }
                   const segEnd = (plannedEnd && plannedEnd > todayStr) ? plannedEnd : todayStr;
