@@ -33,10 +33,7 @@ const MO_LABELS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','
 
 function GanttAll({ products, onSelectProduct }) {
   const [zoom, setZoom] = React.useState('month');
-  const [expandedGantt, setExpandedGantt] = React.useState(new Set());
-  const toggleGantt = (id) => setExpandedGantt(prev => {
-    const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
-  });
+  const [tooltip, setTooltip] = React.useState(null);
 
   // Dynamic today (no hardcoding)
   const now = React.useMemo(() => {
@@ -127,32 +124,12 @@ function GanttAll({ products, onSelectProduct }) {
         <div className="gantt-grid">
           <div className="gantt-labels">
             <div className="gantt-axis" style={{padding:'8px 14px', fontSize:10.5, color:'var(--ink-4)', textTransform:'uppercase', letterSpacing:'0.04em'}}>产品</div>
-            {products.map(p => {
-              const hasV = (p.variants || []).length > 0;
-              const isExp = expandedGantt.has(p.id);
-              return (
-                <React.Fragment key={p.id}>
-                  <div className="gantt-label" onClick={() => onSelectProduct(p.id)} style={{cursor:'pointer'}}>
-                    {hasV && (
-                      <button className="gantt-expand-btn" title={isExp ? '收起变体' : '展开变体'}
-                        onClick={e => { e.stopPropagation(); toggleGantt(p.id); }}>
-                        {isExp ? '▾' : '▸'}
-                      </button>
-                    )}
-                    <span className={`badge badge-${p.status}`} style={{padding:'1px 5px', fontSize:9}}></span>
-                    <span className="pn">{p.name}</span>
-                    {hasV && <span className="gantt-variant-count">{p.variants.length}</span>}
-                  </div>
-                  {hasV && isExp && (p.variants || []).map((v, vi) => (
-                    <div key={v.id} className="gantt-label gantt-variant-label" onClick={() => onSelectProduct(p.id)} style={{cursor:'pointer'}}>
-                      <span className="gantt-variant-prefix">└</span>
-                      <span className="pn" style={{color:'var(--ink-3)', fontSize:11}}>{v.name || v.colorOrSize || v.sku || 'SKU '+(vi+1)}</span>
-                      {v.sku && <span className="gantt-variant-pct" style={{fontFamily:'var(--font-mono)'}}>{v.sku}</span>}
-                    </div>
-                  ))}
-                </React.Fragment>
-              );
-            })}
+            {products.map(p => (
+              <div key={p.id} className="gantt-label" onClick={() => onSelectProduct(p.id)} style={{cursor:'pointer'}}>
+                <span className={`badge badge-${p.status}`} style={{padding:'1px 5px', fontSize:9}}></span>
+                <span className="pn">{p.name}</span>
+              </div>
+            ))}
           </div>
           <div className="gantt-canvas">
             {/* Axis: absolutely-positioned labels so they align with segment bars */}
@@ -171,8 +148,6 @@ function GanttAll({ products, onSelectProduct }) {
             </div>
 
             {products.map(p => {
-              const hasV = (p.variants || []).length > 0;
-              const isExp = expandedGantt.has(p.id);
               const segs = [];
               let prevDate = p.createdAt;
               STAGES.forEach(s => {
@@ -181,84 +156,52 @@ function GanttAll({ products, onSelectProduct }) {
                 const stageEnd = sd.endDate || sd.doneDate;
                 if (sd.status === 'done' && stageEnd) {
                   const segStart = sd.startDate || prevDate;
-                  segs.push({ color: s.color, name: s.short, start: segStart, end: stageEnd });
+                  segs.push({ color: s.color, name: s.name, short: s.short, start: segStart, end: stageEnd, status: '已完成' });
                   prevDate = stageEnd;
                 } else if (sd.status === 'active') {
                   const segStart = sd.startDate || prevDate;
-                  // Planned end: stage endDate or first batch expectedShip
                   let plannedEnd = sd.endDate;
                   if (!plannedEnd && s.key === 'production') {
                     const batch = (sd.batches || []).find(b => b.expectedShip);
                     if (batch) plannedEnd = batch.expectedShip;
                   }
                   const segEnd = (plannedEnd && plannedEnd > todayStr) ? plannedEnd : todayStr;
-                  segs.push({ color: s.color, name: s.short, start: segStart, end: segEnd, current: true, planned: segEnd > todayStr });
+                  const planned = segEnd > todayStr;
+                  segs.push({ color: s.color, name: s.name, short: s.short, start: segStart, end: segEnd, current: true, planned, status: planned ? '计划中' : '进行中' });
                   prevDate = segEnd;
                 } else if (sd.status === 'hold' && (sd.startDate || prevDate)) {
                   const segStart = sd.startDate || prevDate;
-                  segs.push({ color: '#9333ea', name: s.short + '⏸', start: segStart, end: sd.endDate || todayStr });
+                  segs.push({ color: '#9333ea', name: s.name, short: s.short + '⏸', start: segStart, end: sd.endDate || todayStr, status: '已暂停' });
                 }
               });
               return (
-                <React.Fragment key={p.id}>
-                  <div className="gantt-row">
-                    {segs.map((seg, i) => {
-                      const l = pct(seg.start);
-                      const r = pct(seg.end);
-                      const w = r - l;
-                      if (w < 0.3) return null;
-                      return (
-                        <div key={i}
-                          className={"gantt-seg" + (seg.current ? ' current' : '')}
-                          style={{
-                            left: l + '%',
-                            width: w + '%',
-                            background: seg.color,
-                            opacity: seg.planned ? 0.55 : 1,
-                            backgroundImage: seg.planned
-                              ? 'repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,0.3) 4px,rgba(255,255,255,0.3) 8px)'
-                              : 'none',
-                          }}
-                          title={`${seg.name}: ${seg.start} → ${seg.end}${seg.planned ? ' (计划)' : ''}`}>
-                          {w > 4 ? seg.name : ''}
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {hasV && isExp && (p.variants || []).map(v => {
-                    const variantKeys = VARIANT_STAGE_KEYS;
-                    const doneKeys = variantKeys.filter(k => v.stages?.[k]?.status === 'done');
-                    const activeKey = variantKeys.find(k => v.stages?.[k]?.status === 'active');
-                    const lastDoneKey = doneKeys[doneKeys.length - 1];
-                    const fillColor = (lastDoneKey ? STAGES.find(s => s.key === lastDoneKey)?.color : null)
-                                   || (activeKey ? STAGES.find(s => s.key === activeKey)?.color : '#3b82f6');
-                    const barStart = p.createdAt ? pct(p.createdAt) : todayPct;
-                    const barEnd = todayPct;
-                    const barW = Math.max(0, barEnd - barStart);
-                    const fillW = barW * (doneKeys.length / variantKeys.length);
+                <div key={p.id} className="gantt-row">
+                  {segs.map((seg, i) => {
+                    const l = pct(seg.start);
+                    const r = pct(seg.end);
+                    const w = r - l;
+                    if (w < 0.3) return null;
+                    const days = Math.round((new Date(seg.end+'T00:00:00') - new Date(seg.start+'T00:00:00')) / 86400000);
                     return (
-                      <div key={v.id} className="gantt-row gantt-variant-row">
-                        {barW > 0.5 && (
-                          <div style={{position:'absolute', left:barStart+'%', width:barW+'%', height:'50%', top:'25%', background:'var(--border)', borderRadius:3}} />
-                        )}
-                        {fillW > 0.3 && (
-                          <div style={{position:'absolute', left:barStart+'%', width:fillW+'%', height:'50%', top:'25%', background:fillColor, borderRadius:3, opacity:0.8}}
-                            title={`${doneKeys.length}/${variantKeys.length} 变体阶段完成`} />
-                        )}
-                        {activeKey && (
-                          <div style={{
-                            position:'absolute',
-                            left: (barStart + fillW) + '%',
-                            width:8, height:8,
-                            background: STAGES.find(s=>s.key===activeKey)?.color || fillColor,
-                            borderRadius:'50%', top:'50%', marginTop:-4, marginLeft:-4,
-                            border:'1.5px solid var(--bg)', boxShadow:'0 0 0 2px '+fillColor,
-                          }} title={'进行中: ' + activeKey} />
-                        )}
+                      <div key={i}
+                        className={"gantt-seg" + (seg.current ? ' current' : '')}
+                        style={{
+                          left: l + '%',
+                          width: w + '%',
+                          background: seg.color,
+                          opacity: seg.planned ? 0.55 : 1,
+                          backgroundImage: seg.planned
+                            ? 'repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,0.3) 4px,rgba(255,255,255,0.3) 8px)'
+                            : 'none',
+                        }}
+                        onMouseEnter={e => setTooltip({ name: seg.name, status: seg.status, period: seg.start + ' → ' + seg.end, days, x: e.clientX, y: e.clientY })}
+                        onMouseMove={e => setTooltip(t => t ? {...t, x: e.clientX, y: e.clientY} : null)}
+                        onMouseLeave={() => setTooltip(null)}>
+                        {w > 4 ? seg.short : ''}
                       </div>
                     );
                   })}
-                </React.Fragment>
+                </div>
               );
             })}
             <div className="gantt-today" style={{left: todayPct + '%'}}></div>
@@ -277,6 +220,20 @@ function GanttAll({ products, onSelectProduct }) {
           <span>计划中</span>
         </span>
       </div>
+      {tooltip && (
+        <div className="gantt-tip" style={{
+          position: 'fixed',
+          left: Math.min(tooltip.x + 14, window.innerWidth - 230),
+          top: tooltip.y - 76,
+          zIndex: 300,
+          pointerEvents: 'none',
+        }}>
+          <div className="gantt-tip-name">{tooltip.name}</div>
+          <div className="gantt-tip-status">{tooltip.status}</div>
+          <div className="gantt-tip-period">{tooltip.period}</div>
+          <div className="gantt-tip-days">{tooltip.days} 天</div>
+        </div>
+      )}
     </div>
   );
 }
