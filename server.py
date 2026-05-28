@@ -495,18 +495,22 @@ def main():
     handler  = make_handler(db_state, auth_mgr)
     server   = ThreadingServer((args.host, args.port), handler)
 
-    ip  = get_lan_ip()
+    ip        = get_lan_ip()
+    local_hn  = socket.gethostname()  # e.g. Mac-miniY.local
+    if not local_hn.endswith('.local'):
+        local_hn = local_hn + '.local'
     bar = "─" * 58
     print(bar)
     print("  FBA Tracker 协作服务器 v2 已启动")
     print(bar)
     print(f"  本机访问：  http://localhost:{args.port}")
-    print(f"  局域网访问：http://{ip}:{args.port}")
+    print(f"  固定地址：  http://{local_hn}:{args.port}  ← 换 WiFi 也不变")
+    print(f"  当前 IP：   http://{ip}:{args.port}")
     print(f"  数据库：    {db_path}")
     print(f"  用户配置：  {users_path}")
     print(f"  当前版本：  v{db_state.version}  ({db_state.product_count} 个产品)")
     print(bar)
-    print("  把局域网地址发给同事 → 登录后即可协同编辑")
+    print("  固定地址（.local）在公司任意 WiFi 下均可访问")
     print("  Ctrl+C 停止服务")
     print(bar)
     try:
