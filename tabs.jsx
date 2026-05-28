@@ -222,9 +222,23 @@ function VocCard({ p }) {
 
   return (
     <div className="voc-card">
+      <datalist id="voc-apply-opts">
+        <option value="标题" />
+        <option value="五点描述" />
+        <option value="A+" />
+        <option value="广告文案" />
+        <option value="品牌故事" />
+      </datalist>
       <div className="voc-card-hdr">
         <span className="voc-card-title">VOC 分析</span>
         <span className="voc-card-sub">用户场景 · 目标人群 · 核心卖点</span>
+        <div className="voc-card-meta">
+          <StatusSelect value={voc.status} onChange={v => updateStage(p.id, 'voc', { status: v })} size="sm" />
+          <span className="voc-meta-sep">开始</span>
+          <input className="cell mono voc-date" type="date" value={voc.startDate || ''} onChange={e => updateStage(p.id, 'voc', { startDate: e.target.value })} />
+          <span className="voc-meta-sep">结束</span>
+          <input className="cell mono voc-date" type="date" value={voc.endDate || ''} onChange={e => updateStage(p.id, 'voc', { endDate: e.target.value })} />
+        </div>
       </div>
       <div className="voc-card-body">
 
@@ -281,13 +295,8 @@ function VocCard({ p }) {
                     </select>
                   </td>
                   <td>
-                    <select className="cell" value={item.appliedTo || ''} onChange={e => upd('sellingPoints', item.id, { appliedTo: e.target.value })}>
-                      <option value="">—</option>
-                      <option value="标题">标题</option>
-                      <option value="五点描述">五点描述</option>
-                      <option value="A+">A+</option>
-                      <option value="广告文案">广告文案</option>
-                    </select>
+                    <input className="cell" list="voc-apply-opts" value={item.appliedTo || ''} placeholder="应用于…"
+                      onChange={e => upd('sellingPoints', item.id, { appliedTo: e.target.value })} />
                   </td>
                   <td><button className="row-del" onClick={() => rem('sellingPoints', item.id)}>✕</button></td>
                 </tr>
