@@ -122,41 +122,49 @@ function TableView({ onSelectProduct, filter }) {
   }
 
   function exportExcel() {
-    if (typeof XLSX === 'undefined') {
-      alert('Excel 导出库未加载，请检查网络连接后刷新页面。');
+    const doExport = () => {
+      const headers = visibleCols.map(c => c.label.replace(' 🔒', ''));
+      const data = rows.map(p => {
+        const m = calcProfit(p);
+        const pr = p.stages.profit;
+        return visibleCols.map(c => {
+          switch(c.k) {
+            case 'status': return STATUS_LABELS[p.status]?.label || p.status;
+            case 'progress': return p.progress;
+            case 'source': return p.stages.initiation.source || '';
+            case 'market': return p.stages.initiation.market || '';
+            case 'compPrice': return p.stages.research.avgPrice || '';
+            case 'targetPrice': return pr.targetPrice ? Number(pr.targetPrice) : '';
+            case 'cogs': return pr.cogs ? Number(pr.cogs) : '';
+            case 'bomTotal': return +(p.stages.bom.items||[]).reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i.unitCost)||0),0).toFixed(2) || '';
+            case 'netProfit': return m ? +m.net.toFixed(2) : '';
+            case 'margin': return m ? +m.margin.toFixed(1) : '';
+            case 'decision': { const d = pr.decision; return d==='pass'?'通过':d==='hold'?'暂缓':d==='reject'?'否决':''; }
+            case 'supCount': return (p.stages.supplier.suppliers||[]).length;
+            case 'sampleRounds': return (p.stages.sampling.rounds||[]).length;
+            case 'expectedShip': return lastExpectedShip(p) || p.stages.shipment?.endDate || '';
+            case 'orderTotal': return +calcOrderTotal(p).toFixed(2) || '';
+            case 'launchDate': return p.stages.listing.launchDate || p.stages.listing.endDate || '';
+            default: return getColVal(p, c.k) ?? '';
+          }
+        });
+      });
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
+      ws['!cols'] = visibleCols.map(c => ({ wch: c.k === 'name' ? 28 : c.num ? 12 : 16 }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, '产品列表');
+      XLSX.writeFile(wb, 'FBA产品列表_' + new Date().toISOString().slice(0,10) + '.xlsx');
+    };
+
+    if (typeof XLSX !== 'undefined') {
+      doExport();
       return;
     }
-    const headers = visibleCols.map(c => c.label.replace(' 🔒', ''));
-    const data = rows.map(p => {
-      const m = calcProfit(p);
-      const pr = p.stages.profit;
-      return visibleCols.map(c => {
-        switch(c.k) {
-          case 'status': return STATUS_LABELS[p.status]?.label || p.status;
-          case 'progress': return p.progress;
-          case 'source': return p.stages.initiation.source || '';
-          case 'market': return p.stages.initiation.market || '';
-          case 'compPrice': return p.stages.research.avgPrice || '';
-          case 'targetPrice': return pr.targetPrice ? Number(pr.targetPrice) : '';
-          case 'cogs': return pr.cogs ? Number(pr.cogs) : '';
-          case 'bomTotal': return +(p.stages.bom.items||[]).reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i.unitCost)||0),0).toFixed(2) || '';
-          case 'netProfit': return m ? +m.net.toFixed(2) : '';
-          case 'margin': return m ? +m.margin.toFixed(1) : '';
-          case 'decision': { const d = pr.decision; return d==='pass'?'通过':d==='hold'?'暂缓':d==='reject'?'否决':''; }
-          case 'supCount': return (p.stages.supplier.suppliers||[]).length;
-          case 'sampleRounds': return (p.stages.sampling.rounds||[]).length;
-          case 'expectedShip': return lastExpectedShip(p) || p.stages.shipment?.endDate || '';
-          case 'orderTotal': return +calcOrderTotal(p).toFixed(2) || '';
-          case 'launchDate': return p.stages.listing.launchDate || p.stages.listing.endDate || '';
-          default: return getColVal(p, c.k) ?? '';
-        }
-      });
-    });
-    const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
-    ws['!cols'] = visibleCols.map(c => ({ wch: c.k === 'name' ? 28 : c.num ? 12 : 16 }));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '产品列表');
-    XLSX.writeFile(wb, 'FBA产品列表_' + new Date().toISOString().slice(0,10) + '.xlsx');
+    const s = document.createElement('script');
+    s.src = 'https://unpkg.com/xlsx/dist/xlsx.full.min.js';
+    s.onload = doExport;
+    s.onerror = () => alert('Excel 导出库加载失败，请检查网络连接。');
+    document.head.appendChild(s);
   }
 
   function renderCell(p, k, m, pr, hasV, isExp) {
