@@ -194,6 +194,113 @@ function TabSup({ p }) {
   );
 }
 
+// ============ VOC 分析卡片 ============
+function VocCard({ p }) {
+  const { updateStage } = useProducts();
+  const voc = p.stages.voc || {};
+
+  const add = (key, defaults) => {
+    const cur = voc[key] || [];
+    updateStage(p.id, 'voc', { [key]: [...cur, { id: Date.now().toString(36), ...defaults }] });
+  };
+  const upd = (key, id, patch) => {
+    updateStage(p.id, 'voc', { [key]: (voc[key] || []).map(x => x.id === id ? { ...x, ...patch } : x) });
+  };
+  const rem = (key, id) => {
+    updateStage(p.id, 'voc', { [key]: (voc[key] || []).filter(x => x.id !== id) });
+  };
+
+  const VocSection = ({ secKey, secName, addLabel, children }) => (
+    <div className="voc-section">
+      <div className="voc-sec-hdr">
+        <span className="voc-sec-name">{secName}</span>
+        <button className="btn btn-sm" onClick={() => add(secKey, addLabel === '场景' ? { title:'', detail:'' } : addLabel === '人群' ? { title:'', detail:'' } : { title:'', detail:'', priority:'', appliedTo:'' })}>+ 添加{addLabel}</button>
+      </div>
+      {(voc[secKey] || []).length > 0 && children}
+    </div>
+  );
+
+  return (
+    <div className="voc-card">
+      <div className="voc-card-hdr">
+        <span className="voc-card-title">VOC 分析</span>
+        <span className="voc-card-sub">用户场景 · 目标人群 · 核心卖点</span>
+      </div>
+      <div className="voc-card-body">
+
+        <VocSection secKey="useCases" secName="使用场景" addLabel="场景">
+          <table className="sup-table editable">
+            <thead><tr><th style={{width:'28%'}}>场景</th><th>详情</th><th></th></tr></thead>
+            <tbody>
+              {(voc.useCases || []).map(item => (
+                <tr key={item.id}>
+                  <td><input className="cell" value={item.title || ''} placeholder="场景名称" onChange={e => upd('useCases', item.id, { title: e.target.value })} /></td>
+                  <td><input className="cell" value={item.detail || ''} placeholder="场景描述" onChange={e => upd('useCases', item.id, { detail: e.target.value })} /></td>
+                  <td><button className="row-del" onClick={() => rem('useCases', item.id)}>✕</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </VocSection>
+
+        <VocSection secKey="audiences" secName="使用人群" addLabel="人群">
+          <table className="sup-table editable">
+            <thead><tr><th style={{width:'28%'}}>人群</th><th>详情</th><th></th></tr></thead>
+            <tbody>
+              {(voc.audiences || []).map(item => (
+                <tr key={item.id}>
+                  <td><input className="cell" value={item.title || ''} placeholder="人群类型" onChange={e => upd('audiences', item.id, { title: e.target.value })} /></td>
+                  <td><input className="cell" value={item.detail || ''} placeholder="人群描述" onChange={e => upd('audiences', item.id, { detail: e.target.value })} /></td>
+                  <td><button className="row-del" onClick={() => rem('audiences', item.id)}>✕</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </VocSection>
+
+        <VocSection secKey="sellingPoints" secName="核心卖点" addLabel="卖点">
+          <table className="sup-table editable">
+            <thead>
+              <tr>
+                <th style={{width:'22%'}}>卖点</th>
+                <th>详情</th>
+                <th style={{width:'72px', textAlign:'center'}}>优先级</th>
+                <th style={{width:'96px'}}>应用于</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {(voc.sellingPoints || []).map(item => (
+                <tr key={item.id}>
+                  <td><input className="cell" value={item.title || ''} placeholder="卖点名称" onChange={e => upd('sellingPoints', item.id, { title: e.target.value })} /></td>
+                  <td><input className="cell" value={item.detail || ''} placeholder="卖点描述" onChange={e => upd('sellingPoints', item.id, { detail: e.target.value })} /></td>
+                  <td className="num">
+                    <select className="cell mono" style={{textAlign:'center'}} value={item.priority || ''} onChange={e => upd('sellingPoints', item.id, { priority: e.target.value })}>
+                      <option value="">—</option>
+                      {[1,2,3,4,5].map(n => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  </td>
+                  <td>
+                    <select className="cell" value={item.appliedTo || ''} onChange={e => upd('sellingPoints', item.id, { appliedTo: e.target.value })}>
+                      <option value="">—</option>
+                      <option value="标题">标题</option>
+                      <option value="五点描述">五点描述</option>
+                      <option value="A+">A+</option>
+                      <option value="广告文案">广告文案</option>
+                    </select>
+                  </td>
+                  <td><button className="row-del" onClick={() => rem('sellingPoints', item.id)}>✕</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </VocSection>
+
+      </div>
+    </div>
+  );
+}
+
 // ============ TAB: 内容设计 ============
 function TabDesign({ p }) {
   const { updateStage, addRecord, updateRecord, removeRecord } = useProducts();
@@ -202,6 +309,7 @@ function TabDesign({ p }) {
 
   return (
     <>
+      <VocCard p={p} />
       <StageCard stage={STAGES[7]} productId={p.id} stageKey="packaging" stageData={pack}>
         <div className="record-list">
           {(pack.rounds || []).map((r, idx) => (
