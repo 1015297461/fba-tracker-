@@ -218,6 +218,14 @@ function TabDesign({ p }) {
                   onChange={v => updateRecord(p.id, 'packaging', 'rounds', r.id, { draftDate:v })} />
                 <EditField label="确认日期" type="date" mono value={r.confirmDate}
                   onChange={v => updateRecord(p.id, 'packaging', 'rounds', r.id, { confirmDate:v })} />
+                <EditField label="包装尺寸 (L×W×H cm)" value={r.pkgSize}
+                  onChange={v => updateRecord(p.id, 'packaging', 'rounds', r.id, { pkgSize:v })} />
+                <EditField label="包装重量 (kg)" type="number" mono value={r.pkgWeight}
+                  onChange={v => updateRecord(p.id, 'packaging', 'rounds', r.id, { pkgWeight:v })} />
+                <EditField label="FBA尺寸分级" value={r.fbaSizeTier}
+                  onChange={v => updateRecord(p.id, 'packaging', 'rounds', r.id, { fbaSizeTier:v })} />
+                <EditField label="FBA费用 ($)" type="number" mono prefix="$" value={r.fbaFee}
+                  onChange={v => updateRecord(p.id, 'packaging', 'rounds', r.id, { fbaFee:v })} />
               </div>
               <label className="final-toggle">
                 <input type="checkbox" checked={!!r.isFinal}
@@ -230,7 +238,7 @@ function TabDesign({ p }) {
         <div style={{marginTop:10}}>
           <AddRecordButton label="添加包装轮次" onClick={() => {
             const next = ((pack.rounds || []).reduce((m, r) => Math.max(m, r.round || 0), 0)) + 1;
-            addRecord(p.id, 'packaging', 'rounds', { round: next, briefDate:'', designer:'', draftDate:'', confirmDate:'', isFinal:false });
+            addRecord(p.id, 'packaging', 'rounds', { round: next, briefDate:'', designer:'', draftDate:'', confirmDate:'', pkgSize:'', pkgWeight:'', fbaSizeTier:'', fbaFee:'', isFinal:false });
           }} />
         </div>
       </StageCard>

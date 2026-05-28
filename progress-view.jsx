@@ -192,10 +192,17 @@ function GanttAll({ products, onSelectProduct }) {
                     const batch = (p.stages.production?.batches || []).find(b => b.expectedShip);
                     if (batch) plannedEnd = batch.expectedShip;
                   }
-                  const segEnd = (plannedEnd && plannedEnd > todayStr) ? plannedEnd : todayStr;
-                  const planned = segEnd > todayStr;
-                  segs.push({ color: s.color, name: s.name, short: s.short, start: segStart, end: segEnd, current: true, planned, status: planned ? '计划中' : '进行中' });
-                  prevDate = segEnd;
+                  const started = segStart && segStart < todayStr;
+                  const futurePlan = plannedEnd && plannedEnd > todayStr;
+                  if (started && futurePlan) {
+                    // Split: solid elapsed portion + striped future portion
+                    segs.push({ color: s.color, name: s.name, short: s.short, start: segStart, end: todayStr, current: true, planned: false, status: '进行中' });
+                    segs.push({ color: s.color, name: s.name, short: s.short, start: todayStr, end: plannedEnd, current: true, planned: true, status: '计划中' });
+                  } else {
+                    const segEnd = futurePlan ? plannedEnd : todayStr;
+                    segs.push({ color: s.color, name: s.name, short: s.short, start: segStart || todayStr, end: segEnd, current: true, planned: !started, status: started ? '进行中' : '计划中' });
+                  }
+                  prevDate = plannedEnd || todayStr;
                 } else if (sd.status === 'hold' && (sd.startDate || prevDate)) {
                   const segStart = sd.startDate || prevDate;
                   segs.push({ color: '#9333ea', name: s.name, short: s.short + '⏸', start: segStart, end: sd.endDate || todayStr, status: '已暂停' });
@@ -207,7 +214,7 @@ function GanttAll({ products, onSelectProduct }) {
                     const l = pct(seg.start);
                     const r = pct(seg.end);
                     const w = r - l;
-                    if (w < 0.3) return null;
+                    if (w < 0) return null;  // skip inverted/invalid segments
                     const days = Math.round((new Date(seg.end+'T00:00:00') - new Date(seg.start+'T00:00:00')) / 86400000);
                     return (
                       <div key={i}
@@ -216,7 +223,7 @@ function GanttAll({ products, onSelectProduct }) {
                           left: l + '%',
                           width: w + '%',
                           background: seg.color,
-                          opacity: seg.planned ? 0.55 : 1,
+                          opacity: seg.planned ? 0.6 : 1,
                           backgroundImage: seg.planned
                             ? 'repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,0.3) 4px,rgba(255,255,255,0.3) 8px)'
                             : 'none',
