@@ -195,6 +195,18 @@ function TabSup({ p }) {
 }
 
 // ============ VOC 分析卡片 ============
+function VocSection({ secName, addLabel, items, onAdd, children }) {
+  return (
+    <div className="voc-section">
+      <div className="voc-sec-hdr">
+        <span className="voc-sec-name">{secName}</span>
+        <button className="btn btn-sm" onClick={onAdd}>+ 添加{addLabel}</button>
+      </div>
+      {items.length > 0 && children}
+    </div>
+  );
+}
+
 function VocCard({ p }) {
   const { updateStage } = useProducts();
   const voc = p.stages.voc || {};
@@ -209,16 +221,6 @@ function VocCard({ p }) {
   const rem = (key, id) => {
     updateStage(p.id, 'voc', { [key]: (voc[key] || []).filter(x => x.id !== id) });
   };
-
-  const VocSection = ({ secKey, secName, addLabel, children }) => (
-    <div className="voc-section">
-      <div className="voc-sec-hdr">
-        <span className="voc-sec-name">{secName}</span>
-        <button className="btn btn-sm" onClick={() => add(secKey, addLabel === '场景' ? { title:'', detail:'' } : addLabel === '人群' ? { title:'', detail:'' } : { title:'', detail:'', priority:'', appliedTo:'' })}>+ 添加{addLabel}</button>
-      </div>
-      {(voc[secKey] || []).length > 0 && children}
-    </div>
-  );
 
   return (
     <div className="voc-card">
@@ -242,7 +244,8 @@ function VocCard({ p }) {
       </div>
       <div className="voc-card-body">
 
-        <VocSection secKey="useCases" secName="使用场景" addLabel="场景">
+        <VocSection secName="使用场景" addLabel="场景" items={voc.useCases || []}
+          onAdd={() => add('useCases', { title:'', detail:'' })}>
           <table className="sup-table editable">
             <thead><tr><th style={{width:'28%'}}>场景</th><th>详情</th><th></th></tr></thead>
             <tbody>
@@ -257,7 +260,8 @@ function VocCard({ p }) {
           </table>
         </VocSection>
 
-        <VocSection secKey="audiences" secName="使用人群" addLabel="人群">
+        <VocSection secName="使用人群" addLabel="人群" items={voc.audiences || []}
+          onAdd={() => add('audiences', { title:'', detail:'' })}>
           <table className="sup-table editable">
             <thead><tr><th style={{width:'28%'}}>人群</th><th>详情</th><th></th></tr></thead>
             <tbody>
@@ -272,7 +276,8 @@ function VocCard({ p }) {
           </table>
         </VocSection>
 
-        <VocSection secKey="sellingPoints" secName="核心卖点" addLabel="卖点">
+        <VocSection secName="核心卖点" addLabel="卖点" items={voc.sellingPoints || []}
+          onAdd={() => add('sellingPoints', { title:'', detail:'', priority:'', appliedTo:'' })}>
           <table className="sup-table editable">
             <thead>
               <tr>
