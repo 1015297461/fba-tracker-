@@ -521,6 +521,33 @@ input, textarea, select { font-family: inherit; font-size: 13px; }
 .record-card .record-hdr .record-final-badge + .record-remove,
 .record-card .record-hdr .status-select + .record-final-badge { margin-left: 0; }
 .record-body { padding: 12px; }
+.record-collapse {
+  width: 18px; height: 18px; flex-shrink: 0;
+  background: transparent; border: 0;
+  color: var(--ink-4); font-size: 11px; padding: 0;
+  display: grid; place-items: center; border-radius: 3px; cursor: pointer;
+}
+.record-collapse:hover { background: rgba(0,0,0,0.06); color: var(--ink); }
+.record-meta {
+  display: flex; align-items: center; gap: 5px; flex-wrap: nowrap;
+}
+.record-meta-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 2px 7px; border-radius: 10px;
+  background: var(--bg); border: 1px solid var(--border);
+  font-size: 11px; white-space: nowrap;
+}
+.record-meta-chip .rmc-lbl {
+  color: var(--ink-4); font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+.record-meta-chip .rmc-val { color: var(--ink-2); font-family: var(--font-mono); }
+.record-meta-chip.rmc-pending { background: rgba(234,88,12,0.08); border-color: rgba(234,88,12,0.25); }
+.record-meta-chip.rmc-pending .rmc-val { color: var(--orange); font-weight: 600; }
+.record-meta-chip.rmc-done { background: rgba(22,163,74,0.08); border-color: rgba(22,163,74,0.25); }
+.record-meta-chip.rmc-done .rmc-val { color: #16a34a; font-weight: 600; }
+.record-meta-chip.rmc-warn { background: rgba(220,38,38,0.08); border-color: rgba(220,38,38,0.25); }
+.record-meta-chip.rmc-warn .rmc-val { color: #dc2626; font-weight: 600; }
 
 .btn-add {
   background: transparent;
@@ -1182,14 +1209,37 @@ select.meta-edit { cursor: pointer; }
 /* logs */
 .logs-list { display: flex; flex-direction: column; gap: 0; }
 .log-row {
-  display: grid; grid-template-columns: 90px 1fr; gap: 14px;
-  padding: 9px 0;
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 0;
   border-bottom: 1px solid var(--border);
   font-size: 12px;
+  min-height: 32px;
 }
 .log-row:last-child { border-bottom: 0; }
-.log-row .date { font-family: var(--font-mono); color: var(--ink-3); font-size: 11px; }
-.log-row .text { color: var(--ink); }
+.log-row .date { font-family: var(--font-mono); color: var(--ink-3); font-size: 11px; flex-shrink: 0; width: 85px; }
+.log-row .text { color: var(--ink); flex: 1; }
+.log-row.editing { background: var(--bg-2); margin: 0 -6px; padding: 7px 6px; border-radius: var(--r-sm); }
+.log-edit-input {
+  flex: 1; height: 26px;
+  border: 1px solid var(--border-strong); border-radius: 4px;
+  background: var(--card-bg); color: var(--ink);
+  font-size: 12px; font-family: inherit;
+  padding: 0 8px; outline: none;
+}
+.log-edit-input:focus { border-color: var(--blue); }
+.log-actions {
+  flex-shrink: 0;
+  display: inline-flex; gap: 2px;
+}
+.log-btn {
+  width: 22px; height: 22px;
+  background: transparent; border: 0;
+  color: var(--ink-4); font-size: 11px;
+  display: grid; place-items: center;
+  border-radius: 3px; cursor: pointer;
+  padding: 0;
+}
+.log-btn:hover { background: rgba(0,0,0,0.06); color: var(--ink); }
 
 /* misc */
 .empty-hint {
@@ -1644,6 +1694,47 @@ select.meta-edit { cursor: pointer; }
   text-transform: uppercase; letter-spacing: 0.04em;
   margin-bottom: 8px;
 }
+/* ===== 生产批次：出货明细 ===== */
+.batch-ship-block {
+  margin-top: 12px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+.batch-ship-block-hdr {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+}
+.batch-ship-block-title {
+  font-size: 11.5px; font-weight: 600; color: var(--ink-3);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.batch-ship-block-sum {
+  font-size: 11px; color: var(--ink-4); flex: 1;
+}
+.batch-ship-block-sum.warn { color: var(--orange); font-weight: 600; }
+.batch-ship-block-hdr button { margin-left: auto; }
+.batch-ship-entry {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  margin-top: 6px;
+  overflow: hidden;
+}
+.batch-ship-entry-hdr {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 10px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+}
+.batch-ship-no {
+  font-size: 11px; font-weight: 700; color: var(--ink-4); min-width: 22px;
+}
+.batch-ship-info {
+  font-size: 11.5px; color: var(--ink-2); flex: 1;
+  font-family: var(--font-mono);
+}
+.batch-ship-entry-body {
+  padding: 10px 12px;
+}
+
 /* 自动计算字段（只读显示，与 EditField 等高对齐） */
 .calc-field {
   display: flex; flex-direction: column; gap: 3px;
