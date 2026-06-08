@@ -10,12 +10,48 @@ export function ProductList({ products, activeId, setActiveId }: {
   activeId: string;
   setActiveId: (id: string) => void;
 }) {
+  const { moveProduct } = useProducts() as any;
   const [search, setSearch] = React.useState('');
   const filtered = products.filter(p =>
     !search ||
     p.name.toLowerCase().includes(search.toLowerCase()) ||
     p.sku.toLowerCase().includes(search.toLowerCase())
   );
+  const dragIdRef = React.useRef<string | null>(null);
+  const dropTargetRef = React.useRef<string | null>(null);
+  const [overId, setOverId] = React.useState<string | null>(null);
+
+  const handleDragStart = (id: string) => (e: React.DragEvent) => {
+    dragIdRef.current = id;
+    setOverId(null);
+    (e.target as HTMLElement).style.opacity = '0.5';
+  };
+
+  const handleDragEnd = (e: React.DragEvent) => {
+    (e.target as HTMLElement).style.opacity = '';
+    const from = dragIdRef.current;
+    const to = dropTargetRef.current;
+    dragIdRef.current = null;
+    dropTargetRef.current = null;
+    setOverId(null);
+    if (from && to && from !== to) {
+      moveProduct(from, to);
+    }
+  };
+
+  const handleDragOver = (id: string) => (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (id !== dragIdRef.current) {
+      dropTargetRef.current = id;
+      setOverId(id);
+    }
+  };
+
+  const handleDragLeave = (id: string) => () => {
+    if (overId === id) setOverId(null);
+  };
+
   return (
     <div className="plist">
       <div className="plist-search">
@@ -28,8 +64,14 @@ export function ProductList({ products, activeId, setActiveId }: {
         {filtered.map(p => {
           const stage = STAGES.find(s => s.key === p.currentStage);
           return (
-            <div key={p.id} className="pcard"
+            <div key={p.id}
+              className={"pcard" + (overId === p.id ? ' pcard-drag-over' : '') + (dragIdRef.current === p.id ? ' pcard-dragging' : '')}
               data-active={p.id === activeId}
+              draggable="true"
+              onDragStart={handleDragStart(p.id)}
+              onDragEnd={handleDragEnd}
+              onDragOver={handleDragOver(p.id)}
+              onDragLeave={handleDragLeave(p.id)}
               onClick={() => setActiveId(p.id)}>
               <div className="pcard-row1">
                 <span className="pcard-name">{p.name}</span>

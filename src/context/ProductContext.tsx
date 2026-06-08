@@ -374,6 +374,22 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
     return newId;
   }, []);
 
+  const moveProduct = React.useCallback((productId: string, beforeProductId: string | null) => {
+    setProducts(prev => {
+      const idx = prev.findIndex(p => p.id === productId);
+      if (idx === -1) return prev;
+      const item = prev[idx];
+      const rest = prev.filter(p => p.id !== productId);
+      if (beforeProductId === null) {
+        return [...rest, item];
+      }
+      const targetIdx = rest.findIndex(p => p.id === beforeProductId);
+      if (targetIdx === -1) return prev;
+      rest.splice(targetIdx, 0, item);
+      return rest;
+    });
+  }, []);
+
   const update = React.useCallback((id: string, updater: (p: Product) => Product) => {
     setProducts(prev => prev.map(p => p.id === id ? updater(p) : p));
   }, []);
@@ -638,6 +654,39 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
     }));
   }, []);
 
+  const addBalancePayment = React.useCallback((productId: string, batchId: string, item: any) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const batches = (p.stages?.production?.batches || []).map((b: any) => {
+        if (b.id !== batchId) return b;
+        return { ...b, balancePayments: [...(b.balancePayments || []), { id: uid(), ...item }] };
+      });
+      return { ...p, stages: { ...p.stages, production: { ...p.stages.production, batches } } };
+    }));
+  }, []);
+
+  const updateBalancePayment = React.useCallback((productId: string, batchId: string, bpId: string, patch: any) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const batches = (p.stages?.production?.batches || []).map((b: any) => {
+        if (b.id !== batchId) return b;
+        return { ...b, balancePayments: (b.balancePayments || []).map((bp: any) => bp.id === bpId ? { ...bp, ...patch } : bp) };
+      });
+      return { ...p, stages: { ...p.stages, production: { ...p.stages.production, batches } } };
+    }));
+  }, []);
+
+  const removeBalancePayment = React.useCallback((productId: string, batchId: string, bpId: string) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const batches = (p.stages?.production?.batches || []).map((b: any) => {
+        if (b.id !== batchId) return b;
+        return { ...b, balancePayments: (b.balancePayments || []).filter((bp: any) => bp.id !== bpId) };
+      });
+      return { ...p, stages: { ...p.stages, production: { ...p.stages.production, batches } } };
+    }));
+  }, []);
+
   const addBatchShipment = React.useCallback((productId: string, batchId: string, data: any) => {
     setProducts(prev => prev.map(p => {
       if (p.id !== productId) return p;
@@ -786,13 +835,14 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
     products, setProducts, update, updateStage, updateRecord, addRecord, removeRecord,
     updateSubShipment, addSubShipment, removeSubShipment, addLog, updateLog, removeLog,
     savedAt, resetToDefaults, exportJSON, importJSON, exportProduct,
-    createProduct, removeProduct, duplicateProduct,
+    createProduct, removeProduct, duplicateProduct, moveProduct,
     syncMode, syncStatus, syncVersion: versionRef.current,
     needLogin, currentUser, login, logout,
     addVariant, updateVariant, updateVariantStage, removeVariant,
     addVariantRecord, updateVariantRecord, removeVariantRecord,
     addBatchItem, updateBatchItem, removeBatchItem,
     addBatchExtra, updateBatchExtra, removeBatchExtra,
+    addBalancePayment, updateBalancePayment, removeBalancePayment,
     addBatchShipment, updateBatchShipment, removeBatchShipment,
     addShipmentItem, updateShipmentItem, removeShipmentItem,
     addReorderItem, updateReorderItem, removeReorderItem,
@@ -800,12 +850,13 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
   }), [products, update, updateStage, updateRecord, addRecord, removeRecord,
     updateSubShipment, addSubShipment, removeSubShipment, addLog, updateLog, removeLog,
     savedAt, resetToDefaults, exportJSON, importJSON, exportProduct,
-    createProduct, removeProduct, duplicateProduct,
+    createProduct, removeProduct, duplicateProduct, moveProduct,
     syncMode, syncStatus, needLogin, currentUser, login, logout,
     addVariant, updateVariant, updateVariantStage, removeVariant,
     addVariantRecord, updateVariantRecord, removeVariantRecord,
     addBatchItem, updateBatchItem, removeBatchItem,
     addBatchExtra, updateBatchExtra, removeBatchExtra,
+    addBalancePayment, updateBalancePayment, removeBalancePayment,
     addBatchShipment, updateBatchShipment, removeBatchShipment,
     addShipmentItem, updateShipmentItem, removeShipmentItem,
     addReorderItem, updateReorderItem, removeReorderItem,

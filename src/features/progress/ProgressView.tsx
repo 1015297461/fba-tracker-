@@ -36,14 +36,21 @@ function ProgressKPIs({ products }: { products: Product[] }) {
 function GanttAll({ products, onSelectProduct }: { products: Product[]; onSelectProduct: (id: string) => void }) {
   const [zoom, setZoom] = React.useState('month');
   const [tooltip, setTooltip] = React.useState<any>(null);
+  const [expandedIds, setExpandedIds] = React.useState<Set<string>>(new Set());
+
+  const toggleExpand = (id: string) => setExpandedIds(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
 
   const now = React.useMemo(() => {
     const d = new Date(); d.setHours(0,0,0,0); return d;
-  }, []);
-  const todayStr = now.toISOString().slice(0,10);
+  }, []); // intentionally computed once on mount — live "today" uses Date.now() below
+  const todayStr = new Date().toISOString().slice(0,10); // always fresh for active/planned comparisons
 
   const { minMs, maxMs } = React.useMemo(() => {
-    const ms = [now.getTime()];
+    const ms = [Date.now()]; // always include real today, not stale `now`
     products.forEach(p => {
       if (p.createdAt) ms.push(new Date(p.createdAt + 'T00:00:00').getTime());
       STAGES.forEach(s => {
@@ -63,9 +70,10 @@ function GanttAll({ products, onSelectProduct }: { products: Product[]; onSelect
     let s: Date, e: Date, units: any[] = [];
 
     if (zoom === 'week') {
-      s = new Date(now); s.setDate(s.getDate() - 56);
+      const today = Date.now();
+      s = new Date(today); s.setDate(s.getDate() - 56);
       const dow = (s.getDay() + 6) % 7; s.setDate(s.getDate() - dow);
-      e = new Date(now); e.setDate(e.getDate() + 112);
+      e = new Date(today); e.setDate(e.getDate() + 112);
       let cur = new Date(s);
       let idx = 0;
       while (cur < e) {
@@ -92,11 +100,11 @@ function GanttAll({ products, onSelectProduct }: { products: Product[]; onSelect
       }
     }
     return { start: s, end: e, axisUnits: units };
-  }, [zoom, minMs, maxMs, now]);
+  }, [zoom, minMs, maxMs]);
 
   const totalMs = end.getTime() - start.getTime();
   const pct = (dateStr: string) => Math.max(0, Math.min(100, (new Date(dateStr + 'T00:00:00').getTime() - start.getTime()) / totalMs * 100));
-  const todayPct = Math.max(0, Math.min(100, (now.getTime() - start.getTime()) / totalMs * 100));
+  const todayPct = Math.max(0, Math.min(100, (Date.now() - start.getTime()) / totalMs * 100));
 
   return (
     <div className="gantt-wrap">
@@ -118,12 +126,34 @@ function GanttAll({ products, onSelectProduct }: { products: Product[]; onSelect
         <div className="gantt-grid">
           <div className="gantt-labels">
             <div className="gantt-axis" style={{padding:'8px 14px', fontSize:10.5, color:'var(--ink-4)', textTransform:'uppercase', letterSpacing:'0.04em'}}>产品</div>
-            {products.map(p => (
-              <div key={p.id} className="gantt-label" onClick={() => onSelectProduct(p.id)} style={{cursor:'pointer'}}>
-                <span className={`badge badge-${p.status}`} style={{padding:'1px 5px', fontSize:9}}></span>
-                <span className="pn">{p.name}</span>
-              </div>
-            ))}
+            {products.map(p => {
+              const isExpanded = expandedIds.has(p.id);
+              const activeStages = STAGES.filter(s => {
+                const sd = p.stages[s.key];
+                if (!sd) return false;
+                return sd.status === 'done' || sd.status === 'active' || sd.status === 'hold' || sd.startDate || sd.endDate;
+              });
+              return (
+                <React.Fragment key={p.id}>
+                  <div className="gantt-label" onClick={() => onSelectProduct(p.id)} style={{cursor:'pointer'}}>
+                    <button className="gantt-expand-btn" onClick={e => { e.stopPropagation(); toggleExpand(p.id); }}>
+                      {isExpanded ? '▼' : '▶'}
+                    </button>
+                    <span className={`badge badge-${p.status}`} style={{padding:'1px 5px', fontSize:9}}></span>
+                    <span className="pn">{p.name}</span>
+                    {(p.variants||[]).length > 0 && (
+                      <span className="gantt-variant-n">{(p.variants||[]).length} SKU</span>
+                    )}
+                  </div>
+                  {isExpanded && activeStages.map(s => (
+                    <div key={s.key} className="gantt-sub-label">
+                      <span className="gantt-sub-dot" style={{background: s.color}}></span>
+                      <span>{s.name}</span>
+                    </div>
+                  ))}
+                </React.Fragment>
+              );
+            })}
           </div>
           <div className="gantt-canvas">
             <div className="gantt-axis" style={{position:'relative', overflow:'hidden'}}>
@@ -141,8 +171,7 @@ function GanttAll({ products, onSelectProduct }: { products: Product[]; onSelect
             </div>
 
             {products.map(p => {
-              const segs: any[] = [];
-              let prevDate = p.createdAt;
+              const isExpanded = expandedIds.has(p.id);
               const hasV = (p.variants || []).length > 0;
 
               function effectiveSd(stageKey: string) {
@@ -153,7 +182,7 @@ function GanttAll({ products, onSelectProduct }: { products: Product[]; onSelect
                 const allDone = vStages.every((vs: any) => vs.status === 'done');
                 const anyProgress = vStages.some((vs: any) => vs.status === 'done' || vs.status === 'active');
                 const starts = vStages.map((vs: any) => vs.startDate).filter(Boolean).sort();
-                const ends   = vStages.map((vs: any) => vs.endDate || vs.doneDate).filter(Boolean).sort();
+                const ends = vStages.map((vs: any) => vs.endDate || vs.doneDate).filter(Boolean).sort();
                 if (allDone && ends.length) {
                   return { status: 'done', startDate: starts[0] || baseSd?.startDate || null, endDate: ends[ends.length - 1] };
                 }
@@ -163,64 +192,106 @@ function GanttAll({ products, onSelectProduct }: { products: Product[]; onSelect
                 return baseSd;
               }
 
-              STAGES.forEach(s => {
-                const sd = effectiveSd(s.key);
-                if (!sd) return;
+              function buildSeg(stage: any, sd: any, fbStart: string): any | null {
                 const stageEnd = sd.endDate || sd.doneDate;
                 if (sd.status === 'done' && stageEnd) {
-                  const segStart = sd.startDate || prevDate;
-                  segs.push({ color: s.color, name: s.name, short: s.short, start: segStart, end: stageEnd, status: '已完成' });
-                  prevDate = stageEnd;
-                } else if (sd.status === 'active') {
-                  const segStart = sd.startDate || prevDate;
-                  let plannedEnd = sd.endDate;
-                  if (!plannedEnd && s.key === 'production') {
+                  return { color: stage.color, name: stage.name, short: stage.short, start: sd.startDate || fbStart, end: stageEnd, status: '已完成' };
+                }
+                if (sd.status === 'active') {
+                  const segStart = sd.startDate || fbStart;
+                  let endDate = sd.endDate;
+                  if (!endDate && stage.key === 'production') {
                     const batch = (p.stages.production?.batches || []).find((b: any) => b.expectedShip);
-                    if (batch) plannedEnd = batch.expectedShip;
+                    if (batch) endDate = batch.expectedShip;
                   }
                   const started = segStart && segStart < todayStr;
-                  const futurePlan = plannedEnd && plannedEnd > todayStr;
+                  const futurePlan = endDate && endDate > todayStr;
                   if (started && futurePlan) {
-                    segs.push({ color: s.color, name: s.name, short: s.short, start: segStart, end: todayStr, current: true, planned: false, status: '进行中' });
-                    segs.push({ color: s.color, name: s.name, short: s.short, start: todayStr, end: plannedEnd, current: true, planned: true, status: '计划中' });
-                  } else {
-                    const segEnd = futurePlan ? plannedEnd : todayStr;
-                    segs.push({ color: s.color, name: s.name, short: s.short, start: segStart || todayStr, end: segEnd, current: true, planned: !started, status: started ? '进行中' : '计划中' });
+                    return { color: stage.color, name: stage.name, short: stage.short, start: segStart, end: endDate, current: true, status: '进行中' };
                   }
-                  prevDate = plannedEnd || todayStr;
-                } else if (sd.status === 'hold' && (sd.startDate || prevDate)) {
-                  const segStart = sd.startDate || prevDate;
-                  segs.push({ color: '#9333ea', name: s.name, short: s.short + '⏸', start: segStart, end: sd.endDate || todayStr, status: '已暂停' });
+                  return { color: stage.color, name: stage.name, short: stage.short, start: segStart || todayStr, end: endDate || todayStr, current: true, planned: !started, status: started ? '进行中' : '计划中' };
                 }
-              });
+                if (sd.status === 'hold') {
+                  return { color: '#9333ea', name: stage.name, short: stage.short + '⏸', start: sd.startDate || fbStart, end: sd.endDate || todayStr, status: '已暂停' };
+                }
+                // idle but has dates: show a thin marker so user can see it needs status change
+                if (sd.status === 'idle' && stageEnd) {
+                  return { color: stage.color, name: stage.name, short: stage.short, start: sd.startDate || stageEnd, end: stageEnd, idle: true, status: '未开始(仅日期)' };
+                }
+                if (sd.status === 'idle' && sd.startDate) {
+                  return { color: stage.color, name: stage.name, short: stage.short, start: sd.startDate, end: sd.startDate, idle: true, status: '未开始(仅日期)' };
+                }
+                return null;
+              }
+
+              const activeStages = STAGES
+                .map(s => ({ stage: s, sd: effectiveSd(s.key) }))
+                .filter(({sd}) => sd && (sd.status !== 'idle' || sd.startDate || sd.endDate));
+
+              // Pick segment for product row
+              let prodSeg: any = null;
+              if (!isExpanded) {
+                const best = activeStages.find(({sd}) => sd?.status === 'active')?.stage
+                  || activeStages.find(({sd}) => sd?.status === 'hold')?.stage
+                  || [...activeStages].reverse().find(({sd}) => sd?.status === 'done')?.stage
+                  || activeStages.find(({sd}) => sd?.status === 'idle')?.stage;
+                if (best) prodSeg = buildSeg(best, effectiveSd(best.key), p.createdAt);
+              } else {
+                const allDates: string[] = [];
+                activeStages.forEach(({sd}) => {
+                  if (sd?.startDate) allDates.push(sd.startDate);
+                  const e = sd?.endDate || (sd as any).doneDate;
+                  if (e) allDates.push(e);
+                });
+                if (allDates.length > 0) {
+                  allDates.sort();
+                  prodSeg = { color: 'var(--ink-3)', name: p.name, short: '', start: allDates[0], end: allDates[allDates.length-1], status: '摘要', summary: true };
+                }
+              }
+
+              function renderSeg(seg: any) {
+                const l = pct(seg.start);
+                const r = pct(seg.end);
+                let w = r - l;
+                if (w < 0) return null;
+                if (w < 0.5) w = 0.5;
+                const days = Math.round((new Date(seg.end+'T00:00:00').getTime() - new Date(seg.start+'T00:00:00').getTime()) / 86400000);
+                return (
+                  <div className={"gantt-seg" + (seg.current ? ' current' : '') + (seg.summary ? ' summary' : '') + (seg.idle ? ' idle' : '')}
+                    style={{
+                      left: l + '%', width: w + '%',
+                      background: seg.color,
+                      opacity: seg.idle ? 0.35 : seg.summary ? 0.35 : seg.planned ? 0.6 : 1,
+                      backgroundImage: seg.idle
+                        ? 'repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(255,255,255,0.5) 3px,rgba(255,255,255,0.5) 6px)'
+                        : seg.planned
+                          ? 'repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,0.3) 4px,rgba(255,255,255,0.3) 8px)'
+                          : 'none',
+                      height: seg.idle ? 8 : undefined,
+                      top: seg.idle ? 15 : undefined,
+                    }}
+                    onMouseEnter={e => setTooltip({ name: seg.name, status: seg.status, period: seg.start + ' → ' + seg.end, days, x: e.clientX, y: e.clientY })}
+                    onMouseMove={e => setTooltip((t: any) => t ? {...t, x: e.clientX, y: e.clientY} : null)}
+                    onMouseLeave={() => setTooltip(null)}>
+                    {w > 4 && !seg.summary && !seg.idle ? seg.short : ''}
+                  </div>
+                );
+              }
+
               return (
-                <div key={p.id} className="gantt-row">
-                  {segs.map((seg: any, i: number) => {
-                    const l = pct(seg.start);
-                    const r = pct(seg.end);
-                    const w = r - l;
-                    if (w < 0) return null;
-                    const days = Math.round((new Date(seg.end+'T00:00:00').getTime() - new Date(seg.start+'T00:00:00').getTime()) / 86400000);
+                <React.Fragment key={p.id}>
+                  <div className="gantt-row">
+                    {prodSeg && renderSeg(prodSeg)}
+                  </div>
+                  {isExpanded && activeStages.map(({stage, sd}) => {
+                    const seg = buildSeg(stage, sd!, p.createdAt);
                     return (
-                      <div key={i}
-                        className={"gantt-seg" + (seg.current ? ' current' : '')}
-                        style={{
-                          left: l + '%',
-                          width: w + '%',
-                          background: seg.color,
-                          opacity: seg.planned ? 0.6 : 1,
-                          backgroundImage: seg.planned
-                            ? 'repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,0.3) 4px,rgba(255,255,255,0.3) 8px)'
-                            : 'none',
-                        }}
-                        onMouseEnter={e => setTooltip({ name: seg.name, status: seg.status, period: seg.start + ' → ' + seg.end, days, x: e.clientX, y: e.clientY })}
-                        onMouseMove={e => setTooltip((t: any) => t ? {...t, x: e.clientX, y: e.clientY} : null)}
-                        onMouseLeave={() => setTooltip(null)}>
-                        {w > 4 ? seg.short : ''}
+                      <div key={stage.key} className="gantt-sub-row">
+                        {seg && renderSeg(seg)}
                       </div>
                     );
                   })}
-                </div>
+                </React.Fragment>
               );
             })}
             <div className="gantt-today" style={{left: todayPct + '%'}}></div>

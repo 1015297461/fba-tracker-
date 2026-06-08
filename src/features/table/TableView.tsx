@@ -23,6 +23,16 @@ function calcOrderTotal(p: Product): number {
   }, 0);
 }
 
+function calcOrderQty(p: Product): number {
+  const hasV = (p.variants || []).length > 0;
+  return (p.stages.production?.batches || []).reduce((sum: number, b: any) => {
+    if (hasV && (b.items||[]).length > 0) {
+      return sum + (b.items||[]).reduce((s: number, i: any) => s+(Number(i.qty)||0), 0);
+    }
+    return sum + (Number(b.qty)||0);
+  }, 0);
+}
+
 function marginClass(m: number | null): string {
   if (m == null) return '';
   if (m >= 20) return 'margin-good';
@@ -51,6 +61,7 @@ const COL_DEFS = [
   { k:'supCount',     label:'供应商数',     group:'供应商/打样', num:true },
   { k:'sampleRounds', label:'打样轮次',    group:'供应商/打样', num:true },
   { k:'expectedShip', label:'预计出货',    group:'生产出货' },
+  { k:'orderQty',     label:'下单数量',    group:'生产出货',    num:true },
   { k:'orderTotal',   label:'订单总额(¥)', group:'生产出货',    num:true },
   { k:'launchDate',   label:'上架日期',    group:'上架' },
 ];
@@ -95,6 +106,7 @@ function getColVal(p: Product, k: string): any {
     case 'supCount': return (p.stages.supplier?.suppliers||[]).length;
     case 'sampleRounds': return (p.stages.sampling?.rounds||[]).length;
     case 'expectedShip': return lastExpectedShip(p) || p.stages.shipment?.endDate;
+    case 'orderQty': return calcOrderQty(p) || null;
     case 'orderTotal': return calcOrderTotal(p) || null;
     case 'launchDate': return p.stages.listing?.launchDate || p.stages.listing?.endDate;
     default: return null;
@@ -104,7 +116,7 @@ function getColVal(p: Product, k: string): any {
 function getColLabel(k: string): string {
   const labels: Record<string, string> = {
     createdAt:'立项日期', name:'产品名称', progress:'进度',
-    margin:'净利率', targetPrice:'目标售价', orderTotal:'订单总额',
+    margin:'净利率', targetPrice:'目标售价', orderQty:'下单数量', orderTotal:'订单总额',
     expectedShip:'预计出货', launchDate:'上架日期',
   };
   return labels[k] || k;
@@ -185,6 +197,7 @@ export function TableView({ onSelectProduct, filter }: { onSelectProduct: (id: s
             case 'supCount': return (p.stages.supplier?.suppliers||[]).length;
             case 'sampleRounds': return (p.stages.sampling?.rounds||[]).length;
             case 'expectedShip': return lastExpectedShip(p) || p.stages.shipment?.endDate || '';
+            case 'orderQty': return calcOrderQty(p) || '';
             case 'orderTotal': return +calcOrderTotal(p).toFixed(2) || '';
             case 'launchDate': return p.stages.listing?.launchDate || p.stages.listing?.endDate || '';
             default: return getColVal(p, c.k) ?? '';
@@ -257,6 +270,7 @@ export function TableView({ onSelectProduct, filter }: { onSelectProduct: (id: s
       case 'supCount': return <td key="supCount" className="num">{(p.stages.supplier?.suppliers||[]).length||'—'}</td>;
       case 'sampleRounds': return <td key="sampleRounds" className="num" style={{borderRight:'1px solid var(--border)'}}>{(p.stages.sampling?.rounds||[]).length||'—'}</td>;
       case 'expectedShip': return <td key="expectedShip" className="num" style={{textAlign:'left'}}>{lastExpectedShip(p)||p.stages.shipment?.endDate||'—'}</td>;
+      case 'orderQty': return <td key="orderQty" className="num">{calcOrderQty(p)||'—'}</td>;
       case 'orderTotal': {
         const ot = calcOrderTotal(p);
         return <td key="orderTotal" className="num" style={{borderRight:'1px solid var(--border)'}}>{ot?`¥${ot.toFixed(0)}`:'—'}</td>;
@@ -300,6 +314,7 @@ export function TableView({ onSelectProduct, filter }: { onSelectProduct: (id: s
       case 'supCount': return <td key="supCount">—</td>;
       case 'sampleRounds': return <td key="sampleRounds" className="num" style={{borderRight:'1px solid var(--border)'}}>{(v.stages?.sampling?.rounds||[]).length||'—'}</td>;
       case 'expectedShip': return <td key="expectedShip">—</td>;
+      case 'orderQty': return <td key="orderQty">—</td>;
       case 'orderTotal': return <td key="orderTotal" style={{borderRight:'1px solid var(--border)'}}>—</td>;
       case 'launchDate': return <td key="launchDate" className="num" style={{textAlign:'left'}}>{v.stages?.listing?.launchDate||'—'}</td>;
       default: return <td key={k}>—</td>;
