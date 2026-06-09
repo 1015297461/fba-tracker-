@@ -643,13 +643,13 @@ function TabProd({ p }: { p: any }) {
                       <span className="calc-field-label">订单金额</span>
                       <span className="calc-field-value mono" style={{fontWeight:600,color:'var(--blue)'}}>¥{skuTotal.toFixed(2)}</span>
                     </div>
-                    {actualShippedValue > 0 && (
+                    {actualShippedValue > 0 ? (
                       <div className="calc-field">
                         <span className="calc-field-label">实际出货结算</span>
                         <span className="calc-field-value mono" style={{fontWeight:600,color: actualShippedValue !== skuTotal ? 'var(--orange)' : 'var(--green)'}}>¥{actualShippedValue.toFixed(2)}</span>
                       </div>
-                    )}
-                    <div /><div /><div />
+                    ) : <div />}
+                    <div /><div />
                     <EditField label="预付款比例" type="number" mono suffix="%" value={b.depositPct}
                       onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositPct:v })} />
                     <div className="calc-field">
@@ -670,6 +670,7 @@ function TabProd({ p }: { p: any }) {
                       <span className="calc-field-label">已付总金额</span>
                       <span className="calc-field-value mono" style={actualTotalPaid >= effectiveTotal ? {color:'var(--green)',fontWeight:600} : {color:'var(--orange)',fontWeight:600}}>¥{actualTotalPaid.toFixed(2)}</span>
                     </div>
+                    <div />
                   </div>
 
                   <div className="sku-items-block" style={{marginTop:12}}>
@@ -702,7 +703,7 @@ function TabProd({ p }: { p: any }) {
                                   onChange={e => updateBalancePayment(p.id, b.id, bp.id, { shipmentRef: e.target.value })}>
                                   <option value="">—</option>
                                   {(b.shipments||[]).map((sh: any, si: number) => (
-                                    <option key={sh.id} value={sh.id}>#{si+1} {sh.shipDate||'未填'} · {hasVariants ? (sh.items||[]).reduce((s: number, sii: any) => s+(Number(sii.qty)||0),0) : (Number(sh.qty)||0)}pcs</option>
+                                    <option key={sh.id} value={sh.id}>#{si+1} {sh.shipDate||sh.expectedShip||'未填'} · {hasVariants ? (sh.items||[]).reduce((s: number, sii: any) => s+(Number(sii.qty)||0),0) : (Number(sh.qty)||0)}pcs</option>
                                   ))}
                                 </select>
                               </td>
@@ -741,7 +742,7 @@ function TabProd({ p }: { p: any }) {
                         </span>
                         <button className="btn btn-sm btn-add" onClick={e => { e.stopPropagation();
                           addBatchShipment(p.id, b.id, {
-                            shipDate: '', qty: 0,
+                            expectedShip: '', shipDate: '', qty: 0,
                             items: hasVariants
                               ? ((b.items||[]).length > 0
                                   ? (b.items||[]).map((bi: any) => {
@@ -777,7 +778,7 @@ function TabProd({ p }: { p: any }) {
                               <button className="sec-toggle" onClick={e => { e.stopPropagation(); toggleSection(b.id+'|sh|'+sh.id); }}>{isCollapsed(b.id+'|sh|'+sh.id) ? '▸' : '▾'}</button>
                               <span className="batch-ship-no">#{shIdx + 1}</span>
                               <span className="batch-ship-info">
-                                {sh.shipDate || '日期未填'}{shVariantNames ? ' · ' + shVariantNames : ''} · {shQty} pcs{shSettlement > 0 ? <>&nbsp;·&nbsp;结算 <strong>¥{shSettlement.toFixed(2)}</strong></> : ''} · {sh.method || '—'}{sh.carrier ? ' · ' + sh.carrier : ''}
+                                {(sh.shipDate || sh.expectedShip) || '日期未填'}{shVariantNames ? ' · ' + shVariantNames : ''} · {shQty} pcs{shSettlement > 0 ? <>&nbsp;·&nbsp;结算 <strong>¥{shSettlement.toFixed(2)}</strong></> : ''} · {sh.method || '—'}{sh.carrier ? ' · ' + sh.carrier : ''}
                               </span>
                               <StatusSelect value={sh.status} size="sm"
                                 onChange={v => updateBatchShipment(p.id, b.id, sh.id, { status: v })} />
@@ -785,19 +786,13 @@ function TabProd({ p }: { p: any }) {
                             </div>
                             {!isCollapsed(b.id+'|sh|'+sh.id) && <div className="batch-ship-entry-body">
                               <div className="fieldgrid cols-4">
-                                <EditField label="出货日期" type="date" mono value={sh.shipDate||''}
+                                <EditField label="预计出货日期" type="date" mono value={sh.expectedShip||''}
+                                  onChange={v => updateBatchShipment(p.id, b.id, sh.id, { expectedShip: v })} />
+                                <EditField label="实际出货日期" type="date" mono value={sh.shipDate||''}
                                   onChange={v => updateBatchShipment(p.id, b.id, sh.id, { shipDate: v })} />
                                 <EditField label="发货方式" value={sh.method||''}
                                   options={['海运','空运','空+派','快递','卡车']}
                                   onChange={v => updateBatchShipment(p.id, b.id, sh.id, { method: v })} />
-                                <EditField label="货代/服务商" value={sh.carrier||''}
-                                  onChange={v => updateBatchShipment(p.id, b.id, sh.id, { carrier: v })} />
-                                <EditField label="运单号" mono value={sh.tracking||''}
-                                  onChange={v => updateBatchShipment(p.id, b.id, sh.id, { tracking: v })} />
-                                <EditField label="FBA 入仓编号" mono value={sh.fbaShipId||''}
-                                  onChange={v => updateBatchShipment(p.id, b.id, sh.id, { fbaShipId: v })} />
-                                <EditField label="预计到货 (ETA)" type="date" mono value={sh.etaDate||''}
-                                  onChange={v => updateBatchShipment(p.id, b.id, sh.id, { etaDate: v })} />
                                 {!hasVariants && (
                                   <EditField label="出货数量" type="number" mono suffix="pcs" value={sh.qty||0}
                                     onChange={v => updateBatchShipment(p.id, b.id, sh.id, { qty: v })} />

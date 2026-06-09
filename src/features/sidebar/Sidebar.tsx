@@ -80,6 +80,22 @@ export function Sidebar({ view, setView, filter, setFilter, products }: {
       </div>
 
       <div className="sb-section">
+        <div className="sb-section-label">工具</div>
+        <div className="sb-view-tabs">
+          {[
+            { k: 'keywordRank', ic: '🔍', label: '关键词排名' },
+          ].map(v => (
+            <button key={v.k} className="sb-view-btn"
+              data-active={view === v.k}
+              onClick={() => setView(v.k)}>
+              <span className="ic">{v.ic}</span>
+              <span>{v.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="sb-section">
         <div className="sb-section-label">状态筛选</div>
         <div className="sb-filter">
           {['all', 'active', 'hold', 'done', 'cancel'].map(k => (
@@ -130,7 +146,7 @@ export function TopBar({ view, product, theme, onToggleTheme, onNewProduct }: {
   onToggleTheme: () => void;
   onNewProduct: () => void;
 }) {
-  const titles: Record<string, string> = { list: '产品列表', progress: '进度总览', table: '数据表格' };
+  const titles: Record<string, string> = { list: '产品列表', progress: '进度总览', table: '数据表格', keywordRank: '关键词排名' };
   const ctx = useProducts();
   const { label: syncLabel, cls: syncCls, icon: syncIcon } = useSyncLabel();
   const currentUser = ctx?.currentUser;
@@ -167,7 +183,7 @@ export function TopBar({ view, product, theme, onToggleTheme, onNewProduct }: {
       <div className="topbar-actions">
         <button className="btn btn-sm" onClick={() => ctx?.importJSON?.()}><span>↑</span><span>导入</span></button>
         <button className="btn btn-sm" onClick={() => ctx?.exportJSON?.()}><span>↓</span><span>导出 JSON</span></button>
-        <button className="btn btn-sm" onClick={() => ctx?.resetToDefaults?.()} title="清空 localStorage 并恢复示例数据"><span>⟲</span><span>重置</span></button>
+        {/* <button className="btn btn-sm" onClick={() => ctx?.resetToDefaults?.()} title="清空 localStorage 并恢复示例数据"><span>⟲</span><span>重置</span></button> */}
         <button className="btn btn-icon" onClick={onToggleTheme} title="切换主题">
           {theme === 'dark' ? '☀️' : '🌙'}
         </button>

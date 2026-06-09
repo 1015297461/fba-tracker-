@@ -6,6 +6,7 @@ import { ProductList, NewProductModal } from './features/list-view';
 import { Detail } from './features/detail';
 import { ProgressView } from './features/progress/ProgressView';
 import { TableView } from './features/table/TableView';
+import { KeywordRank } from './features/tools/KeywordRank';
 import { PRODUCTS } from './data/products';
 
 function LoginScreen({ onLogin }: { onLogin: (u: string, p: string) => Promise<boolean> }) {
@@ -124,6 +125,7 @@ function AppShell() {
             onSelectProduct={(id: string) => { setActiveId(id); changeView('list'); }}
           />
         )}
+        {view === 'keywordRank' && <KeywordRank />}
       </div>
       <TweaksPanel title="Tweaks">
         <TweakSection label="主题" />
@@ -144,6 +146,7 @@ function AppShell() {
             { value: 'list', label: '📋 产品列表' },
             { value: 'progress', label: '📊 进度总览' },
             { value: 'table', label: '📐 数据表格' },
+            { value: 'keywordRank', label: '🔍 关键词排名' },
           ]}
           onChange={v => changeView(v)}
         />
