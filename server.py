@@ -31,7 +31,11 @@ import socketserver
 import sqlite3
 import secrets
 import datetime
-from urllib.parse import urlparse
+import time
+import random
+from urllib.parse import urlparse, parse_qs
+
+import rank_fetcher
 
 
 # ---------------------------------------------------------------------------
@@ -123,11 +127,43 @@ class DbState:
                     action     TEXT,
                     changed_at TEXT DEFAULT (datetime('now'))
                 );
+
+                CREATE TABLE IF NOT EXISTS keyword_tasks (
+                    id             TEXT PRIMARY KEY,
+                    asin           TEXT NOT NULL,
+                    marketplace    TEXT NOT NULL,
+                    name           TEXT,
+                    keywords       TEXT DEFAULT '[]',
+                    keyword_notes  TEXT DEFAULT '{}',
+                    schedule       TEXT DEFAULT '[0,6,12,18]',
+                    enabled        INTEGER DEFAULT 1,
+                    created_at     TEXT,
+                    last_run_at    TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS rank_snapshots (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id      TEXT,
+                    asin         TEXT,
+                    marketplace  TEXT,
+                    keyword      TEXT,
+                    captured_at  TEXT,
+                    organic_rank INTEGER,
+                    organic_page INTEGER,
+                    sponsored    TEXT,
+                    status       TEXT,
+                    error        TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_snap_task_kw
+                    ON rank_snapshots(task_id, keyword, captured_at);
             """)
-            # 兼容旧版数据库：若 variants 列不存在则追加（幂等）
-            existing = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
-            if "variants" not in existing:
+            # 兼容旧版数据库：幂等追加缺失列
+            existing_products = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
+            if "variants" not in existing_products:
                 conn.execute("ALTER TABLE products ADD COLUMN variants TEXT DEFAULT '[]'")
+            existing_tasks = {row[1] for row in conn.execute("PRAGMA table_info(keyword_tasks)")}
+            if "keyword_notes" not in existing_tasks:
+                conn.execute("ALTER TABLE keyword_tasks ADD COLUMN keyword_notes TEXT DEFAULT '{}'")
 
     # ---- 内部辅助 ----
 
@@ -224,6 +260,125 @@ class DbState:
                 )
                 conn.commit()
                 return new_version, None
+
+    # ---- 关键词排名：任务与快照 ----
+
+    def _row_to_task(self, row):
+        return {
+            "id":           row["id"],
+            "asin":         row["asin"],
+            "marketplace":  row["marketplace"],
+            "name":         row["name"],
+            "keywords":     json.loads(row["keywords"]      or "[]"),
+            "keywordNotes": json.loads(row["keyword_notes"] or "{}"),
+            "schedule":     json.loads(row["schedule"]      or "[]"),
+            "enabled":      bool(row["enabled"]),
+            "createdAt":    row["created_at"],
+            "lastRunAt":    row["last_run_at"],
+        }
+
+    def list_rank_tasks(self):
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM keyword_tasks ORDER BY created_at DESC"
+            ).fetchall()
+            return [self._row_to_task(r) for r in rows]
+
+    def get_rank_task(self, task_id):
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM keyword_tasks WHERE id=?", [task_id]
+            ).fetchone()
+            return self._row_to_task(row) if row else None
+
+    def upsert_rank_task(self, t):
+        tid = t.get("id") or ("kt" + secrets.token_hex(6))
+        now = _now_iso()
+        with self.lock:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT created_at, last_run_at FROM keyword_tasks WHERE id=?", [tid]
+                ).fetchone()
+                created  = row["created_at"]  if row else now
+                last_run = row["last_run_at"] if row else None
+                conn.execute(
+                    """INSERT OR REPLACE INTO keyword_tasks
+                       (id, asin, marketplace, name, keywords, keyword_notes,
+                        schedule, enabled, created_at, last_run_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    [
+                        tid,
+                        (t.get("asin") or "").upper().strip(),
+                        (t.get("marketplace") or "US").upper(),
+                        t.get("name", ""),
+                        json.dumps(t.get("keywords", []), ensure_ascii=False),
+                        json.dumps(t.get("keywordNotes", {}), ensure_ascii=False),
+                        json.dumps(t.get("schedule", [0, 6, 12, 18])),
+                        1 if t.get("enabled", True) else 0,
+                        created,
+                        last_run,
+                    ],
+                )
+                conn.commit()
+        return self.get_rank_task(tid)
+
+    def delete_rank_task(self, task_id):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM keyword_tasks WHERE id=?", [task_id])
+                conn.execute("DELETE FROM rank_snapshots WHERE task_id=?", [task_id])
+                conn.commit()
+
+    def mark_task_run(self, task_id, ts=None):
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE keyword_tasks SET last_run_at=? WHERE id=?",
+                [ts or _now_iso(), task_id],
+            )
+            conn.commit()
+
+    def add_snapshot(self, task_id, res):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO rank_snapshots
+                       (task_id, asin, marketplace, keyword, captured_at,
+                        organic_rank, organic_page, sponsored, status, error)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    [
+                        task_id, res.get("asin"), res.get("marketplace"),
+                        res.get("keyword"), res.get("captured_at"),
+                        res.get("organic_rank"), res.get("organic_page"),
+                        json.dumps(res.get("sponsored", []), ensure_ascii=False),
+                        res.get("status"), res.get("error"),
+                    ],
+                )
+                conn.commit()
+
+    def get_rank_history(self, task_id, keyword=None, limit=3000):
+        with self._conn() as conn:
+            if keyword:
+                rows = conn.execute(
+                    """SELECT * FROM rank_snapshots WHERE task_id=? AND keyword=?
+                       ORDER BY captured_at ASC LIMIT ?""",
+                    [task_id, keyword, limit],
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT * FROM rank_snapshots WHERE task_id=?
+                       ORDER BY captured_at ASC LIMIT ?""",
+                    [task_id, limit],
+                ).fetchall()
+            return [{
+                "id":          r["id"],
+                "keyword":     r["keyword"],
+                "capturedAt":  r["captured_at"],
+                "organicRank": r["organic_rank"],
+                "organicPage": r["organic_page"],
+                "sponsored":   json.loads(r["sponsored"] or "[]"),
+                "status":      r["status"],
+                "error":       r["error"],
+            } for r in rows]
 
     def import_from_json(self, json_path):
         """首次启动时从旧版 fba-data.json 一键迁移"""
@@ -344,6 +499,67 @@ class AuthManager:
 # HTTP Handler
 # ---------------------------------------------------------------------------
 
+def run_rank_task(state, task, delay_between_kw=(3.0, 7.0)):
+    """串行采集任务下所有关键词，写入快照，返回结果列表。"""
+    results = []
+    kws = task.get("keywords", [])
+    for i, kw in enumerate(kws):
+        kw = (kw or "").strip()
+        if not kw:
+            continue
+        try:
+            res = rank_fetcher.locate_rank(task["asin"], task["marketplace"], kw, max_pages=3)
+        except Exception as e:
+            res = {
+                "asin": task["asin"], "keyword": kw,
+                "marketplace": task["marketplace"], "status": "error",
+                "organic_rank": None, "organic_page": None, "sponsored": [],
+                "error": f"fetch_exc:{type(e).__name__}", "captured_at": _now_iso(),
+            }
+        state.add_snapshot(task["id"], res)
+        results.append(res)
+        if i < len(kws) - 1:
+            time.sleep(random.uniform(*delay_between_kw))
+    state.mark_task_run(task["id"])
+    return results
+
+
+def start_scheduler(state):
+    """后台守护线程：每分钟检查定时档位，命中即采集（同一小时不重复）。"""
+    def loop():
+        done = set()  # (task_id, 'YYYY-MM-DD-HH')，避免同一小时重复触发
+        while True:
+            try:
+                now  = datetime.datetime.now()
+                slot = now.strftime("%Y-%m-%d-%H")
+                today = now.strftime("%Y-%m-%d")
+                for task in state.list_rank_tasks():
+                    if not task["enabled"] or not task["keywords"]:
+                        continue
+                    hours = {h % 24 for h in task["schedule"]}  # 24:00 视作 0:00
+                    if now.hour not in hours:
+                        continue
+                    key = (task["id"], slot)
+                    if key in done:
+                        continue
+                    done.add(key)
+                    print(f"[rank] 定时执行 {task['asin']}/{task['marketplace']} "
+                          f"({len(task['keywords'])} 词) @ {slot}")
+                    try:
+                        run_rank_task(state, task)
+                    except Exception as e:
+                        print(f"[rank] 任务异常: {e}")
+                if len(done) > 800:
+                    done = {k for k in done if k[1] >= today}
+            except Exception as e:
+                print(f"[rank] 调度异常: {e}")
+            time.sleep(60)
+
+    th = threading.Thread(target=loop, daemon=True)
+    th.start()
+    print("[rank] 排名调度线程已启动（每分钟检查 0/6/12/18 档位）")
+
+
 def _extract_token(handler):
     auth = handler.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
@@ -386,6 +602,29 @@ def make_handler(state, auth):
                 self._send_json(200, user)
                 return
 
+            if path == "/api/rank/tasks":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                self._send_json(200, {"tasks": state.list_rank_tasks()})
+                return
+
+            if path == "/api/rank/history":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                q = parse_qs(urlparse(self.path).query)
+                task_id = (q.get("taskId") or [""])[0]
+                keyword = (q.get("keyword") or [None])[0]
+                if not task_id:
+                    self._send_json(400, {"error": "taskId required"})
+                    return
+                self._send_json(200, {
+                    "taskId": task_id,
+                    "snapshots": state.get_rank_history(task_id, keyword),
+                })
+                return
+
             return super().do_GET()
 
         # ---- POST ----
@@ -414,6 +653,81 @@ def make_handler(state, auth):
                 self._send_json(200, {"ok": True})
                 return
 
+            if path == "/api/rank/tasks":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if not (payload.get("asin") or "").strip():
+                    self._send_json(400, {"error": "asin required"})
+                    return
+                self._send_json(200, {"task": state.upsert_rank_task(payload)})
+                return
+
+            if path == "/api/rank/run":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                task_id = payload.get("taskId")
+                task = state.get_rank_task(task_id) if task_id else payload
+                if not task or not (task.get("asin") or "").strip():
+                    self._send_json(400, {"error": "task not found / asin required"})
+                    return
+                if not task.get("id"):
+                    task = state.upsert_rank_task(task)
+                print(f"  [rank] 手动执行 {task['asin']}/{task['marketplace']}")
+                results = run_rank_task(state, task)
+                self._send_json(200, {"taskId": task["id"], "results": results})
+                return
+
+            self.send_error(404)
+
+        # ---- DELETE ----
+
+        def do_DELETE(self):
+            path = urlparse(self.path).path
+            if path == "/api/rank/tasks":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                q = parse_qs(urlparse(self.path).query)
+                task_id = (q.get("id") or [""])[0]
+                if not task_id:
+                    self._send_json(400, {"error": "id required"})
+                    return
+                state.delete_rank_task(task_id)
+                self._send_json(200, {"ok": True})
+                return
+
+            if path == "/api/rank/keyword":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                q = parse_qs(urlparse(self.path).query)
+                task_id = (q.get("taskId") or [""])[0]
+                keyword = (q.get("keyword") or [""])[0]
+                if not task_id or not keyword:
+                    self._send_json(400, {"error": "taskId and keyword required"})
+                    return
+                task = state.get_rank_task(task_id)
+                if task:
+                    new_kws = [k for k in task["keywords"] if k != keyword]
+                    new_notes = {k: v for k, v in task["keywordNotes"].items() if k != keyword}
+                    state.upsert_rank_task({**task, "keywords": new_kws, "keywordNotes": new_notes})
+                    with state.lock:
+                        with state._conn() as conn:
+                            conn.execute(
+                                "DELETE FROM rank_snapshots WHERE task_id=? AND keyword=?",
+                                [task_id, keyword]
+                            )
+                            conn.commit()
+                self._send_json(200, {"ok": True})
+                return
             self.send_error(404)
 
         # ---- PUT ----
@@ -513,6 +827,7 @@ def main():
     print("  固定地址（.local）在公司任意 WiFi 下均可访问")
     print("  Ctrl+C 停止服务")
     print(bar)
+    start_scheduler(db_state)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -2,12 +2,20 @@
   "name": "fba-tracker",
   "private": true,
   "scripts": {
-    "build": "esbuild *.jsx --outdir=compiled --minify",
-    "watch": "esbuild *.jsx --outdir=compiled --watch",
-    "prestart": "esbuild *.jsx --outdir=compiled --minify",
-    "start": "python3 server.py"
+    "build": "esbuild src/main.tsx --bundle --outfile=compiled/bundle.js --minify --jsx=automatic --platform=browser",
+    "watch": "esbuild src/main.tsx --bundle --outfile=compiled/bundle.js --watch --jsx=automatic --platform=browser",
+    "prestart": "esbuild src/main.tsx --bundle --outfile=compiled/bundle.js --minify --jsx=automatic --platform=browser",
+    "start": "python3 server.py",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "esbuild": "^0.28.0"
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "esbuild": "^0.28.0",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
   }
 }
