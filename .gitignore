@@ -4,6 +4,7 @@ fba-data*.json
 fba-data*.db
 fba-data*.db-shm
 fba-data*.db-wal
+fba-users.json
 *.tmp
 
 # macOS 系统文件
