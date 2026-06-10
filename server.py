@@ -13,7 +13,7 @@ FBA Tracker — 局域网协作服务器 v2
   7. 首次启动自动创建 fba-users.json（默认账号 admin / fba2025）
 
 用法：
-  python3 server.py                       # 默认 0.0.0.0:8000
+  python3 server.py                       # 默认 0.0.0.0:8002
   python3 server.py --port 9000
   python3 server.py --db /path/fba.db     # 自定义数据库路径
   python3 server.py --users /path/u.json  # 自定义用户配置
@@ -36,6 +36,7 @@ import random
 from urllib.parse import urlparse, parse_qs
 
 import rank_fetcher
+import product_fetcher
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +157,51 @@ class DbState:
                 );
                 CREATE INDEX IF NOT EXISTS idx_snap_task_kw
                     ON rank_snapshots(task_id, keyword, captured_at);
+
+                CREATE TABLE IF NOT EXISTS scrape_tasks (
+                    id           TEXT PRIMARY KEY,
+                    marketplace  TEXT NOT NULL,
+                    total        INTEGER DEFAULT 0,
+                    success      INTEGER DEFAULT 0,
+                    failed       INTEGER DEFAULT 0,
+                    with_reviews INTEGER DEFAULT 0,
+                    status       TEXT DEFAULT 'completed',
+                    created_at   TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS scrape_products (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id       TEXT NOT NULL,
+                    asin          TEXT NOT NULL,
+                    marketplace   TEXT,
+                    title         TEXT,
+                    brand         TEXT,
+                    price         TEXT,
+                    rating        TEXT,
+                    review_count  TEXT,
+                    availability  TEXT,
+                    bullet_points TEXT,
+                    description   TEXT,
+                    main_image    TEXT,
+                    images        TEXT,
+                    aplus_images  TEXT,
+                    specifications TEXT,
+                    product_details TEXT,
+                    categories    TEXT,
+                    seller        TEXT,
+                    bsr_main_category TEXT,
+                    bsr_main_rank     INTEGER,
+                    bsr_sub_category  TEXT,
+                    bsr_sub_rank      INTEGER,
+                    bsr_raw_text      TEXT,
+                    customers_say     TEXT,
+                    review_images     TEXT,
+                    select_to_learn_more TEXT,
+                    status        TEXT,
+                    error_message TEXT,
+                    scraped_at    TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_scrape_prod_task ON scrape_products(task_id);
             """)
             # 兼容旧版数据库：幂等追加缺失列
             existing_products = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
@@ -380,6 +426,136 @@ class DbState:
                 "error":       r["error"],
             } for r in rows]
 
+    # ---- 产品采集：任务与明细 ----
+
+    def _row_to_scrape_task(self, row):
+        return {
+            "id":          row["id"],
+            "marketplace": row["marketplace"],
+            "total":       row["total"],
+            "success":     row["success"],
+            "failed":      row["failed"],
+            "withReviews": bool(row["with_reviews"]),
+            "status":      row["status"],
+            "createdAt":   row["created_at"],
+        }
+
+    def create_scrape_task(self, marketplace, total, with_reviews):
+        tid = "st" + secrets.token_hex(6)
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO scrape_tasks
+                       (id, marketplace, total, success, failed, with_reviews, status, created_at)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    [tid, marketplace, total, 0, 0, 1 if with_reviews else 0, "running", _now_iso()],
+                )
+                conn.commit()
+        return tid
+
+    def finish_scrape_task(self, task_id, success, failed):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE scrape_tasks SET success=?, failed=?, status='completed' WHERE id=?",
+                    [success, failed, task_id],
+                )
+                conn.commit()
+
+    def list_scrape_tasks(self, limit=100):
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM scrape_tasks ORDER BY created_at DESC LIMIT ?", [limit]
+            ).fetchall()
+            return [self._row_to_scrape_task(r) for r in rows]
+
+    def save_scrape_products(self, task_id, products):
+        now = _now_iso()
+        with self.lock:
+            with self._conn() as conn:
+                for p in products:
+                    conn.execute(
+                        """INSERT INTO scrape_products
+                           (task_id, asin, marketplace, title, brand, price, rating,
+                            review_count, availability, bullet_points, description,
+                            main_image, images, aplus_images, specifications, product_details,
+                            categories, seller, bsr_main_category, bsr_main_rank,
+                            bsr_sub_category, bsr_sub_rank, bsr_raw_text, customers_say,
+                            review_images, select_to_learn_more, status, error_message, scraped_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        [
+                            task_id, p.get("asin"), p.get("marketplace"),
+                            p.get("title"), p.get("brand"), p.get("price"), p.get("rating"),
+                            p.get("review_count"), p.get("availability"),
+                            json.dumps(p.get("bullet_points", []), ensure_ascii=False),
+                            p.get("description"),
+                            p.get("main_image"),
+                            json.dumps(p.get("images", []), ensure_ascii=False),
+                            json.dumps(p.get("aplus_images", []), ensure_ascii=False),
+                            json.dumps(p.get("specifications", {}), ensure_ascii=False),
+                            json.dumps(p.get("product_details", {}), ensure_ascii=False),
+                            p.get("categories"), p.get("seller"),
+                            p.get("bsr_main_category"), p.get("bsr_main_rank"),
+                            p.get("bsr_sub_category"), p.get("bsr_sub_rank"), p.get("bsr_raw_text"),
+                            p.get("customers_say"),
+                            json.dumps(p.get("review_images", []), ensure_ascii=False),
+                            json.dumps(p.get("select_to_learn_more", []), ensure_ascii=False),
+                            p.get("status"), p.get("error_message"), now,
+                        ],
+                    )
+                conn.commit()
+
+    def _row_to_scrape_product(self, row):
+        return {
+            "id":            row["id"],
+            "asin":          row["asin"],
+            "marketplace":   row["marketplace"],
+            "title":         row["title"],
+            "brand":         row["brand"],
+            "price":         row["price"],
+            "rating":        row["rating"],
+            "reviewCount":   row["review_count"],
+            "availability":  row["availability"],
+            "bulletPoints":  json.loads(row["bullet_points"] or "[]"),
+            "description":   row["description"],
+            "mainImage":     row["main_image"],
+            "images":        json.loads(row["images"] or "[]"),
+            "aplusImages":   json.loads(row["aplus_images"] or "[]"),
+            "specifications": json.loads(row["specifications"] or "{}"),
+            "productDetails": json.loads(row["product_details"] or "{}"),
+            "categories":    row["categories"],
+            "seller":        row["seller"],
+            "bestSellerRank": {
+                "mainCategory": row["bsr_main_category"],
+                "mainRank":     row["bsr_main_rank"],
+                "subCategory":  row["bsr_sub_category"],
+                "subRank":      row["bsr_sub_rank"],
+                "rawText":      row["bsr_raw_text"],
+            },
+            "customerReviews": {
+                "customersSay":     row["customers_say"],
+                "reviewImages":     json.loads(row["review_images"] or "[]"),
+                "selectToLearnMore": json.loads(row["select_to_learn_more"] or "[]"),
+            },
+            "status":       row["status"],
+            "errorMessage": row["error_message"],
+            "scrapedAt":    row["scraped_at"],
+        }
+
+    def get_scrape_products(self, task_id):
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM scrape_products WHERE task_id=? ORDER BY id ASC", [task_id]
+            ).fetchall()
+            return [self._row_to_scrape_product(r) for r in rows]
+
+    def delete_scrape_task(self, task_id):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM scrape_tasks WHERE id=?", [task_id])
+                conn.execute("DELETE FROM scrape_products WHERE task_id=?", [task_id])
+                conn.commit()
+
     def import_from_json(self, json_path):
         """首次启动时从旧版 fba-data.json 一键迁移"""
         if not os.path.exists(json_path):
@@ -524,6 +700,24 @@ def run_rank_task(state, task, delay_between_kw=(3.0, 7.0)):
     return results
 
 
+def run_scrape_task(state, asins, marketplace, with_reviews):
+    """批量采集产品详情，落库并返回 (task_id, results)。"""
+    asins = [a.strip().upper() for a in asins if a and a.strip()]
+    task_id = state.create_scrape_task(marketplace, len(asins), with_reviews)
+    try:
+        results = product_fetcher.scrape_products(asins, marketplace, with_reviews=with_reviews)
+    except Exception as e:
+        results = [
+            {**product_fetcher._empty_product(a, marketplace, f"fetch_exc:{type(e).__name__}")}
+            for a in asins
+        ]
+    state.save_scrape_products(task_id, results)
+    success = sum(1 for r in results if r.get("status") == "success")
+    failed = len(results) - success
+    state.finish_scrape_task(task_id, success, failed)
+    return task_id, results
+
+
 def start_scheduler(state):
     """后台守护线程：每分钟检查定时档位，命中即采集（同一小时不重复）。"""
     def loop():
@@ -625,6 +819,28 @@ def make_handler(state, auth):
                 })
                 return
 
+            if path == "/api/scrape/tasks":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                self._send_json(200, {"tasks": state.list_scrape_tasks()})
+                return
+
+            if path == "/api/scrape/products":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                q = parse_qs(urlparse(self.path).query)
+                task_id = (q.get("taskId") or [""])[0]
+                if not task_id:
+                    self._send_json(400, {"error": "taskId required"})
+                    return
+                self._send_json(200, {
+                    "taskId": task_id,
+                    "products": state.get_scrape_products(task_id),
+                })
+                return
+
             return super().do_GET()
 
         # ---- POST ----
@@ -685,6 +901,28 @@ def make_handler(state, auth):
                 self._send_json(200, {"taskId": task["id"], "results": results})
                 return
 
+            if path == "/api/scrape/run":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                asins = payload.get("asins")
+                if not isinstance(asins, list) or not asins:
+                    self._send_json(400, {"error": "asins must be a non-empty array"})
+                    return
+                marketplace = (payload.get("marketplace") or "US").upper()
+                if marketplace not in product_fetcher.MARKETPLACES:
+                    self._send_json(400, {"error": f"unsupported marketplace: {marketplace}"})
+                    return
+                with_reviews = bool(payload.get("withReviews", False))
+                print(f"  [scrape] 采集 {len(asins)} 个 ASIN @ {marketplace}"
+                      f"{' (含评论)' if with_reviews else ''}")
+                task_id, results = run_scrape_task(state, asins, marketplace, with_reviews)
+                self._send_json(200, {"taskId": task_id, "results": results})
+                return
+
             self.send_error(404)
 
         # ---- DELETE ----
@@ -728,6 +966,32 @@ def make_handler(state, auth):
                             conn.commit()
                 self._send_json(200, {"ok": True})
                 return
+
+            if path == "/api/scrape/tasks":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                q = parse_qs(urlparse(self.path).query)
+                task_id = (q.get("id") or [""])[0]
+                if not task_id:
+                    self._send_json(400, {"error": "id required"})
+                    return
+                state.delete_scrape_task(task_id)
+                self._send_json(200, {"ok": True})
+                return
+
+            if path == "/api/scrape/reset-session":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                marketplace = (payload.get("marketplace") or "").upper()
+                product_fetcher.reset_session(marketplace if marketplace else None)
+                self._send_json(200, {"ok": True})
+                return
+
             self.send_error(404)
 
         # ---- PUT ----
