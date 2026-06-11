@@ -440,11 +440,12 @@ function TabProd({ p }: { p: any }) {
             const orderQty = hasVariants && (b.items||[]).length > 0
               ? (b.items||[]).reduce((s: number, i: any) => s + (Number(i.qty)||0), 0)
               : (Number(b.qty)||0);
-            const shippedQty = (b.shipments||[]).reduce((sum: number, sh: any) => {
+            const validShipments = (b.shipments||[]).filter((sh: any) => !!sh.shipDate);
+            const shippedQty = validShipments.reduce((sum: number, sh: any) => {
               if (hasVariants) return sum + (sh.items||[]).reduce((s: number, i: any) => s + (Number(i.qty)||0), 0);
               return sum + (Number(sh.qty)||0);
             }, 0);
-            const actualShippedValue = (b.shipments||[]).reduce((sum: number, sh: any) => {
+            const actualShippedValue = validShipments.reduce((sum: number, sh: any) => {
               if (hasVariants) return sum + (sh.items||[]).reduce((s: number, si: any) => {
                 const bi = (b.items||[]).find((x: any) => x.variantId === si.variantId);
                 return s + (Number(si.qty)||0) * (Number(bi?.unitPrice)||0);
@@ -531,7 +532,7 @@ function TabProd({ p }: { p: any }) {
                       <span className="sku-items-sum mono">
                         共 {(b.items||[]).reduce((s: number, i: any) => s+(Number(i.qty)||0), 0)} pcs
                         {(() => {
-                          const totalRcvd = (b.items||[]).reduce((ts: number, it: any) => ts + (b.shipments||[]).reduce((s: number, sh: any) => s + ((sh.items||[]).find((si: any) => si.variantId === it.variantId)?.qty || 0), 0), 0);
+                          const totalRcvd = (b.items||[]).reduce((ts: number, it: any) => ts + validShipments.reduce((s: number, sh: any) => s + ((sh.items||[]).find((si: any) => si.variantId === it.variantId)?.qty || 0), 0), 0);
                           return totalRcvd > 0 ? <>&nbsp;·&nbsp;已到 <strong>{totalRcvd} pcs</strong></> : null;
                         })()}
                         &nbsp;·&nbsp;SKU 小计 <strong>¥{skuSubtotal.toFixed(2)}</strong>
@@ -539,11 +540,12 @@ function TabProd({ p }: { p: any }) {
                       <button className="btn btn-sm btn-add" onClick={e => { e.stopPropagation(); const v0 = variants[0]; addBatchItem(p.id, b.id, { variantId:v0?.id||'', variantName:v0?.name||v0?.sku||'SKU', qty:0, unitPrice:0 }); }}>+ 添加 SKU</button>
                     </div>
                     {!isCollapsed(b.id+'|sku') && <table className="sku-items-table">
-                      <thead><tr><th>变体</th><th className="num">下单数量</th><th className="num">实际到货</th><th className="num">单价(¥)</th><th className="num">小计(¥)</th><th></th></tr></thead>
+                      <thead><tr><th>变体</th><th className="num">下单数量</th><th className="num">实际到货</th><th className="num">待出货</th><th className="num">单价(¥)</th><th className="num">小计(¥)</th><th></th></tr></thead>
                       <tbody>
                         {(b.items||[]).map((item: any) => {
-                          const itemReceived = (b.shipments||[]).reduce((s: number, sh: any) =>
+                          const itemReceived = validShipments.reduce((s: number, sh: any) =>
                             s + ((sh.items||[]).find((si: any) => si.variantId === item.variantId)?.qty || 0), 0);
+                          const itemPending = (Number(item.qty)||0) - itemReceived;
                           return (
                           <tr key={item.id}>
                             <td>
@@ -557,6 +559,7 @@ function TabProd({ p }: { p: any }) {
                             </td>
                             <td className="num"><input className="cell mono" type="number" value={item.qty} onChange={e => updateBatchItem(p.id, b.id, item.id, { qty:Number(e.target.value) })} /></td>
                             <td className="num" style={{color: itemReceived > Number(item.qty) ? 'var(--red)' : itemReceived > 0 ? 'var(--green)' : 'var(--ink-4)'}}>{itemReceived || 0} pcs</td>
+                            <td className="num" style={{color: itemPending < 0 ? 'var(--red)' : itemPending === 0 && Number(item.qty) > 0 ? 'var(--green)' : 'var(--ink)'}}>{itemPending} pcs</td>
                             <td className="num"><input className="cell mono" type="number" step="0.01" value={item.unitPrice} onChange={e => updateBatchItem(p.id, b.id, item.id, { unitPrice:Number(e.target.value) })} /></td>
                             <td className="num">¥{((Number(item.qty)||0)*(Number(item.unitPrice)||0)).toFixed(2)}</td>
                             <td><button className="row-del" onClick={() => { if (confirm('确定删除该 SKU 明细？')) removeBatchItem(p.id, b.id, item.id); }}>✕</button></td>
@@ -725,7 +728,7 @@ function TabProd({ p }: { p: any }) {
                   const batchTotalQty = hasVariants && (b.items||[]).length > 0
                     ? (b.items||[]).reduce((s: number, i: any) => s + (Number(i.qty)||0), 0)
                     : (Number(b.qty)||0);
-                  const shippedQty = (b.shipments||[]).reduce((sum: number, sh: any) => {
+                  const shippedQty = (b.shipments||[]).filter((sh: any) => !!sh.shipDate).reduce((sum: number, sh: any) => {
                     if (hasVariants) return sum + (sh.items||[]).reduce((s: number, i: any) => s + (Number(i.qty)||0), 0);
                     return sum + (Number(sh.qty)||0);
                   }, 0);
