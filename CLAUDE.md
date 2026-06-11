@@ -12,7 +12,7 @@
 
 - 前端：React 19 + TypeScript（`tsconfig.json` 严格模式），esbuild 打包，`--jsx=automatic`（**必须显式 `import { useState, ... } from 'react'`**，没有全局 React）
 - 后端：纯标准库 `http.server`（`ThreadingHTTPServer`），无第三方 web 框架
-- 数据库：SQLite，`fba-data.db`（默认路径，`.gitignore` 忽略，本地数据不进 git）
+- 数据库：SQLite，`data/fba-data.db`（默认路径，整个 `data/` 目录 `.gitignore` 忽略，本地数据不进 git）
 - 抓取依赖：`beautifulsoup4`（仅"产品采集"用到，"关键词排名"是正则解析）
 
 常用命令：
@@ -63,6 +63,12 @@ docs/
   operations.md               # 部署/协作/同步操作手册（原 README-sync.md）
   plans/
     product-scrape-integration-plan.md  # 产品采集模块实施方案（已完成，归档）
+  uploads/                     # 参考文档（产品文档等，非应用功能使用）
+  screenshots/                 # 文档配图
+
+data/                          # 运行时数据（.gitignore 忽略，不进 git）
+  fba-data.db / -shm / -wal     # SQLite 主库 + WAL 临时文件
+  fba-users.json                # 用户名/密码（明文）
 ```
 
 ## 后端架构（server.py）

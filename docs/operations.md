@@ -33,17 +33,17 @@ python3 server.py
 
 参数：
 - `--port 9000` 改端口（默认 8002）
-- `--db /path/fba.db` 自定义数据库路径（默认 ./fba-data.db）
-- `--users /path/u.json` 自定义用户配置（默认 ./fba-users.json）
+- `--db /path/fba.db` 自定义数据库路径（默认 ./data/fba-data.db）
+- `--users /path/u.json` 自定义用户配置（默认 ./data/fba-users.json）
 - `--host 127.0.0.1` 限制只本机访问（不开放给同事）
 
 ## 2. 登录
 
-首次启动会自动创建 `fba-users.json`，默认账号：
+首次启动会自动创建 `data/fba-users.json`，默认账号：
 - `admin` / `fba2025`（管理员）
 - `editor` / `fba2025`（编辑员）
 
-**请尽快修改默认密码**（直接编辑 `fba-users.json`，该文件不纳入 git 版本控制）。
+**请尽快修改默认密码**（直接编辑 `data/fba-users.json`，该文件不纳入 git 版本控制）。
 
 ## 3. 分享地址给同事
 把**固定地址**（如 `http://你的电脑名.local:8002`）或**局域网 IP 地址**发给同事，他们用 Chrome / Edge / Safari 打开，用各自账号登录即可。
@@ -58,11 +58,11 @@ python3 server.py
 - 💾 **本地已保存** — 没探测到服务器，回退到纯 localStorage 模式（不与他人同步）
 
 ## 5. 数据备份
-所有数据存储在 SQLite 数据库 `fba-data.db` 中（同目录的 `fba-data.db-wal`/`fba-data.db-shm` 是运行期临时文件，正常现象）。
+所有数据存储在 SQLite 数据库 `data/fba-data.db` 中（同目录的 `data/fba-data.db-wal`/`data/fba-data.db-shm` 是运行期临时文件，正常现象）。
 
 **建议定期备份**（服务器停止后再复制更安全）：
 ```bash
-cp fba-data.db fba-data-$(date +%F).db
+cp data/fba-data.db data/fba-data-$(date +%F).db
 ```
 
 ## 6. 防火墙

@@ -9,8 +9,8 @@ FBA Tracker — 局域网协作服务器 v2
   3. /api/login POST — 用户名/密码换 Token
   4. /api/logout POST — 撤销 Token
   5. /api/me GET — 查询当前用户
-  6. 首次启动自动从 fba-data.json 迁移数据
-  7. 首次启动自动创建 fba-users.json（默认账号 admin / fba2025）
+  6. 首次启动自动从 data/fba-data.json 迁移数据
+  7. 首次启动自动创建 data/fba-users.json（默认账号 admin / fba2025）
 
 用法：
   python3 server.py                       # 默认 0.0.0.0:8002
@@ -1058,13 +1058,16 @@ def main():
     p = argparse.ArgumentParser(description="FBA Tracker 局域网协作服务器 v2")
     p.add_argument("--port",    type=int, default=8002,           help="监听端口 (默认 8002)")
     p.add_argument("--host",    default="0.0.0.0",                help="监听地址 (默认 0.0.0.0)")
-    p.add_argument("--db",      default="fba-data.db",            help="SQLite 数据库 (默认 ./fba-data.db)")
-    p.add_argument("--users",   default="fba-users.json",         help="用户配置文件 (默认 ./fba-users.json)")
-    p.add_argument("--migrate", default="fba-data.json",          help="首次启动时从旧 JSON 文件迁移 (默认 ./fba-data.json)")
+    p.add_argument("--db",      default="data/fba-data.db",       help="SQLite 数据库 (默认 ./data/fba-data.db)")
+    p.add_argument("--users",   default="data/fba-users.json",    help="用户配置文件 (默认 ./data/fba-users.json)")
+    p.add_argument("--migrate", default="data/fba-data.json",     help="首次启动时从旧 JSON 文件迁移 (默认 ./data/fba-data.json)")
     args = p.parse_args()
 
     db_path    = os.path.abspath(args.db)
     users_path = os.path.abspath(args.users)
+
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    os.makedirs(os.path.dirname(users_path), exist_ok=True)
 
     db_state = DbState(db_path)
     db_state.import_from_json(os.path.abspath(args.migrate))

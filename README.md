@@ -10,7 +10,7 @@ npm run build      # esbuild 把 src/ 打包为 compiled/bundle.js
 python3 server.py  # 或 npm start（自动先构建再启动），默认 http://localhost:8002
 ```
 
-首次启动会自动创建 `fba-users.json`，默认账号 `admin` / `fba2025`，**请尽快修改密码**。
+首次启动会自动创建 `data/fba-users.json`，默认账号 `admin` / `fba2025`，**请尽快修改密码**。
 
 ## 文档导航
 

@@ -1,10 +1,5 @@
-# 运行时数据
-fba-data.json
-fba-data*.json
-fba-data*.db
-fba-data*.db-shm
-fba-data*.db-wal
-fba-users.json
+# 运行时数据（数据库、用户配置等，见 data/ 目录）
+/data/
 *.tmp
 
 # macOS 系统文件
