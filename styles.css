@@ -273,7 +273,7 @@ input, textarea, select { font-family: inherit; font-size: 13px; }
 }
 
 .pcard {
-  padding: 11px 14px;
+  padding: 11px 14px 11px 28px;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
   position: relative;
@@ -304,14 +304,29 @@ input, textarea, select { font-family: inherit; font-size: 13px; }
 .pcard-stage { display: flex; align-items: center; gap: 5px; }
 .pcard-stage .dot { width: 6px; height: 6px; border-radius: 50%; }
 .pcard-pct { font-family: var(--font-mono); font-weight: 500; color: var(--ink-2); }
-.pcard[draggable="true"] { cursor: grab; }
-.pcard[draggable="true"]:active { cursor: grabbing; }
-.pcard-drag-over {
-  border-top: 2px solid var(--blue) !important;
-  padding-top: 10px !important;
+.pcard-drag-handle {
+  position: absolute;
+  left: 6px; top: 50%;
+  transform: translateY(-50%);
+  width: 16px; height: 20px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 1;
+  color: var(--ink-4);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  touch-action: none;
 }
-.pcard-dragging { opacity: 0.4; }
-.pcard-drag-over + .pcard { border-top-color: transparent; }
+.pcard:hover .pcard-drag-handle { opacity: 1; }
+.pcard-drag-handle:hover { color: var(--ink-2); }
+.pcard-drag-handle:active { cursor: grabbing; }
+.pcard-dragging {
+  opacity: 0.6;
+  z-index: 10;
+  background: var(--card-bg);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  border-radius: var(--r-md);
+}
 
 .badge {
   display: inline-flex; align-items: center; gap: 4px;

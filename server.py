@@ -118,6 +118,7 @@ class DbState:
                     stages        TEXT    DEFAULT '{}',
                     logs          TEXT    DEFAULT '[]',
                     variants      TEXT    DEFAULT '[]',
+                    sort_order    INTEGER DEFAULT 0,
                     updated_at    TEXT
                 );
 
@@ -207,6 +208,14 @@ class DbState:
             existing_products = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
             if "variants" not in existing_products:
                 conn.execute("ALTER TABLE products ADD COLUMN variants TEXT DEFAULT '[]'")
+            if "sort_order" not in existing_products:
+                conn.execute("ALTER TABLE products ADD COLUMN sort_order INTEGER DEFAULT 0")
+                # 按旧排序（创建时间倒序）回填，避免升级后顺序突变
+                rows = conn.execute("SELECT id FROM products ORDER BY created_at DESC").fetchall()
+                conn.executemany(
+                    "UPDATE products SET sort_order=? WHERE id=?",
+                    [(i, row["id"]) for i, row in enumerate(rows)],
+                )
             existing_tasks = {row[1] for row in conn.execute("PRAGMA table_info(keyword_tasks)")}
             if "keyword_notes" not in existing_tasks:
                 conn.execute("ALTER TABLE keyword_tasks ADD COLUMN keyword_notes TEXT DEFAULT '{}'")
@@ -240,7 +249,7 @@ class DbState:
         with self._conn() as conn:
             version  = self._get_version(conn)
             rows     = conn.execute(
-                "SELECT * FROM products ORDER BY created_at DESC"
+                "SELECT * FROM products ORDER BY sort_order ASC"
             ).fetchall()
             return {
                 "version":  version,
@@ -265,12 +274,12 @@ class DbState:
                 )
                 now = _now_iso()
 
-                for p in new_products:
+                for i, p in enumerate(new_products):
                     conn.execute(
                         """INSERT OR REPLACE INTO products
                            (id, name, sku, category, status, lead, created_at,
-                            current_stage, progress, fx_rate, stages, logs, variants, updated_at)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            current_stage, progress, fx_rate, stages, logs, variants, sort_order, updated_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         [
                             p.get("id"),
                             p.get("name"),
@@ -285,6 +294,7 @@ class DbState:
                             json.dumps(p.get("stages",   {}), ensure_ascii=False),
                             json.dumps(p.get("logs",     []), ensure_ascii=False),
                             json.dumps(p.get("variants", []), ensure_ascii=False),
+                            i,
                             now,
                         ],
                     )

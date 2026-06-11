@@ -4,52 +4,38 @@ import { uid } from '../../data/products';
 import { useProducts } from '../../context/ProductContext';
 import { EditField, StageCard, AddRecordButton, VariantSelector } from '../../components';
 import type { Product } from '../../data/types';
+import {
+  DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 export function ProductList({ products, activeId, setActiveId }: {
   products: Product[];
   activeId: string;
   setActiveId: (id: string) => void;
 }) {
-  const { moveProduct } = useProducts() as any;
+  const { reorderProducts } = useProducts() as any;
   const [search, setSearch] = React.useState('');
   const filtered = products.filter(p =>
     !search ||
     p.name.toLowerCase().includes(search.toLowerCase()) ||
     p.sku.toLowerCase().includes(search.toLowerCase())
   );
-  const dragIdRef = React.useRef<string | null>(null);
-  const dropTargetRef = React.useRef<string | null>(null);
-  const [overId, setOverId] = React.useState<string | null>(null);
 
-  const handleDragStart = (id: string) => (e: React.DragEvent) => {
-    dragIdRef.current = id;
-    setOverId(null);
-    (e.target as HTMLElement).style.opacity = '0.5';
-  };
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
-  const handleDragEnd = (e: React.DragEvent) => {
-    (e.target as HTMLElement).style.opacity = '';
-    const from = dragIdRef.current;
-    const to = dropTargetRef.current;
-    dragIdRef.current = null;
-    dropTargetRef.current = null;
-    setOverId(null);
-    if (from && to && from !== to) {
-      moveProduct(from, to);
+  const handleDragEnd = (e: DragEndEvent) => {
+    const { active, over } = e;
+    if (over && active.id !== over.id) {
+      reorderProducts(String(active.id), String(over.id));
     }
-  };
-
-  const handleDragOver = (id: string) => (e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    if (id !== dragIdRef.current) {
-      dropTargetRef.current = id;
-      setOverId(id);
-    }
-  };
-
-  const handleDragLeave = (id: string) => () => {
-    if (overId === id) setOverId(null);
   };
 
   return (
@@ -60,44 +46,58 @@ export function ProductList({ products, activeId, setActiveId }: {
             placeholder="搜索产品名称或 SKU…" />
         </div>
       </div>
-      <div>
-        {filtered.map(p => {
-          const stage = STAGES.find(s => s.key === p.currentStage);
-          return (
-            <div key={p.id}
-              className={"pcard" + (overId === p.id ? ' pcard-drag-over' : '') + (dragIdRef.current === p.id ? ' pcard-dragging' : '')}
-              data-active={p.id === activeId}
-              draggable="true"
-              onDragStart={handleDragStart(p.id)}
-              onDragEnd={handleDragEnd}
-              onDragOver={handleDragOver(p.id)}
-              onDragLeave={handleDragLeave(p.id)}
-              onClick={() => setActiveId(p.id)}>
-              <div className="pcard-row1">
-                <span className="pcard-name">{p.name}</span>
-                {(p.variants || []).length > 0 && (
-                  <span className="pcard-variant-badge">{p.variants!.length} SKU</span>
-                )}
-                <span className={`badge badge-${p.status}`}>{STATUS_LABELS[p.status].label}</span>
-              </div>
-              <div className="pcard-row2">
-                <span className="pcard-sku mono">{p.sku}</span>
-                <span>·</span>
-                <span>{p.category}</span>
-              </div>
-              <div className="pcard-bar">
-                <div className="pcard-bar-fill" style={{width: p.progress + '%'}}></div>
-              </div>
-              <div className="pcard-row3">
-                <span className="pcard-stage">
-                  <span className="dot" style={{background: stage?.color}}></span>
-                  <span>{stage?.name}</span>
-                </span>
-                <span className="pcard-pct">{p.progress}%</span>
-              </div>
-            </div>
-          );
-        })}
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext items={filtered.map(p => p.id)} strategy={verticalListSortingStrategy}>
+          <div>
+            {filtered.map(p => (
+              <SortableProductCard key={p.id} p={p} activeId={activeId} setActiveId={setActiveId} />
+            ))}
+          </div>
+        </SortableContext>
+      </DndContext>
+    </div>
+  );
+}
+
+function SortableProductCard({ p, activeId, setActiveId }: {
+  p: Product;
+  activeId: string;
+  setActiveId: (id: string) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: p.id });
+  const stage = STAGES.find(s => s.key === p.currentStage);
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+  return (
+    <div ref={setNodeRef} style={style}
+      className={"pcard" + (isDragging ? ' pcard-dragging' : '')}
+      data-active={p.id === activeId}
+      onClick={() => setActiveId(p.id)}>
+      <span className="pcard-drag-handle" {...attributes} {...listeners}
+        onClick={e => e.stopPropagation()} title="拖拽排序">⠿</span>
+      <div className="pcard-row1">
+        <span className="pcard-name">{p.name}</span>
+        {(p.variants || []).length > 0 && (
+          <span className="pcard-variant-badge">{p.variants!.length} SKU</span>
+        )}
+        <span className={`badge badge-${p.status}`}>{STATUS_LABELS[p.status].label}</span>
+      </div>
+      <div className="pcard-row2">
+        <span className="pcard-sku mono">{p.sku}</span>
+        <span>·</span>
+        <span>{p.category}</span>
+      </div>
+      <div className="pcard-bar">
+        <div className="pcard-bar-fill" style={{width: p.progress + '%'}}></div>
+      </div>
+      <div className="pcard-row3">
+        <span className="pcard-stage">
+          <span className="dot" style={{background: stage?.color}}></span>
+          <span>{stage?.name}</span>
+        </span>
+        <span className="pcard-pct">{p.progress}%</span>
       </div>
     </div>
   );

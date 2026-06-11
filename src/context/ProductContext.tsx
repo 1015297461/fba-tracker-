@@ -1,4 +1,5 @@
 import React from 'react';
+import { arrayMove } from '@dnd-kit/sortable';
 import { STAGES, VARIANT_STAGE_KEYS, STAGE_STATUSES } from '../data/constants';
 import { PRODUCTS, uid } from '../data/products';
 import type { Product, Variant } from '../data/types';
@@ -374,19 +375,12 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
     return newId;
   }, []);
 
-  const moveProduct = React.useCallback((productId: string, beforeProductId: string | null) => {
+  const reorderProducts = React.useCallback((activeId: string, overId: string) => {
     setProducts(prev => {
-      const idx = prev.findIndex(p => p.id === productId);
-      if (idx === -1) return prev;
-      const item = prev[idx];
-      const rest = prev.filter(p => p.id !== productId);
-      if (beforeProductId === null) {
-        return [...rest, item];
-      }
-      const targetIdx = rest.findIndex(p => p.id === beforeProductId);
-      if (targetIdx === -1) return prev;
-      rest.splice(targetIdx, 0, item);
-      return rest;
+      const oldIndex = prev.findIndex(p => p.id === activeId);
+      const newIndex = prev.findIndex(p => p.id === overId);
+      if (oldIndex === -1 || newIndex === -1 || oldIndex === newIndex) return prev;
+      return arrayMove(prev, oldIndex, newIndex);
     });
   }, []);
 
@@ -835,7 +829,7 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
     products, setProducts, update, updateStage, updateRecord, addRecord, removeRecord,
     updateSubShipment, addSubShipment, removeSubShipment, addLog, updateLog, removeLog,
     savedAt, resetToDefaults, exportJSON, importJSON, exportProduct,
-    createProduct, removeProduct, duplicateProduct, moveProduct,
+    createProduct, removeProduct, duplicateProduct, reorderProducts,
     syncMode, syncStatus, syncVersion: versionRef.current,
     needLogin, currentUser, login, logout,
     addVariant, updateVariant, updateVariantStage, removeVariant,
@@ -850,7 +844,7 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
   }), [products, update, updateStage, updateRecord, addRecord, removeRecord,
     updateSubShipment, addSubShipment, removeSubShipment, addLog, updateLog, removeLog,
     savedAt, resetToDefaults, exportJSON, importJSON, exportProduct,
-    createProduct, removeProduct, duplicateProduct, moveProduct,
+    createProduct, removeProduct, duplicateProduct, reorderProducts,
     syncMode, syncStatus, needLogin, currentUser, login, logout,
     addVariant, updateVariant, updateVariantStage, removeVariant,
     addVariantRecord, updateVariantRecord, removeVariantRecord,
