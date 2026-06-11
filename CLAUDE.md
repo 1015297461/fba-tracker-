@@ -1,6 +1,7 @@
 # FBA Tracker — 项目架构说明（给 AI 助手看的）
 
-修改代码前先看这份文档，能省掉重新通读全项目的时间。面向最终用户的协作/同步说明见 `README-sync.md`。
+修改代码前先看这份文档，能省掉重新通读全项目的时间。
+业务逻辑/领域规则见 `docs/business-overview.md`；面向最终用户的部署/协作说明见 `docs/operations.md`。
 
 ## 一句话
 
@@ -56,8 +57,12 @@ src/
       KeywordRank.tsx           # 工具：关键词排名监控
       ProductScrape.tsx         # 工具：产品采集（含详情预览弹窗 + 图片 Lightbox）
 
+README.md                    # 项目入口：简介 + 快速开始 + 文档导航
 docs/
-  product-scrape-integration-plan.md  # 产品采集模块的实施方案（参考用，已基本完成）
+  business-overview.md        # 业务逻辑：FBA流程/SKU变体/生产批次规则/工具模块定位
+  operations.md               # 部署/协作/同步操作手册（原 README-sync.md）
+  plans/
+    product-scrape-integration-plan.md  # 产品采集模块实施方案（已完成，归档）
 ```
 
 ## 后端架构（server.py）
@@ -83,15 +88,15 @@ docs/
 | GET/POST/DELETE | `/api/rank/*` | 关键词排名：任务列表/历史/创建/删除/单关键词 |
 | GET/POST/DELETE | `/api/scrape/*` | 产品采集：任务列表/结果/运行/删除/重置会话 |
 
-### 同步机制（详见 `README-sync.md` 第7节）
+### 同步机制（详见 `docs/operations.md` 第7节）
 客户端每 4s 轮询 `version`，编辑后 600ms 防抖 PUT 带 `baseVersion`；后端乐观锁，冲突时返回服务器最新版本，客户端整体覆盖（`ProductContext.tsx` 中 `versionRef`/`syncedVersionRef` 相关逻辑）。
 
 ## 前端架构
 
 - **状态管理**：单一 `ProductContext`（无 Redux/Zustand），`useProducts()` 暴露数据 + 一组 `update*()` 函数，每个对应 `Product`/`Variant`/`Stage` 等不同粒度的字段更新，最终都落到 `products` 数组并触发同步。
 - **视图路由**：无 react-router，`app.tsx` 的 `AppShell` 用 `view` 状态字符串切换（`'list' | 'progress' | 'table' | 'keywordRank' | 'productScrape' | ...`），Sidebar/TopBar 负责切换按钮和标题映射。
-- **数据模型核心**：`Product.stages: Record<stageKey, StageData>`，`stageKey` 取自 `STAGES`（18个阶段，每个归属 `TABS` 中某个 tab），`Product.variants: Variant[]` 为 SKU 变体，变体也有自己的 `stages` 子集（`VARIANT_STAGE_KEYS`）。
-- **"工具模块"模式**（关键词排名 / 产品采集 共享）：左侧输入+历史任务列表，右侧结果表格+操作；后端各有一个 `xxx_fetcher.py` 抓取器 + `server.py` 中的 `/api/xxx/*` 路由 + `run_xxx_task()`。新增同类工具时可参照 `ProductScrape.tsx` + `product_fetcher.py` + `docs/product-scrape-integration-plan.md`。
+- **数据模型核心**：`Product.stages: Record<stageKey, StageData>`，`stageKey` 取自 `STAGES`（18个阶段，每个归属 `TABS` 中某个 tab，各阶段业务含义见 `docs/business-overview.md` 第1节），`Product.variants: Variant[]` 为 SKU 变体，变体也有自己的 `stages` 子集（`VARIANT_STAGE_KEYS`）。
+- **"工具模块"模式**（关键词排名 / 产品采集 共享）：左侧输入+历史任务列表，右侧结果表格+操作；后端各有一个 `xxx_fetcher.py` 抓取器 + `server.py` 中的 `/api/xxx/*` 路由 + `run_xxx_task()`。新增同类工具时可参照 `ProductScrape.tsx` + `product_fetcher.py` + `docs/plans/product-scrape-integration-plan.md`。
 
 ## 已知的体量较大的文件（非 bug，但改动前建议先用 grep/大纲定位再改）
 

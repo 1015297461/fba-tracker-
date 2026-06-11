@@ -1,3 +1,5 @@
+> **状态：已完成（归档）**——四个阶段均已实现并验证，详见 `docs/business-overview.md` 中"产品采集"的业务说明、`CLAUDE.md` 中的技术架构。本文档保留作为历史实施记录，不再更新。
+
 # 产品详情采集集成方案（路径 B：Python + BeautifulSoup）
 
 > 目标：将 `mine/amazon-scraper` 的产品详情爬虫，作为「工具」模块下的新工具
