@@ -33,6 +33,7 @@ function mkInfo(code: string) {
 }
 
 const BATCH_SIZE = 3;
+const PAGE_SIZE = 20;
 
 // ============================================================
 // ProductDetailDialog (must be defined before ProductScrape)
@@ -348,10 +349,10 @@ async function apiGetProducts(taskId: string): Promise<ScrapedProduct[]> {
   if (!r.ok) throw new Error('加载采集结果失败');
   return (await r.json()).products || [];
 }
-async function apiRunScrape(asins: string[], marketplace: string, withReviews: boolean): Promise<{ taskId: string; products: ScrapedProduct[] }> {
+async function apiRunScrape(asins: string[], marketplace: string, withReviews: boolean, taskId?: string, total?: number): Promise<{ taskId: string; products: ScrapedProduct[] }> {
   const r = await fetch('/api/scrape/run', {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ asins, marketplace, withReviews }),
+    body: JSON.stringify({ asins, marketplace, withReviews, ...(taskId ? { taskId } : {}), ...(total != null ? { total } : {}) }),
   });
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
@@ -456,6 +457,7 @@ export function ProductScrape() {
   const [loadErr, setLoadErr]         = React.useState('');
   const [selectedProduct, setSelectedProduct] = React.useState<ScrapedProduct | null>(null);
   const [detailOpen, setDetailOpen] = React.useState(false);
+  const [page, setPage] = React.useState(1);
 
   const asins = React.useMemo(() =>
     asinInput.split(/[\n,;\s]+/).map(a => a.trim().toUpperCase()).filter(Boolean),
@@ -486,9 +488,11 @@ export function ProductScrape() {
       for (let i = 0; i < failedAsins.length; i += BATCH_SIZE) batches.push(failedAsins.slice(i, i + BATCH_SIZE));
       setProgress({ completed: 0, total: failedAsins.length, batch: 0, totalBatches: batches.length });
 
+      let retryTaskId: string | undefined;
       for (let i = 0; i < batches.length; i++) {
         setProgress(p => ({ ...p, batch: i + 1 }));
-        const { products: batchProducts } = await apiRunScrape(batches[i], marketplace, withReviews);
+        const { taskId, products: batchProducts } = await apiRunScrape(batches[i], marketplace, withReviews, retryTaskId, failedAsins.length);
+        retryTaskId = taskId;
         setProducts(prev => {
           const merged = [...prev];
           for (const np of batchProducts) {
@@ -513,21 +517,24 @@ export function ProductScrape() {
 
   async function runScrape() {
     if (!validAsins.length) { setErr('请输入有效的 ASIN（10 位字母数字）'); return; }
-    setErr(''); setRunning(true); setProducts([]); setActiveTaskId(null);
+    setErr(''); setRunning(true); setProducts([]); setActiveTaskId(null); setPage(1);
 
     const batches: string[][] = [];
     for (let i = 0; i < validAsins.length; i += BATCH_SIZE) batches.push(validAsins.slice(i, i + BATCH_SIZE));
     setProgress({ completed: 0, total: validAsins.length, batch: 0, totalBatches: batches.length });
 
     const all: ScrapedProduct[] = [];
+    let taskId: string | undefined;
     try {
       for (let i = 0; i < batches.length; i++) {
         setProgress(p => ({ ...p, batch: i + 1 }));
-        const { products: batchProducts } = await apiRunScrape(batches[i], marketplace, withReviews);
-        all.push(...batchProducts);
+        const res = await apiRunScrape(batches[i], marketplace, withReviews, taskId, validAsins.length);
+        taskId = res.taskId;
+        all.push(...res.products);
         setProducts([...all]);
         setProgress(p => ({ ...p, completed: p.completed + batches[i].length }));
       }
+      if (taskId) setActiveTaskId(taskId);
     } catch (e: any) {
       setErr(e.message || '采集失败');
     } finally {
@@ -538,11 +545,11 @@ export function ProductScrape() {
   }
 
   function clearResults() {
-    setProducts([]); setAsinInput(''); setActiveTaskId(null); setErr('');
+    setProducts([]); setAsinInput(''); setActiveTaskId(null); setErr(''); setPage(1);
   }
 
   async function viewTask(t: ScrapeTask) {
-    setActiveTaskId(t.id); setErr('');
+    setActiveTaskId(t.id); setErr(''); setPage(1);
     try { setProducts(await apiGetProducts(t.id)); }
     catch (e: any) { setErr(e.message || '加载失败'); setProducts([]); }
   }
@@ -557,6 +564,10 @@ export function ProductScrape() {
   const successCount = products.filter(p => p.status === 'success').length;
   const failedCount  = products.filter(p => p.status === 'failed').length;
   const progressPct  = progress.total > 0 ? Math.round((progress.completed / progress.total) * 100) : 0;
+
+  const totalPages = Math.max(1, Math.ceil(products.length / PAGE_SIZE));
+  React.useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages]);
+  const pagedProducts = products.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
     <div className="ps-root">
@@ -659,6 +670,7 @@ export function ProductScrape() {
             {running ? '正在采集中…' : '输入 ASIN 并点击「开始采集」，或在左侧选择历史任务查看结果'}
           </div>
         ) : (
+          <>
           <div className="ps-table-wrap">
             <table className="ps-table">
               <thead>
@@ -677,7 +689,7 @@ export function ProductScrape() {
                 </tr>
               </thead>
               <tbody>
-                {products.map((p, i) => (
+                {pagedProducts.map((p, i) => (
                   <tr key={p.asin + i}>
                     <td className="ps-col-img">
                       {p.mainImage
@@ -716,6 +728,18 @@ export function ProductScrape() {
               </tbody>
             </table>
           </div>
+          {totalPages > 1 && (
+            <div className="ps-pagination">
+              <span className="ps-page-info">第 {page}/{totalPages} 页 · 共 {products.length} 条</span>
+              <div className="ps-page-btns">
+                <button className="btn btn-sm" onClick={() => setPage(1)} disabled={page <= 1}>首页</button>
+                <button className="btn btn-sm" onClick={() => setPage(p => p - 1)} disabled={page <= 1}>上一页</button>
+                <button className="btn btn-sm" onClick={() => setPage(p => p + 1)} disabled={page >= totalPages}>下一页</button>
+                <button className="btn btn-sm" onClick={() => setPage(totalPages)} disabled={page >= totalPages}>末页</button>
+              </div>
+            </div>
+          )}
+          </>
         )}
       </div>
 

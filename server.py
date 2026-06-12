@@ -463,12 +463,12 @@ class DbState:
                 conn.commit()
         return tid
 
-    def finish_scrape_task(self, task_id, success, failed):
+    def accumulate_scrape_task(self, task_id, success_delta, failed_delta):
         with self.lock:
             with self._conn() as conn:
                 conn.execute(
-                    "UPDATE scrape_tasks SET success=?, failed=?, status='completed' WHERE id=?",
-                    [success, failed, task_id],
+                    "UPDATE scrape_tasks SET success=success+?, failed=failed+?, status='completed' WHERE id=?",
+                    [success_delta, failed_delta, task_id],
                 )
                 conn.commit()
 
@@ -710,10 +710,12 @@ def run_rank_task(state, task, delay_between_kw=(3.0, 7.0)):
     return results
 
 
-def run_scrape_task(state, asins, marketplace, with_reviews):
-    """批量采集产品详情，落库并返回 (task_id, results)。"""
+def run_scrape_task(state, asins, marketplace, with_reviews, task_id=None, total=None):
+    """批量采集产品详情，落库并返回 (task_id, results)。
+    传入已有 task_id 时，结果累加到该任务，使同一次提交的多个批次合并为一条历史记录。"""
     asins = [a.strip().upper() for a in asins if a and a.strip()]
-    task_id = state.create_scrape_task(marketplace, len(asins), with_reviews)
+    if task_id is None:
+        task_id = state.create_scrape_task(marketplace, total if total is not None else len(asins), with_reviews)
     try:
         results = product_fetcher.scrape_products(asins, marketplace, with_reviews=with_reviews)
     except Exception as e:
@@ -724,7 +726,7 @@ def run_scrape_task(state, asins, marketplace, with_reviews):
     state.save_scrape_products(task_id, results)
     success = sum(1 for r in results if r.get("status") == "success")
     failed = len(results) - success
-    state.finish_scrape_task(task_id, success, failed)
+    state.accumulate_scrape_task(task_id, success, failed)
     return task_id, results
 
 
@@ -927,9 +929,15 @@ def make_handler(state, auth):
                     self._send_json(400, {"error": f"unsupported marketplace: {marketplace}"})
                     return
                 with_reviews = bool(payload.get("withReviews", False))
+                task_id_in = payload.get("taskId")
+                if not isinstance(task_id_in, str) or not task_id_in:
+                    task_id_in = None
+                total = payload.get("total")
+                if not isinstance(total, int):
+                    total = None
                 print(f"  [scrape] 采集 {len(asins)} 个 ASIN @ {marketplace}"
                       f"{' (含评论)' if with_reviews else ''}")
-                task_id, results = run_scrape_task(state, asins, marketplace, with_reviews)
+                task_id, results = run_scrape_task(state, asins, marketplace, with_reviews, task_id=task_id_in, total=total)
                 self._send_json(200, {"taskId": task_id, "results": results})
                 return
 
