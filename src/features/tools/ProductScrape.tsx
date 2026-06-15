@@ -458,6 +458,18 @@ export function ProductScrape() {
   const [selectedProduct, setSelectedProduct] = React.useState<ScrapedProduct | null>(null);
   const [detailOpen, setDetailOpen] = React.useState(false);
   const [page, setPage] = React.useState(1);
+  const [hoverPreview, setHoverPreview] = React.useState<{ src: string; top: number; left: number } | null>(null);
+
+  function showThumbPreview(e: React.MouseEvent<HTMLImageElement>, src: string) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const size = 200;
+    const gap = 8;
+    let left = rect.right + gap;
+    if (left + size > window.innerWidth) left = rect.left - size - gap;
+    let top = rect.top;
+    if (top + size > window.innerHeight) top = window.innerHeight - size - gap;
+    setHoverPreview({ src, top, left });
+  }
 
   const asins = React.useMemo(() =>
     asinInput.split(/[\n,;\s]+/).map(a => a.trim().toUpperCase()).filter(Boolean),
@@ -693,7 +705,9 @@ export function ProductScrape() {
                   <tr key={p.asin + i}>
                     <td className="ps-col-img">
                       {p.mainImage
-                        ? <img className="ps-thumb" src={p.mainImage} alt="" />
+                        ? <img className="ps-thumb" src={p.mainImage} alt=""
+                            onMouseEnter={e => showThumbPreview(e, p.mainImage!)}
+                            onMouseLeave={() => setHoverPreview(null)} />
                         : <div className="ps-thumb ps-thumb-empty" />}
                     </td>
                     <td className="ps-col-asin"><span className="mono">{p.asin}</span></td>
@@ -749,6 +763,12 @@ export function ProductScrape() {
           open={detailOpen}
           onClose={() => { setDetailOpen(false); setSelectedProduct(null); }}
         />
+      )}
+
+      {hoverPreview && (
+        <div className="ps-thumb-preview" style={{ top: hoverPreview.top, left: hoverPreview.left }}>
+          <img src={hoverPreview.src} alt="" />
+        </div>
       )}
     </div>
   );

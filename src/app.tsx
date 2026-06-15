@@ -8,6 +8,7 @@ import { ProgressView } from './features/progress/ProgressView';
 import { TableView } from './features/table/TableView';
 import { KeywordRank } from './features/tools/KeywordRank';
 import { ProductScrape } from './features/tools/ProductScrape';
+import { ReviewFetch } from './features/tools/ReviewFetch';
 import { PRODUCTS } from './data/products';
 
 function LoginScreen({ onLogin }: { onLogin: (u: string, p: string) => Promise<boolean> }) {
@@ -128,6 +129,7 @@ function AppShell() {
         )}
         {view === 'keywordRank' && <KeywordRank />}
         {view === 'productScrape' && <ProductScrape />}
+        {view === 'reviewFetch' && <ReviewFetch />}
       </div>
       <TweaksPanel title="Tweaks">
         <TweakSection label="主题" />
@@ -150,6 +152,7 @@ function AppShell() {
             { value: 'table', label: '📐 数据表格' },
             { value: 'keywordRank', label: '🔍 关键词排名' },
             { value: 'productScrape', label: '🛒 产品采集' },
+            { value: 'reviewFetch', label: '💬 评论采集' },
           ]}
           onChange={v => changeView(v)}
         />

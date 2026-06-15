@@ -2147,6 +2147,14 @@ select.meta-edit { cursor: pointer; }
 .ps-thumb { display: block; width: 40px; height: 40px; object-fit: contain; border-radius: 4px; background: #fff; border: 1px solid var(--border); }
 .ps-thumb-empty { background: var(--border); }
 
+.ps-thumb-preview {
+  position: fixed; z-index: 200; pointer-events: none;
+  width: 200px; height: 200px; padding: 6px;
+  background: #fff; border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+}
+.ps-thumb-preview img { display: block; width: 100%; height: 100%; object-fit: contain; }
+
 .ps-muted { color: var(--ink-4); font-size: 11px; }
 
 .ps-status { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
@@ -2215,3 +2223,79 @@ select.meta-edit { cursor: pointer; }
 .ps-thumb { width: 40px; height: 40px; border-radius: 4px; overflow: hidden; border: 2px solid transparent; cursor: pointer; }
 .ps-thumb img { width: 100%; height: 100%; object-fit: contain; background: #fff; }
 .ps-thumb-active { border-color: #fff; opacity: 1; }
+
+/* ============================================================
+   REVIEW FETCH（评论采集）
+   ============================================================ */
+.rf-root { display: grid; grid-template-columns: 300px 1fr; height: 100%; overflow: hidden; }
+
+/* ---- 左侧：输入 + 历史任务 ---- */
+.rf-side { border-right: 1px solid var(--border); background: var(--bg-2); overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.rf-field { display: flex; flex-direction: column; gap: 6px; }
+.rf-label { font-size: 12px; color: var(--ink-2); font-weight: 500; }
+.rf-select, .rf-textarea { font: inherit; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--card-bg); color: var(--ink); }
+.rf-textarea { resize: vertical; font-family: var(--font-mono); font-size: 12px; }
+.rf-asin-count { font-size: 11px; color: var(--ink-3); }
+.rf-asin-bad { color: var(--red); }
+
+.rf-check { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2); }
+.rf-check input { width: auto; }
+
+.rf-actions { display: flex; gap: 8px; }
+.rf-actions .btn { flex: 1; justify-content: center; }
+
+.rf-err { color: var(--red); font-size: 12px; }
+
+.rf-progress { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card-bg); }
+.rf-progress-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--ink-3); }
+.rf-progress-bar { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; }
+.rf-progress-fill { height: 100%; background: var(--blue); transition: width 0.2s; }
+
+.rf-summary { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card-bg); font-size: 12px; color: var(--ink-2); }
+.rf-fail { color: var(--red); font-size: 11px; }
+
+.rf-history { display: flex; flex-direction: column; gap: 8px; }
+.rf-history-head { font-weight: 600; font-size: 13px; color: var(--ink); }
+.rf-task { display: flex; align-items: center; gap: 6px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.rf-task[data-active="true"] { border-color: var(--blue); box-shadow: 0 0 0 2px var(--blue-soft); }
+.rf-task-main { flex: 1; min-width: 0; text-align: left; background: none; border: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; cursor: pointer; color: inherit; }
+.rf-task-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--ink); }
+.rf-task-time { font-weight: 400; color: var(--ink-4); font-size: 11px; }
+.rf-task-sub { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--ink-3); }
+.rf-del { flex-shrink: 0; color: var(--ink-3); }
+.rf-del:hover { color: var(--red) !important; border-color: var(--red) !important; }
+
+.rf-ok { color: var(--green); }
+
+.rf-empty { color: var(--ink-3); font-size: 13px; padding: 14px 4px; }
+.rf-empty-lg { display: flex; align-items: center; justify-content: center; height: 100%; font-size: 13px; text-align: center; padding: 40px; }
+
+/* ---- 右侧：评论结果表格 ---- */
+.rf-main { display: flex; flex-direction: column; overflow: hidden; }
+.rf-main-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px 12px; flex-shrink: 0; border-bottom: 1px solid var(--border); }
+.rf-main-title { display: flex; align-items: center; gap: 12px; font-size: 15px; font-weight: 600; color: var(--ink); }
+.rf-badge { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 999px; background: var(--bg-2); color: var(--ink-3); }
+.rf-main-actions { display: flex; gap: 8px; }
+
+.rf-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px; border-top: 1px solid var(--border); flex-shrink: 0; }
+.rf-page-info { font-size: 12px; color: var(--ink-3); }
+.rf-page-btns { display: flex; gap: 6px; }
+
+.rf-table-wrap { overflow: auto; flex: 1; }
+.rf-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.rf-table th { position: sticky; top: 0; background: var(--bg-2); color: var(--ink-3); font-weight: 600; font-size: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); text-align: left; z-index: 1; white-space: nowrap; }
+.rf-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.rf-table tbody tr:hover td { background: var(--bg-2); }
+
+.rf-col-asin { width: 110px; }
+.rf-col-img  { width: 56px; }
+.rf-col-content { min-width: 260px; max-width: 420px; }
+.rf-col-ops  { width: 90px; }
+
+.rf-review-title { font-weight: 600; color: var(--ink); margin-bottom: 2px; }
+.rf-review-body {
+  color: var(--ink-2); font-size: 12px;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.rf-verified { color: var(--green); font-weight: 700; }

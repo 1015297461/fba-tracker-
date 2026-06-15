@@ -85,6 +85,7 @@ export function Sidebar({ view, setView, filter, setFilter, products }: {
           {[
             { k: 'keywordRank', ic: '🔍', label: '关键词排名' },
             { k: 'productScrape', ic: '🛒', label: '产品采集' },
+            { k: 'reviewFetch', ic: '💬', label: '评论采集' },
           ].map(v => (
             <button key={v.k} className="sb-view-btn"
               data-active={view === v.k}
@@ -147,7 +148,7 @@ export function TopBar({ view, product, theme, onToggleTheme, onNewProduct }: {
   onToggleTheme: () => void;
   onNewProduct: () => void;
 }) {
-  const titles: Record<string, string> = { list: '产品列表', progress: '进度总览', table: '数据表格', keywordRank: '关键词排名', productScrape: '产品采集' };
+  const titles: Record<string, string> = { list: '产品列表', progress: '进度总览', table: '数据表格', keywordRank: '关键词排名', productScrape: '产品采集', reviewFetch: '评论采集' };
   const ctx = useProducts();
   const { label: syncLabel, cls: syncCls, icon: syncIcon } = useSyncLabel();
   const currentUser = ctx?.currentUser;

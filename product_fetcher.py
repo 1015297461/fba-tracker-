@@ -38,6 +38,7 @@ import argparse
 import threading
 import urllib.request
 import urllib.error
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
@@ -994,6 +995,238 @@ def parse_reviews_page(html_text):
         "review_images": review_images[:10],
         "select_to_learn_more": select_to_learn_more[:20],
     }
+
+
+# ============================================================
+# 评论列表抓取与解析（评论采集工具：单条评论，支持分页/排序/筛选/增量去重）
+# ============================================================
+def _parse_helpful_count(text):
+    """解析 "X people found this helpful" / "One person found this helpful" -> int，解析失败返回 None。"""
+    if not text:
+        return None
+    t = text.strip()
+    if not t:
+        return None
+    m = re.search(r'([\d,]+)\s+people', t, re.I)
+    if m:
+        try:
+            return int(m.group(1).replace(",", ""))
+        except ValueError:
+            return None
+    if re.search(r'\bone person\b', t, re.I):
+        return 1
+    m = re.search(r'([\d,]+)', t)
+    if m:
+        try:
+            return int(m.group(1).replace(",", ""))
+        except ValueError:
+            return None
+    return None
+
+
+def parse_review_list(html_text):
+    """解析评论列表页，返回单条评论 dict 列表（与 parse_reviews_page 的聚合信息不同）。"""
+    soup = _make_soup(html_text)
+    if soup is None:
+        return []
+
+    reviews = []
+    for el in soup.select("[data-hook='review']"):
+        review_id = el.get("id") or None
+
+        rating = None
+        rating_text = _text1(el, "[data-hook='review-star-rating'], [data-hook='cmps-review-star-rating']")
+        m = re.search(r'([\d.]+)\s+out of', rating_text)
+        if m:
+            try:
+                rating = float(m.group(1))
+            except ValueError:
+                rating = None
+
+        title_raw = _text1(el, "[data-hook='review-title']")
+        title = clean_text(re.sub(r'^[\d.]+\s+out of\s+5\s+stars\s*', '', title_raw, flags=re.I))
+
+        author = clean_text(_text1(el, ".a-profile-name")) or None
+        date_raw = clean_text(_text1(el, "[data-hook='review-date']")) or None
+        verified = el.select_one("[data-hook='avp-badge']") is not None
+        body = clean_text(_text1(el, "[data-hook='review-body']"))
+        helpful_count = _parse_helpful_count(_text1(el, "[data-hook='helpful-vote-statement']"))
+
+        images = []
+        for img in el.select("[data-hook='review-image-tile'] img"):
+            src = img.get("src") or img.get("data-src") or ""
+            if src.startswith("http"):
+                src = re.sub(r'\._[A-Z0-9_,]+_\.', '._SL500_.', src, flags=re.I)
+                if src not in images:
+                    images.append(src)
+
+        reviews.append({
+            "review_id": review_id,
+            "rating": rating,
+            "title": title,
+            "author": author,
+            "date_raw": date_raw,
+            "verified": verified,
+            "body": body,
+            "helpful_count": helpful_count,
+            "images": images[:5],
+        })
+
+    return reviews
+
+
+def fetch_review_list(asin, marketplace, max_pages=3, sort_by="recent", filter_by_star=None, verified_only=False):
+    """分页抓取 ASIN 的评论列表，返回 (reviews, error_message)。
+
+    遇空列表/CAPTCHA/连续两页内容相同提前停止；error_message 仅在"完全没抓到任何评论"时设置，
+    若已抓到部分评论后续页失败，视为部分成功（error_message 仍为 None）。
+    """
+    mp = MARKETPLACES.get(marketplace)
+    if not mp:
+        return [], f"不支持的站点: {marketplace}"
+
+    session = get_session(marketplace)
+    warm_up_session(marketplace)
+
+    sort_by = sort_by if sort_by in ("recent", "helpful") else "recent"
+    max_pages = max(1, min(int(max_pages or 1), 10))
+
+    base_params = {
+        "reviewerType": "all_reviews",
+        "sortBy": sort_by,
+    }
+    if verified_only:
+        base_params["reviewerType"] = "avp_only_reviews"
+    if filter_by_star:
+        star_names = {1: "one_star", 2: "two_star", 3: "three_star", 4: "four_star", 5: "five_star"}
+        star_name = star_names.get(int(filter_by_star))
+        if star_name:
+            base_params["filterByStar"] = star_name
+
+    referer = f"https://{mp['domain']}/dp/{asin}"
+
+    reviews = []
+    seen_keys = set()
+    error_message = None
+    prev_page_html = None
+
+    for page_num in range(1, max_pages + 1):
+        params = dict(base_params)
+        params["pageNumber"] = page_num
+        url = f"https://{mp['domain']}/product-reviews/{asin}?{urllib.parse.urlencode(params)}"
+
+        last_error = None
+        page_html = None
+        for attempt in range(MAX_RETRIES + 1):
+            if attempt > 0:
+                session.profile = random.choice(BROWSER_PROFILES)
+                time.sleep(RETRY_DELAYS[min(attempt - 1, len(RETRY_DELAYS) - 1)] + random.random() * 2)
+
+            session.acquire_rate_limit()
+            headers = build_headers(session, marketplace, referer)
+            status, html_text, resp_headers, err = _http_get(url, headers, timeout=30)
+
+            if err:
+                last_error = err
+                continue
+
+            session.last_request_time = time.monotonic()
+            session.request_count += 1
+            if resp_headers is not None:
+                session.merge_cookies(resp_headers.get_all("Set-Cookie"))
+            if mp.get("currency"):
+                session.cookies["i18n-prefs"] = mp["currency"]
+
+            if status == 503 or is_dog_page(html_text):
+                last_error = "Amazon服务暂时不可用(503)，正在重试..."
+                continue
+
+            if status != 200:
+                last_error = f"http_{status}"
+                continue
+
+            if is_captcha_page(html_text):
+                last_error = "检测到CAPTCHA验证页面"
+                session.cookies = {}
+                session.initialized = False
+                continue
+
+            page_html = html_text
+            break
+
+        if page_html is None:
+            if not reviews:
+                error_message = last_error or "抓取失败"
+            break
+
+        if prev_page_html is not None and page_html == prev_page_html:
+            break
+        prev_page_html = page_html
+
+        page_reviews = parse_review_list(page_html)
+        if not page_reviews:
+            break
+
+        new_on_page = 0
+        for r in page_reviews:
+            if verified_only and not r["verified"]:
+                continue
+            if filter_by_star and r["rating"] is not None and int(round(r["rating"])) != int(filter_by_star):
+                continue
+            key = r["review_id"] or (r["author"], r["date_raw"], r["body"])
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            reviews.append(r)
+            new_on_page += 1
+
+        if new_on_page == 0:
+            break
+
+        if page_num < max_pages:
+            human_delay(1.0, 0.5)
+
+    return reviews, error_message
+
+
+def fetch_reviews_for_asins(asins, marketplace, max_pages=3, sort_by="recent", filter_by_star=None, verified_only=False, on_progress=None):
+    """批量抓取多个 ASIN 的评论列表，返回与 asins 等长的结果列表：
+    [{asin, marketplace, reviews, status, error_message}, ...]
+    """
+    batch_size = max(1, int(os.environ.get("SCRAPER_CONCURRENCY", "2")))
+    asins = [a.strip().upper() for a in asins if a and a.strip()]
+    results = [None] * len(asins)
+    completed = 0
+
+    def _run_one(idx, asin, stagger_sec):
+        if stagger_sec > 0:
+            time.sleep(stagger_sec)
+        reviews, error_message = fetch_review_list(asin, marketplace, max_pages, sort_by, filter_by_star, verified_only)
+        return idx, {
+            "asin": asin,
+            "marketplace": marketplace,
+            "reviews": reviews,
+            "status": "failed" if (error_message and not reviews) else "success",
+            "error_message": error_message,
+        }
+
+    for start in range(0, len(asins), batch_size):
+        batch = list(range(start, min(start + batch_size, len(asins))))
+        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+            futures = [
+                executor.submit(_run_one, idx, asins[idx], (pos * 0.6 + random.random() * 0.3) if pos > 0 else 0)
+                for pos, idx in enumerate(batch)
+            ]
+            for fut in as_completed(futures):
+                idx, result = fut.result()
+                results[idx] = result
+                completed += 1
+                if on_progress:
+                    on_progress(completed, len(asins), result)
+        if start + batch_size < len(asins):
+            human_delay(1.2, 0.6)
+
+    return results
 
 
 # ============================================================

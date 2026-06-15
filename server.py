@@ -203,6 +203,39 @@ class DbState:
                     scraped_at    TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_scrape_prod_task ON scrape_products(task_id);
+
+                CREATE TABLE IF NOT EXISTS review_tasks (
+                    id            TEXT PRIMARY KEY,
+                    marketplace   TEXT NOT NULL,
+                    asins         TEXT DEFAULT '[]',
+                    sort_by       TEXT DEFAULT 'recent',
+                    filter_star   TEXT,
+                    verified_only INTEGER DEFAULT 0,
+                    max_pages     INTEGER DEFAULT 3,
+                    total         INTEGER DEFAULT 0,
+                    new_count     INTEGER DEFAULT 0,
+                    status        TEXT DEFAULT 'completed',
+                    created_at    TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS review_results (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id       TEXT NOT NULL,
+                    asin          TEXT NOT NULL,
+                    marketplace   TEXT,
+                    review_id     TEXT NOT NULL,
+                    rating        REAL,
+                    title         TEXT,
+                    author        TEXT,
+                    date_raw      TEXT,
+                    verified      INTEGER DEFAULT 0,
+                    body          TEXT,
+                    helpful_count INTEGER,
+                    images        TEXT DEFAULT '[]',
+                    fetched_at    TEXT,
+                    UNIQUE(asin, review_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_review_res_asin ON review_results(asin);
             """)
             # 兼容旧版数据库：幂等追加缺失列
             existing_products = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
@@ -566,6 +599,133 @@ class DbState:
                 conn.execute("DELETE FROM scrape_products WHERE task_id=?", [task_id])
                 conn.commit()
 
+    # ---- 评论采集：任务与评论池 ----
+
+    def _row_to_review_task(self, row):
+        return {
+            "id":           row["id"],
+            "marketplace":  row["marketplace"],
+            "asins":        json.loads(row["asins"] or "[]"),
+            "sortBy":       row["sort_by"],
+            "filterStar":   row["filter_star"],
+            "verifiedOnly": bool(row["verified_only"]),
+            "maxPages":     row["max_pages"],
+            "total":        row["total"],
+            "newCount":     row["new_count"],
+            "status":       row["status"],
+            "createdAt":    row["created_at"],
+        }
+
+    def create_review_task(self, marketplace, asins, sort_by, filter_star, verified_only, max_pages):
+        tid = "rt" + secrets.token_hex(6)
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO review_tasks
+                       (id, marketplace, asins, sort_by, filter_star, verified_only,
+                        max_pages, total, new_count, status, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    [
+                        tid, marketplace, json.dumps(asins, ensure_ascii=False),
+                        sort_by, filter_star, 1 if verified_only else 0,
+                        max_pages, len(asins), 0, "running", _now_iso(),
+                    ],
+                )
+                conn.commit()
+        return tid
+
+    def accumulate_review_task(self, task_id, batch_asins, new_count_delta):
+        """合并本批次的 ASIN 到任务的 asins 列表，累加 new_count，并标记完成。"""
+        with self.lock:
+            with self._conn() as conn:
+                row = conn.execute("SELECT asins FROM review_tasks WHERE id=?", [task_id]).fetchone()
+                if not row:
+                    return
+                existing = json.loads(row["asins"] or "[]")
+                merged = list(dict.fromkeys(existing + list(batch_asins)))
+                conn.execute(
+                    "UPDATE review_tasks SET asins=?, total=?, new_count=new_count+?, status='completed' WHERE id=?",
+                    [json.dumps(merged, ensure_ascii=False), len(merged), new_count_delta, task_id],
+                )
+                conn.commit()
+
+    def list_review_tasks(self, limit=100):
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM review_tasks ORDER BY created_at DESC LIMIT ?", [limit]
+            ).fetchall()
+            return [self._row_to_review_task(r) for r in rows]
+
+    def get_review_task(self, task_id):
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM review_tasks WHERE id=?", [task_id]).fetchone()
+            return self._row_to_review_task(row) if row else None
+
+    def save_review_results(self, task_id, asin, marketplace, reviews):
+        """INSERT OR IGNORE 写入评论池（按 asin+review_id 去重），返回新增条数。"""
+        now = _now_iso()
+        inserted = 0
+        with self.lock:
+            with self._conn() as conn:
+                for r in reviews:
+                    review_id = r.get("review_id")
+                    if not review_id:
+                        continue
+                    cur = conn.execute(
+                        """INSERT OR IGNORE INTO review_results
+                           (task_id, asin, marketplace, review_id, rating, title, author,
+                            date_raw, verified, body, helpful_count, images, fetched_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        [
+                            task_id, asin, marketplace, review_id,
+                            r.get("rating"), r.get("title"), r.get("author"), r.get("date_raw"),
+                            1 if r.get("verified") else 0, r.get("body"), r.get("helpful_count"),
+                            json.dumps(r.get("images", []), ensure_ascii=False), now,
+                        ],
+                    )
+                    inserted += cur.rowcount
+                conn.commit()
+        return inserted
+
+    def _row_to_review_result(self, row):
+        return {
+            "id":           row["id"],
+            "taskId":       row["task_id"],
+            "asin":         row["asin"],
+            "marketplace":  row["marketplace"],
+            "reviewId":     row["review_id"],
+            "rating":       row["rating"],
+            "title":        row["title"],
+            "author":       row["author"],
+            "dateRaw":      row["date_raw"],
+            "verified":     bool(row["verified"]),
+            "body":         row["body"],
+            "helpfulCount": row["helpful_count"],
+            "images":       json.loads(row["images"] or "[]"),
+            "fetchedAt":    row["fetched_at"],
+        }
+
+    def get_review_results(self, task_id):
+        with self._conn() as conn:
+            task_row = conn.execute("SELECT asins FROM review_tasks WHERE id=?", [task_id]).fetchone()
+            if not task_row:
+                return []
+            asins = json.loads(task_row["asins"] or "[]")
+            if not asins:
+                return []
+            placeholders = ",".join("?" for _ in asins)
+            rows = conn.execute(
+                f"SELECT * FROM review_results WHERE asin IN ({placeholders}) ORDER BY asin, fetched_at DESC",
+                asins,
+            ).fetchall()
+            return [self._row_to_review_result(r) for r in rows]
+
+    def delete_review_task(self, task_id):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM review_tasks WHERE id=?", [task_id])
+                conn.commit()
+
     def import_from_json(self, json_path):
         """首次启动时从旧版 fba-data.json 一键迁移"""
         if not os.path.exists(json_path):
@@ -730,6 +890,43 @@ def run_scrape_task(state, asins, marketplace, with_reviews, task_id=None, total
     return task_id, results
 
 
+def run_review_task(state, asins, marketplace, sort_by, filter_star, verified_only, max_pages, task_id=None):
+    """批量采集评论，去重落入评论池并返回 (task_id, results)。
+    传入已有 task_id 时，结果累加到该任务，使同一次提交的多个批次合并为一条历史记录。"""
+    asins = [a.strip().upper() for a in asins if a and a.strip()]
+    if task_id is None:
+        task_id = state.create_review_task(marketplace, asins, sort_by, filter_star, verified_only, max_pages)
+
+    try:
+        fetch_results = product_fetcher.fetch_reviews_for_asins(
+            asins, marketplace, max_pages=max_pages, sort_by=sort_by,
+            filter_by_star=filter_star, verified_only=verified_only,
+        )
+    except Exception as e:
+        fetch_results = [
+            {"asin": a, "marketplace": marketplace, "reviews": [],
+             "status": "failed", "error_message": f"fetch_exc:{type(e).__name__}"}
+            for a in asins
+        ]
+
+    new_count = 0
+    summaries = []
+    for r in fetch_results:
+        inserted = state.save_review_results(task_id, r["asin"], marketplace, r["reviews"])
+        new_count += inserted
+        summaries.append({
+            "asin": r["asin"],
+            "marketplace": marketplace,
+            "totalFetched": len(r["reviews"]),
+            "newCount": inserted,
+            "status": r["status"],
+            "errorMessage": r["error_message"],
+        })
+
+    state.accumulate_review_task(task_id, asins, new_count)
+    return task_id, summaries
+
+
 def start_scheduler(state):
     """后台守护线程：每分钟检查定时档位，命中即采集（同一小时不重复）。"""
     def loop():
@@ -853,6 +1050,28 @@ def make_handler(state, auth):
                 })
                 return
 
+            if path == "/api/review/tasks":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                self._send_json(200, {"tasks": state.list_review_tasks()})
+                return
+
+            if path == "/api/review/results":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                q = parse_qs(urlparse(self.path).query)
+                task_id = (q.get("taskId") or [""])[0]
+                if not task_id:
+                    self._send_json(400, {"error": "taskId required"})
+                    return
+                self._send_json(200, {
+                    "taskId": task_id,
+                    "results": state.get_review_results(task_id),
+                })
+                return
+
             return super().do_GET()
 
         # ---- POST ----
@@ -941,6 +1160,50 @@ def make_handler(state, auth):
                 self._send_json(200, {"taskId": task_id, "results": results})
                 return
 
+            if path == "/api/review/run":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                asins = payload.get("asins")
+                if not isinstance(asins, list) or not asins:
+                    self._send_json(400, {"error": "asins must be a non-empty array"})
+                    return
+                marketplace = (payload.get("marketplace") or "US").upper()
+                if marketplace not in product_fetcher.MARKETPLACES:
+                    self._send_json(400, {"error": f"unsupported marketplace: {marketplace}"})
+                    return
+                sort_by = payload.get("sortBy") or "recent"
+                if sort_by not in ("recent", "helpful"):
+                    sort_by = "recent"
+                filter_star = payload.get("filterStar")
+                if filter_star is not None:
+                    try:
+                        filter_star = int(filter_star)
+                    except (TypeError, ValueError):
+                        filter_star = None
+                    if filter_star not in (1, 2, 3, 4, 5):
+                        filter_star = None
+                verified_only = bool(payload.get("verifiedOnly", False))
+                try:
+                    max_pages = int(payload.get("maxPages", 3))
+                except (TypeError, ValueError):
+                    max_pages = 3
+                max_pages = max(1, min(max_pages, 10))
+                task_id_in = payload.get("taskId")
+                if not isinstance(task_id_in, str) or not task_id_in:
+                    task_id_in = None
+                print(f"  [review] 采集 {len(asins)} 个 ASIN 评论 @ {marketplace}"
+                      f" (sortBy={sort_by}, maxPages={max_pages})")
+                task_id, results = run_review_task(
+                    state, asins, marketplace, sort_by, filter_star, verified_only, max_pages,
+                    task_id=task_id_in,
+                )
+                self._send_json(200, {"taskId": task_id, "results": results})
+                return
+
             self.send_error(404)
 
         # ---- DELETE ----
@@ -995,6 +1258,19 @@ def make_handler(state, auth):
                     self._send_json(400, {"error": "id required"})
                     return
                 state.delete_scrape_task(task_id)
+                self._send_json(200, {"ok": True})
+                return
+
+            if path == "/api/review/tasks":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                q = parse_qs(urlparse(self.path).query)
+                task_id = (q.get("id") or [""])[0]
+                if not task_id:
+                    self._send_json(400, {"error": "id required"})
+                    return
+                state.delete_review_task(task_id)
                 self._send_json(200, {"ok": True})
                 return
 
