@@ -416,6 +416,8 @@ def fetch_product_page(asin, marketplace):
 
         if status == 503 or is_dog_page(html_text):
             last_error = "Amazon服务暂时不可用(503)，正在重试..."
+            session.cookies = {}
+            session.initialized = False
             continue
 
         if status != 200:
@@ -1139,6 +1141,8 @@ def fetch_review_list(asin, marketplace, max_pages=3, sort_by="recent", filter_b
 
             if status == 503 or is_dog_page(html_text):
                 last_error = "Amazon服务暂时不可用(503)，正在重试..."
+                session.cookies = {}
+                session.initialized = False
                 continue
 
             if status != 200:
