@@ -458,6 +458,7 @@ export function ProductScrape() {
   const [selectedProduct, setSelectedProduct] = React.useState<ScrapedProduct | null>(null);
   const [detailOpen, setDetailOpen] = React.useState(false);
   const [page, setPage] = React.useState(1);
+  const [searchQuery, setSearchQuery] = React.useState('');
   const [hoverPreview, setHoverPreview] = React.useState<{ src: string; top: number; left: number } | null>(null);
 
   function showThumbPreview(e: React.MouseEvent<HTMLImageElement>, src: string) {
@@ -557,11 +558,11 @@ export function ProductScrape() {
   }
 
   function clearResults() {
-    setProducts([]); setAsinInput(''); setActiveTaskId(null); setErr(''); setPage(1);
+    setProducts([]); setAsinInput(''); setActiveTaskId(null); setErr(''); setPage(1); setSearchQuery('');
   }
 
   async function viewTask(t: ScrapeTask) {
-    setActiveTaskId(t.id); setErr(''); setPage(1);
+    setActiveTaskId(t.id); setErr(''); setPage(1); setSearchQuery('');
     try { setProducts(await apiGetProducts(t.id)); }
     catch (e: any) { setErr(e.message || '加载失败'); setProducts([]); }
   }
@@ -577,9 +578,16 @@ export function ProductScrape() {
   const failedCount  = products.filter(p => p.status === 'failed').length;
   const progressPct  = progress.total > 0 ? Math.round((progress.completed / progress.total) * 100) : 0;
 
-  const totalPages = Math.max(1, Math.ceil(products.length / PAGE_SIZE));
+  const filteredProducts = React.useMemo(() => {
+    const q = searchQuery.trim().toUpperCase();
+    if (!q) return products;
+    return products.filter(p => p.asin.includes(q));
+  }, [products, searchQuery]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredProducts.length / PAGE_SIZE));
   React.useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages]);
-  const pagedProducts = products.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  React.useEffect(() => { setPage(1); }, [searchQuery]);
+  const pagedProducts = filteredProducts.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
     <div className="ps-root">
@@ -657,7 +665,11 @@ export function ProductScrape() {
         <div className="ps-main-head">
           <div className="ps-main-title">
             采集结果
-            {products.length > 0 && <span className="ps-badge">{products.length} 条</span>}
+            {products.length > 0 && (
+              <span className="ps-badge">
+                {searchQuery.trim() ? `${filteredProducts.length}/${products.length}` : products.length} 条
+              </span>
+            )}
             {products.length > 0 && (
               <span className="ps-stats">
                 <span className="ps-ok">成功 {successCount}</span>
@@ -667,6 +679,13 @@ export function ProductScrape() {
           </div>
           {products.length > 0 && (
             <div className="ps-main-actions">
+              <input
+                className="ps-search-input"
+                type="text"
+                placeholder="搜索 ASIN…"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+              />
               {failedCount > 0 && (
                 <button className="btn btn-sm" onClick={handleRetryFailed} disabled={running || retrying}>
                   {retrying ? '重试中…' : `重试失败 (${failedCount})`}
@@ -744,7 +763,7 @@ export function ProductScrape() {
           </div>
           {totalPages > 1 && (
             <div className="ps-pagination">
-              <span className="ps-page-info">第 {page}/{totalPages} 页 · 共 {products.length} 条</span>
+              <span className="ps-page-info">第 {page}/{totalPages} 页 · 共 {filteredProducts.length} 条{searchQuery.trim() ? `（全部 ${products.length} 条）` : ''}</span>
               <div className="ps-page-btns">
                 <button className="btn btn-sm" onClick={() => setPage(1)} disabled={page <= 1}>首页</button>
                 <button className="btn btn-sm" onClick={() => setPage(p => p - 1)} disabled={page <= 1}>上一页</button>

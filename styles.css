@@ -2126,7 +2126,10 @@ select.meta-edit { cursor: pointer; }
 .ps-main-title { display: flex; align-items: center; gap: 12px; font-size: 15px; font-weight: 600; color: var(--ink); }
 .ps-badge { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 999px; background: var(--bg-2); color: var(--ink-3); }
 .ps-stats { display: flex; gap: 10px; font-size: 12px; font-weight: 500; }
-.ps-main-actions { display: flex; gap: 8px; }
+.ps-main-actions { display: flex; align-items: center; gap: 8px; }
+.ps-search-input { height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--ink-1); font-size: 13px; width: 160px; outline: none; }
+.ps-search-input:focus { border-color: var(--accent); }
+.ps-search-input::placeholder { color: var(--ink-3); }
 
 .ps-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px; border-top: 1px solid var(--border); flex-shrink: 0; }
 .ps-page-info { font-size: 12px; color: var(--ink-3); }
