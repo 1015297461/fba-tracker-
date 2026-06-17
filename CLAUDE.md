@@ -28,11 +28,11 @@ python3 server.py --port 8099   # 临时换端口测试，避免和正在跑的�
 ```
 server.py                  # 后端入口：HTTP 路由 + DbState(SQLite) + AuthManager + 定时任务
 rank_fetcher.py             # 关键词排名抓取器（正则解析，无 bs4 依赖）
-product_fetcher.py          # 产品详情抓取器（bs4 解析 + 反爬：会话池/令牌桶/CAPTCHA检测）
+product_fetcher.py          # 产品详情抓取器（bs4 解析 + 反爬：会话池/令牌桶/CAPTCHA/Dog-page检测）
 pdf_splitter.py             # PDF 拆分工具后端逻辑（依赖 pypdf，pip3 install pypdf）
 
 index.html                   # 唯一 HTML 入口，引用 styles.css + compiled/bundle.js
-styles.css                   # 全局样式（2198 行，按模块分区注释，如 PRODUCT SCRAPE 区块）
+styles.css                   # 全局样式（2434 行，按模块分区注释，如 PRODUCT SCRAPE / PDF SPLIT 区块）
 
 src/
   main.tsx                   # ReactDOM.createRoot 挂载 <App/>
@@ -56,8 +56,9 @@ src/
     tweaks/TweaksPanel.tsx     # 右侧"Tweaks"调试面板（主题/布局微调，开发用）
     tools/
       KeywordRank.tsx           # 工具：关键词排名监控
-      ProductScrape.tsx         # 工具：产品采集（含详情预览弹窗 + 图片 Lightbox）
-      PdfSplit.tsx              # 工具：批量 PDF 拆分（按最大页数 / 自定义范围）
+      ProductScrape.tsx         # 工具：产品采集（含详情预览弹窗 + 图片 Lightbox + ASIN搜索过滤）
+      ReviewFetch.tsx           # 工具：评论采集（多ASIN批量抓取，按评分/排序/是否验证购买过滤）
+      PdfSplit.tsx              # 工具：批量 PDF 拆分（每文件独立配置拆分方式，OS原生目录选择）
 
 README.md                    # 项目入口：简介 + 快速开始 + 文档导航
 docs/
@@ -99,7 +100,8 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | GET/POST/DELETE | `/api/review/*` | 评论采集：任务列表/结果/运行/删除 |
 | POST | `/api/pdf/upload` | 上传 PDF（`application/octet-stream` + `X-Filename`），返回 `{file_id,name,pages,size}` |
 | POST | `/api/pdf/split` | 拆分任务，body `{jobs:[...]}`，返回 `{results:[...]}` |
-| GET | `/api/pdf/download?id=` | 下载拆分结果文件（无需 Auth，按 download_id 查临时注册表） |
+| GET | `/api/pdf/download?id=` | 下载拆分结果文件（按 download_id 查临时注册表） |
+| POST | `/api/system/pick-directory` | 调用 macOS `osascript` 弹出原生文件夹选择框，返回 `{path, cancelled}` |
 
 ### 同步机制（详见 `docs/operations.md` 第7节）
 客户端每 4s 轮询 `version`，编辑后 600ms 防抖 PUT 带 `baseVersion`；后端乐观锁，冲突时返回服务器最新版本，客户端整体覆盖（`ProductContext.tsx` 中 `versionRef`/`syncedVersionRef` 相关逻辑）。
@@ -107,7 +109,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 ## 前端架构
 
 - **状态管理**：单一 `ProductContext`（无 Redux/Zustand），`useProducts()` 暴露数据 + 一组 `update*()` 函数，每个对应 `Product`/`Variant`/`Stage` 等不同粒度的字段更新，最终都落到 `products` 数组并触发同步。
-- **视图路由**：无 react-router，`app.tsx` 的 `AppShell` 用 `view` 状态字符串切换（`'list' | 'progress' | 'table' | 'keywordRank' | 'productScrape' | ...`），Sidebar/TopBar 负责切换按钮和标题映射。
+- **视图路由**：无 react-router，`app.tsx` 的 `AppShell` 用 `view` 状态字符串切换（`'list' | 'progress' | 'table' | 'keywordRank' | 'productScrape' | 'reviewFetch' | 'pdfSplit'`），Sidebar/TopBar 负责切换按钮和标题映射。新增视图需同时更新 `app.tsx`（渲染分支）、`Sidebar.tsx`（工具列表 + titles 映射）。
 - **数据模型核心**：`Product.stages: Record<stageKey, StageData>`，`stageKey` 取自 `STAGES`（18个阶段，每个归属 `TABS` 中某个 tab，各阶段业务含义见 `docs/business-overview.md` 第1节），`Product.variants: Variant[]` 为 SKU 变体，变体也有自己的 `stages` 子集（`VARIANT_STAGE_KEYS`）。
 - **"工具模块"模式**（关键词排名 / 产品采集 共享）：左侧输入+历史任务列表，右侧结果表格+操作；后端各有一个 `xxx_fetcher.py` 抓取器 + `server.py` 中的 `/api/xxx/*` 路由 + `run_xxx_task()`。新增同类工具时可参照 `ProductScrape.tsx` + `product_fetcher.py` + `docs/plans/product-scrape-integration-plan.md`。
 
@@ -115,8 +117,13 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 
 - `src/features/detail/index.tsx`（1355 行，11 个组件）
 - `src/context/ProductContext.tsx`（867 行，~19 个 update 函数）
-- `styles.css`（2198 行，按模块分区，新模块追加在文件末尾对应分区注释下）
-- `product_fetcher.py`（1131 行，含完整反爬逻辑）
+- `styles.css`（2434 行，按模块分区，新模块追加在文件末尾对应分区注释下）
+- `product_fetcher.py`（1368 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
+
+## 暂时隐藏的功能（注释保留，可随时恢复）
+
+- **`Sidebar.tsx` `sb-stats` 区块**：进行中/本月完成/30天到期/已逾期四项数字统计已注释，对应 `computeStats` 调用及 import 同步注释。
+- **`ProgressView.tsx` KPI**：进度总览顶部卡片中的「本月完成」「30天到期」「已逾期」三项已注释，其余（总产品/进行中/已完成/已暂停）保留。
 
 ## 改前端代码的注意事项
 
