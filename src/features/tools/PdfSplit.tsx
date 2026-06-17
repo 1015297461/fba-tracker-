@@ -21,7 +21,7 @@ interface SplitResult {
 }
 
 function getToken() {
-  return localStorage.getItem('fba_token') || '';
+  return localStorage.getItem('fba-auth-v1') || '';
 }
 
 export function PdfSplit() {
