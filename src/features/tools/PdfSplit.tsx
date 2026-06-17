@@ -134,6 +134,14 @@ export function PdfSplit() {
     setBrowsing(false);
   };
 
+  const handleDirModeChange = (newMode: 'original' | 'custom') => {
+    setDirMode(newMode);
+    if (newMode === 'original') {
+      // 立即弹出 OS 文件夹选择框，让用户定位到原文件目录
+      handleBrowse();
+    }
+  };
+
   const handleRun = async () => {
     if (!files.length) { setRunErr('请先添加 PDF 文件'); return; }
     if (!selectedPath.trim()) { setRunErr('请先选择输出目录'); return; }
@@ -174,9 +182,6 @@ export function PdfSplit() {
   };
 
   const successCount = results.filter(r => r.status === 'success').length;
-  const dirPlaceholder = dirMode === 'original'
-    ? '请选择原 PDF 文件所在文件夹'
-    : '请选择自定义输出文件夹';
 
   return (
     <div className="pf-root">
@@ -303,7 +308,7 @@ export function PdfSplit() {
                 <input
                   type="radio" name="dirMode"
                   checked={dirMode === 'original'}
-                  onChange={() => setDirMode('original')}
+                  onChange={() => handleDirModeChange('original')}
                 />
                 <span>原文件目录</span>
               </label>
@@ -316,21 +321,37 @@ export function PdfSplit() {
                 <span>自定义</span>
               </label>
             </div>
-            <div className="pf-dir-picker">
+
+            {/* 原文件目录：显示已选路径，点击可重新选择 */}
+            {dirMode === 'original' && (
               <div
-                className={`pf-dir-path${selectedPath ? '' : ' pf-dir-path-empty'}`}
-                title={selectedPath || dirPlaceholder}
-              >
-                {selectedPath || dirPlaceholder}
-              </div>
-              <button
-                className="btn btn-sm pf-browse-btn"
+                className={`pf-dir-path pf-dir-path-clickable${selectedPath ? '' : ' pf-dir-path-empty'}`}
+                title={selectedPath ? '点击重新选择' : '正在打开选择框...'}
                 onClick={handleBrowse}
-                disabled={browsing}
               >
-                {browsing ? '…' : '浏览'}
-              </button>
-            </div>
+                {browsing ? '正在打开…' : (selectedPath || '未选择，点击重新定位')}
+              </div>
+            )}
+
+            {/* 自定义：路径展示 + 浏览按钮 */}
+            {dirMode === 'custom' && (
+              <div className="pf-dir-picker">
+                <div
+                  className={`pf-dir-path${selectedPath ? '' : ' pf-dir-path-empty'}`}
+                  title={selectedPath || '请选择自定义输出文件夹'}
+                >
+                  {selectedPath || '请选择自定义输出文件夹'}
+                </div>
+                <button
+                  className="btn btn-sm pf-browse-btn"
+                  onClick={handleBrowse}
+                  disabled={browsing}
+                >
+                  {browsing ? '…' : '浏览'}
+                </button>
+              </div>
+            )}
+
             {selectedPath && (
               <button className="pf-clear-path" onClick={() => setSelectedPath('')}>
                 ✕ 清除

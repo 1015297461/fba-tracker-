@@ -2370,6 +2370,8 @@ select.meta-edit { cursor: pointer; }
 .pf-dir-picker { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 .pf-dir-path { flex: 1; min-width: 0; font-size: 11px; color: var(--ink); background: var(--card-bg); border: 1px solid var(--border-strong); border-radius: 6px; padding: 5px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pf-dir-path-empty { color: var(--ink-4); }
+.pf-dir-path-clickable { cursor: pointer; width: 100%; }
+.pf-dir-path-clickable:hover { border-color: var(--accent); color: var(--ink); }
 .pf-browse-btn { flex-shrink: 0; }
 .pf-clear-path { margin-top: 4px; font-size: 11px; color: var(--ink-4); background: none; border: none; padding: 0; cursor: pointer; }
 .pf-clear-path:hover { color: var(--red); }
