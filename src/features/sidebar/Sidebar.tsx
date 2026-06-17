@@ -1,6 +1,6 @@
 import React from 'react';
 import { STATUS_LABELS } from '../../data/constants';
-import { computeStats } from '../../data/calc';
+// import { computeStats } from '../../data/calc';
 import { useProducts } from '../../context/ProductContext';
 import type { Product } from '../../data/types';
 
@@ -44,7 +44,7 @@ export function Sidebar({ view, setView, filter, setFilter, products }: {
     done: products.filter(p => p.status === 'done').length,
     cancel: products.filter(p => p.status === 'cancel').length,
   };
-  const { monthDone, overdue, due30 } = computeStats(products);
+  // const { monthDone, overdue, due30 } = computeStats(products);
 
   const ctx = useProducts();
   const syncMode = ctx?.syncMode;
@@ -115,6 +115,7 @@ export function Sidebar({ view, setView, filter, setFilter, products }: {
         </div>
       </div>
 
+      {/* sb-stats 暂时隐藏
       <div className="sb-stats">
         <div className="sb-stat">
           <div className="sb-stat-v">{counts.active}</div>
@@ -133,6 +134,7 @@ export function Sidebar({ view, setView, filter, setFilter, products }: {
           <div className="sb-stat-l">已逾期</div>
         </div>
       </div>
+      */}
 
       <div className="sb-footer">
         <span>{modeText}</span>

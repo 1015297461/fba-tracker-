@@ -1,6 +1,6 @@
 import React from 'react';
 import { STAGES, VARIANT_STAGE_KEYS, STATUS_LABELS } from '../../data/constants';
-import { computeStats } from '../../data/calc';
+// import { computeStats } from '../../data/calc';
 import type { Product } from '../../data/types';
 
 const MO_LABELS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
@@ -10,16 +10,16 @@ function ProgressKPIs({ products }: { products: Product[] }) {
   const active = products.filter(p => p.status === 'active').length;
   const done = products.filter(p => p.status === 'done').length;
   const hold = products.filter(p => p.status === 'hold').length;
-  const { monthDone, due30, overdue } = computeStats(products);
+  // const { monthDone, due30, overdue } = computeStats(products);
 
   const kpis = [
     { l: '总产品', v: total, c: '' },
     { l: '进行中', v: active, c: 'green' },
     { l: '已完成', v: done, c: '' },
     { l: '已暂停', v: hold, c: 'orange' },
-    { l: '本月完成', v: monthDone, c: '' },
-    { l: '30天到期', v: due30, c: '' },
-    { l: '已逾期', v: overdue, c: 'red' },
+    // { l: '本月完成', v: monthDone, c: '' },
+    // { l: '30天到期', v: due30, c: '' },
+    // { l: '已逾期', v: overdue, c: 'red' },
   ];
   return (
     <div className="overview-kpis">
