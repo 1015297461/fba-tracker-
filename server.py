@@ -1218,6 +1218,25 @@ def make_handler(state, auth):
                 self._send_json(200, {"taskId": task_id, "results": results})
                 return
 
+            if path == "/api/system/pick-directory":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                import subprocess
+                try:
+                    result = subprocess.run(
+                        ["osascript", "-e",
+                         'POSIX path of (choose folder with prompt "选择输出目录")'],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        self._send_json(200, {"path": result.stdout.strip(), "cancelled": False})
+                    else:
+                        self._send_json(200, {"path": None, "cancelled": True})
+                except Exception as e:
+                    self._send_json(500, {"error": str(e)})
+                return
+
             if path == "/api/pdf/upload":
                 if not auth.verify(_extract_token(self)):
                     self._send_json(401, {"error": "请先登录"})
