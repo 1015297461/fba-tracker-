@@ -143,12 +143,12 @@ BROWSER_PROFILES = [
 # ============================================================
 # 限流参数（无代理走本机住宅 IP，比关键词排名更保守，均可用环境变量覆盖）
 # ============================================================
-TOKEN_BUCKET_CAPACITY = int(os.environ.get("SCRAPER_BUCKET_CAPACITY", "6"))
-TOKEN_REFILL_RATE_MS = int(os.environ.get("SCRAPER_REFILL_MS", "2500"))
-MIN_REQUEST_INTERVAL_MS = int(os.environ.get("SCRAPER_MIN_INTERVAL_MS", "1200"))
+TOKEN_BUCKET_CAPACITY = int(os.environ.get("SCRAPER_BUCKET_CAPACITY", "8"))
+TOKEN_REFILL_RATE_MS = int(os.environ.get("SCRAPER_REFILL_MS", "1500"))
+MIN_REQUEST_INTERVAL_MS = int(os.environ.get("SCRAPER_MIN_INTERVAL_MS", "700"))
 
 MAX_RETRIES = 3
-RETRY_DELAYS = [3.0, 6.0, 12.0]
+RETRY_DELAYS = [2.0, 5.0, 10.0]
 
 
 class ProductNotFoundError(Exception):
@@ -361,7 +361,7 @@ def warm_up_session(marketplace):
             session.cookies["i18n-prefs"] = mp["currency"]
         session.initialized = True
         session.last_request_time = time.monotonic()
-        human_delay(0.8, 0.4)
+        human_delay(0.4, 0.2)
 
 
 # ============================================================
@@ -1197,7 +1197,7 @@ def fetch_reviews_for_asins(asins, marketplace, max_pages=3, sort_by="recent", f
     """批量抓取多个 ASIN 的评论列表，返回与 asins 等长的结果列表：
     [{asin, marketplace, reviews, status, error_message}, ...]
     """
-    batch_size = max(1, int(os.environ.get("SCRAPER_CONCURRENCY", "2")))
+    batch_size = max(1, int(os.environ.get("SCRAPER_CONCURRENCY", "3")))
     asins = [a.strip().upper() for a in asins if a and a.strip()]
     results = [None] * len(asins)
     completed = 0
@@ -1302,7 +1302,7 @@ def scrape_product(asin, marketplace, with_reviews=False):
 
 def scrape_products(asins, marketplace, with_reviews=False, on_progress=None):
     """批量抓取，返回与 asins 等长的结果列表；失败项会自动重试一轮。"""
-    batch_size = max(1, int(os.environ.get("SCRAPER_CONCURRENCY", "2")))
+    batch_size = max(1, int(os.environ.get("SCRAPER_CONCURRENCY", "3")))
     asins = [a.strip().upper() for a in asins if a and a.strip()]
     results = [None] * len(asins)
     completed = 0
@@ -1332,9 +1332,9 @@ def scrape_products(asins, marketplace, with_reviews=False, on_progress=None):
     # 第一轮
     for start in range(0, len(asins), batch_size):
         batch = list(range(start, min(start + batch_size, len(asins))))
-        _process(batch, 0.6, 0.3, count_progress=True)
+        _process(batch, 0.4, 0.2, count_progress=True)
         if start + batch_size < len(asins):
-            human_delay(1.2, 0.6)
+            human_delay(0.5, 0.3)
 
     # 失败重试一轮（排除 ASIN 不存在/无效的明确失败）
     failed_indices = [
@@ -1347,13 +1347,13 @@ def scrape_products(asins, marketplace, with_reviews=False, on_progress=None):
     if failed_indices:
         session = get_session(marketplace)
         session.profile = random.choice(BROWSER_PROFILES)
-        time.sleep(min(8 + len(failed_indices) * 1.5, 25))
+        time.sleep(min(5 + len(failed_indices) * 1.0, 15))
 
         for start in range(0, len(failed_indices), batch_size):
             chunk = failed_indices[start:start + batch_size]
-            _process(chunk, 1.2, 0.6, count_progress=False)
+            _process(chunk, 0.8, 0.4, count_progress=False)
             if start + batch_size < len(failed_indices):
-                human_delay(3.0, 1.0)
+                human_delay(1.5, 0.5)
 
     return results
 
