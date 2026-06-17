@@ -136,10 +136,6 @@ export function Sidebar({ view, setView, filter, setFilter, products }: {
       </div>
       */}
 
-      <div className="sb-footer">
-        <span>{modeText}</span>
-        <span className={`pill ${syncCls}`}>{syncLabel}</span>
-      </div>
     </aside>
   );
 }
@@ -156,6 +152,8 @@ export function TopBar({ view, product, theme, onToggleTheme, onNewProduct }: {
   const { label: syncLabel, cls: syncCls, icon: syncIcon } = useSyncLabel();
   const currentUser = ctx?.currentUser;
   const logout = ctx?.logout;
+  const syncMode = ctx?.syncMode;
+  const modeText = syncMode === 'server' ? '局域网协作' : syncMode === 'local' ? '本地存储' : '检测中';
 
   const syncStatus = ctx?.syncStatus;
   const [flash, setFlash] = React.useState(false);
@@ -178,6 +176,7 @@ export function TopBar({ view, product, theme, onToggleTheme, onNewProduct }: {
       <div className="topbar-spacer"></div>
       <span className={`save-indicator ${syncCls}`} data-flash={flash}>
         {syncIcon} {syncLabel}
+        <span className="save-indicator-mode"> · {modeText}</span>
       </span>
       {currentUser && (
         <div className="topbar-user">

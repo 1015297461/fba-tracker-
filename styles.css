@@ -232,6 +232,7 @@ input, textarea, select { font-family: inherit; font-size: 13px; }
 .save-indicator.sync-error { color: var(--red); background: rgba(220,38,38,0.08); border-color: rgba(220,38,38,0.25); }
 .save-indicator.sync-local { color: var(--ink-3); }
 .save-indicator[data-flash="true"] { color: var(--green); }
+.save-indicator-mode { opacity: 0.65; font-weight: 400; }
 .save-indicator .dot {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--green);
