@@ -7,6 +7,15 @@ interface FileItem {
   size: number;
 }
 
+interface FileConfig {
+  mode: 'max_pages' | 'custom_ranges';
+  maxPages: string;
+  pageFrom: string;
+  pageTo: string;
+  rangesStr: string;
+  expanded: boolean;
+}
+
 interface OutputFile {
   name: string;
   download_id: string | null;
@@ -24,15 +33,19 @@ function getToken() {
   return localStorage.getItem('fba-auth-v1') || '';
 }
 
+const DEFAULT_CONFIG: Omit<FileConfig, 'expanded'> = {
+  mode: 'max_pages',
+  maxPages: '50',
+  pageFrom: '',
+  pageTo: '',
+  rangesStr: '',
+};
+
 export function PdfSplit() {
   const [files, setFiles] = useState<FileItem[]>([]);
+  const [fileConfigs, setFileConfigs] = useState<Record<string, FileConfig>>({});
   const [uploading, setUploading] = useState(false);
   const [uploadErr, setUploadErr] = useState('');
-  const [mode, setMode] = useState<'max_pages' | 'custom_ranges'>('max_pages');
-  const [maxPages, setMaxPages] = useState('50');
-  const [pageFrom, setPageFrom] = useState('');
-  const [pageTo, setPageTo] = useState('');
-  const [rangesStr, setRangesStr] = useState('');
   const [dirMode, setDirMode] = useState<'original' | 'custom'>('original');
   const [selectedPath, setSelectedPath] = useState('');
   const [browsing, setBrowsing] = useState(false);
@@ -40,6 +53,9 @@ export function PdfSplit() {
   const [results, setResults] = useState<SplitResult[]>([]);
   const [runErr, setRunErr] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const updateConfig = (fid: string, patch: Partial<FileConfig>) =>
+    setFileConfigs(prev => ({ ...prev, [fid]: { ...prev[fid], ...patch } }));
 
   const uploadFiles = useCallback(async (fileList: FileList) => {
     const pdfs = Array.from(fileList).filter(f =>
@@ -73,10 +89,21 @@ export function PdfSplit() {
       }
     }
     if (errors.length) setUploadErr(errors.join('；'));
-    setFiles(prev => {
-      const ids = new Set(prev.map(f => f.file_id));
-      return [...prev, ...newItems.filter(f => !ids.has(f.file_id))];
-    });
+    if (newItems.length) {
+      setFiles(prev => {
+        const ids = new Set(prev.map(f => f.file_id));
+        return [...prev, ...newItems.filter(f => !ids.has(f.file_id))];
+      });
+      setFileConfigs(prev => {
+        const next = { ...prev };
+        for (const item of newItems) {
+          if (!next[item.file_id]) {
+            next[item.file_id] = { ...DEFAULT_CONFIG, expanded: true };
+          }
+        }
+        return next;
+      });
+    }
     setUploading(false);
   }, []);
 
@@ -85,8 +112,10 @@ export function PdfSplit() {
     if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
   }, [uploadFiles]);
 
-  const removeFile = (fid: string) =>
+  const removeFile = (fid: string) => {
     setFiles(prev => prev.filter(f => f.file_id !== fid));
+    setFileConfigs(prev => { const next = { ...prev }; delete next[fid]; return next; });
+  };
 
   const handleBrowse = async () => {
     setBrowsing(true);
@@ -100,7 +129,7 @@ export function PdfSplit() {
         setSelectedPath(data.path);
       }
     } catch {
-      // ignore — user cancelled or server error
+      // user cancelled or server error
     }
     setBrowsing(false);
   };
@@ -111,15 +140,18 @@ export function PdfSplit() {
     setRunning(true);
     setRunErr('');
     setResults([]);
-    const jobs = files.map(f => ({
-      file_id: f.file_id,
-      mode,
-      max_pages: Math.max(1, parseInt(maxPages) || 50),
-      page_from: Math.max(1, parseInt(pageFrom) || 1),
-      page_to: parseInt(pageTo) || f.pages,
-      ranges_str: rangesStr,
-      output_dir: selectedPath.trim(),
-    }));
+    const jobs = files.map(f => {
+      const cfg = fileConfigs[f.file_id] ?? { ...DEFAULT_CONFIG };
+      return {
+        file_id: f.file_id,
+        mode: cfg.mode,
+        max_pages: Math.max(1, parseInt(cfg.maxPages) || 50),
+        page_from: Math.max(1, parseInt(cfg.pageFrom) || 1),
+        page_to: parseInt(cfg.pageTo) || f.pages,
+        ranges_str: cfg.rangesStr,
+        output_dir: selectedPath.trim(),
+      };
+    });
     try {
       const res = await fetch('/api/pdf/split', {
         method: 'POST',
@@ -148,7 +180,7 @@ export function PdfSplit() {
 
   return (
     <div className="pf-root">
-      {/* ---- 左侧：配置区 ---- */}
+      {/* ---- 左侧：文件列表 + 配置 ---- */}
       <div className="pf-side">
         <div className="pf-side-title">批量拆分 PDF</div>
 
@@ -167,78 +199,93 @@ export function PdfSplit() {
 
         {uploadErr && <div className="pf-error">{uploadErr}</div>}
 
-        {files.length > 0 && (
-          <div className="pf-file-list">
-            {files.map(f => (
-              <div key={f.file_id} className="pf-file-item">
+        {/* 每个文件独立配置卡片 */}
+        {files.map(f => {
+          const cfg = fileConfigs[f.file_id] ?? { ...DEFAULT_CONFIG, expanded: true };
+          return (
+            <div key={f.file_id} className="pf-file-card">
+              <div className="pf-file-card-head">
                 <div className="pf-file-info">
                   <span className="pf-file-name" title={f.name}>{f.name}</span>
-                  <span className="pf-file-meta">
-                    {f.pages} 页 · {(f.size / 1024).toFixed(0)} KB
-                  </span>
+                  <span className="pf-file-meta">{f.pages} 页 · {(f.size / 1024).toFixed(0)} KB</span>
                 </div>
-                <button className="pf-remove-btn" onClick={() => removeFile(f.file_id)}>×</button>
+                <button
+                  className="pf-icon-btn"
+                  title={cfg.expanded ? '收起' : '展开'}
+                  onClick={() => updateConfig(f.file_id, { expanded: !cfg.expanded })}
+                >{cfg.expanded ? '▲' : '▼'}</button>
+                <button
+                  className="pf-icon-btn pf-icon-del"
+                  title="移除"
+                  onClick={() => removeFile(f.file_id)}
+                >×</button>
               </div>
-            ))}
-          </div>
-        )}
 
-        <div className="pf-section">
-          <div className="pf-label">拆分方式</div>
-          <div className="pf-mode-tabs">
-            <button
-              className="pf-mode-btn"
-              data-active={mode === 'max_pages'}
-              onClick={() => setMode('max_pages')}
-            >按最大页数</button>
-            <button
-              className="pf-mode-btn"
-              data-active={mode === 'custom_ranges'}
-              onClick={() => setMode('custom_ranges')}
-            >自定义范围</button>
-          </div>
-        </div>
+              {cfg.expanded && (
+                <div className="pf-file-card-body">
+                  {/* 拆分方式 */}
+                  <div className="pf-mode-tabs pf-mode-sm">
+                    <button
+                      className="pf-mode-btn"
+                      data-active={cfg.mode === 'max_pages'}
+                      onClick={() => updateConfig(f.file_id, { mode: 'max_pages' })}
+                    >按最大页数</button>
+                    <button
+                      className="pf-mode-btn"
+                      data-active={cfg.mode === 'custom_ranges'}
+                      onClick={() => updateConfig(f.file_id, { mode: 'custom_ranges' })}
+                    >自定义范围</button>
+                  </div>
 
-        {mode === 'max_pages' ? (
-          <>
-            <div className="pf-field">
-              <label className="pf-label">每份最大页数</label>
-              <input
-                className="pf-input" type="number" min="1"
-                value={maxPages} onChange={e => setMaxPages(e.target.value)}
-                placeholder="50"
-              />
+                  {cfg.mode === 'max_pages' ? (
+                    <>
+                      <div className="pf-sub-field">
+                        <label className="pf-sub-label">每份最大页数</label>
+                        <input
+                          className="pf-input pf-input-sm" type="number" min="1"
+                          value={cfg.maxPages}
+                          onChange={e => updateConfig(f.file_id, { maxPages: e.target.value })}
+                          placeholder="50"
+                        />
+                      </div>
+                      <div className="pf-sub-row">
+                        <div className="pf-sub-field">
+                          <label className="pf-sub-label">起始页</label>
+                          <input
+                            className="pf-input pf-input-sm" type="number" min="1"
+                            value={cfg.pageFrom}
+                            onChange={e => updateConfig(f.file_id, { pageFrom: e.target.value })}
+                            placeholder="1"
+                          />
+                        </div>
+                        <div className="pf-sub-field">
+                          <label className="pf-sub-label">结束页</label>
+                          <input
+                            className="pf-input pf-input-sm" type="number" min="1"
+                            value={cfg.pageTo}
+                            onChange={e => updateConfig(f.file_id, { pageTo: e.target.value })}
+                            placeholder={String(f.pages)}
+                          />
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="pf-sub-field">
+                      <label className="pf-sub-label">页码范围</label>
+                      <input
+                        className="pf-input pf-input-sm" type="text"
+                        value={cfg.rangesStr}
+                        onChange={e => updateConfig(f.file_id, { rangesStr: e.target.value })}
+                        placeholder="例：1-50, 51-200"
+                      />
+                      <span className="pf-hint">多段用逗号分隔，每段生成一个文件</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-            <div className="pf-field pf-field-row">
-              <div>
-                <label className="pf-label">起始页</label>
-                <input
-                  className="pf-input" type="number" min="1"
-                  value={pageFrom} onChange={e => setPageFrom(e.target.value)}
-                  placeholder="1（默认）"
-                />
-              </div>
-              <div>
-                <label className="pf-label">结束页</label>
-                <input
-                  className="pf-input" type="number" min="1"
-                  value={pageTo} onChange={e => setPageTo(e.target.value)}
-                  placeholder="末页（默认）"
-                />
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="pf-field">
-            <label className="pf-label">页码范围</label>
-            <input
-              className="pf-input" type="text" value={rangesStr}
-              onChange={e => setRangesStr(e.target.value)}
-              placeholder="例：1-50, 51-200, 300-400"
-            />
-            <span className="pf-hint">多段用英文逗号分隔，每段生成一个文件</span>
-          </div>
-        )}
+          );
+        })}
 
         {/* 输出目录 */}
         <div className="pf-section">
@@ -277,10 +324,9 @@ export function PdfSplit() {
             </button>
           </div>
           {selectedPath && (
-            <button
-              className="pf-clear-path"
-              onClick={() => setSelectedPath('')}
-            >✕ 清除</button>
+            <button className="pf-clear-path" onClick={() => setSelectedPath('')}>
+              ✕ 清除
+            </button>
           )}
         </div>
 
@@ -302,7 +348,7 @@ export function PdfSplit() {
             <div className="pf-placeholder-icon">✂️</div>
             <div className="pf-placeholder-text">添加 PDF 文件后点击「开始拆分」</div>
             <div className="pf-placeholder-sub">
-              支持批量处理，每个文件可按最大页数或自定义页码范围拆分
+              每个文件可单独设置拆分方式和页码范围
             </div>
           </div>
         )}
@@ -315,9 +361,7 @@ export function PdfSplit() {
           <div className="pf-results">
             <div className="pf-results-head">
               拆分完成 · {successCount}/{results.length} 个文件成功
-              <span className="pf-results-dir" title={selectedPath}>
-                → {selectedPath}
-              </span>
+              <span className="pf-results-dir" title={selectedPath}>→ {selectedPath}</span>
             </div>
             {results.map((r, i) => (
               <div key={i} className="pf-result-card">

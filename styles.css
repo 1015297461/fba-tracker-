@@ -2284,24 +2284,35 @@ select.meta-edit { cursor: pointer; }
 .pf-dropzone { border: 2px dashed var(--border-strong); border-radius: 8px; padding: 18px 12px; text-align: center; font-size: 12px; color: var(--ink-3); cursor: pointer; transition: border-color 0.15s, background 0.15s; }
 .pf-dropzone:hover { border-color: var(--accent); background: var(--bg-3, var(--bg-2)); color: var(--ink-2); }
 
-.pf-file-list { display: flex; flex-direction: column; gap: 6px; }
-.pf-file-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; background: var(--card-bg); border: 1px solid var(--border); }
+/* 文件配置卡片 */
+.pf-file-card { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--card-bg); }
+.pf-file-card-head { display: flex; align-items: center; gap: 6px; padding: 7px 8px; background: var(--bg-2); }
 .pf-file-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .pf-file-name { font-size: 12px; font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pf-file-meta { font-size: 11px; color: var(--ink-3); }
-.pf-remove-btn { flex-shrink: 0; width: 22px; height: 22px; border-radius: 4px; border: none; background: none; color: var(--ink-3); cursor: pointer; font-size: 16px; line-height: 1; display: flex; align-items: center; justify-content: center; }
-.pf-remove-btn:hover { background: var(--bg-3, var(--border)); color: var(--red); }
+.pf-icon-btn { flex-shrink: 0; width: 20px; height: 20px; border-radius: 4px; border: none; background: none; color: var(--ink-3); cursor: pointer; font-size: 12px; display: flex; align-items: center; justify-content: center; padding: 0; }
+.pf-icon-btn:hover { background: var(--border); color: var(--ink); }
+.pf-icon-del:hover { color: var(--red) !important; }
+
+.pf-file-card-body { padding: 8px 8px 10px; display: flex; flex-direction: column; gap: 7px; border-top: 1px solid var(--border); }
 
 .pf-section { display: flex; flex-direction: column; gap: 6px; }
 .pf-label { font-size: 12px; color: var(--ink-2); font-weight: 500; }
 .pf-mode-tabs { display: flex; border-radius: 6px; overflow: hidden; border: 1px solid var(--border-strong); }
+.pf-mode-sm .pf-mode-btn { padding: 5px 0; font-size: 11px; }
 .pf-mode-btn { flex: 1; padding: 6px 0; font-size: 12px; font-weight: 500; border: none; background: var(--card-bg); color: var(--ink-3); cursor: pointer; transition: background 0.15s, color 0.15s; }
 .pf-mode-btn[data-active="true"] { background: var(--accent); color: #fff; }
+
+.pf-sub-field { display: flex; flex-direction: column; gap: 3px; }
+.pf-sub-label { font-size: 11px; color: var(--ink-3); }
+.pf-sub-row { display: flex; gap: 6px; }
+.pf-sub-row .pf-sub-field { flex: 1; }
 
 .pf-field { display: flex; flex-direction: column; gap: 4px; }
 .pf-field-row { flex-direction: row; gap: 8px; }
 .pf-field-row > div { flex: 1; display: flex; flex-direction: column; gap: 4px; }
 .pf-input { font: inherit; height: 30px; padding: 0 9px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--card-bg); color: var(--ink); font-size: 12px; outline: none; width: 100%; box-sizing: border-box; }
+.pf-input-sm { height: 26px; font-size: 11px; padding: 0 7px; }
 .pf-input:focus { border-color: var(--accent); }
 .pf-hint { font-size: 11px; color: var(--ink-4); line-height: 1.4; }
 
