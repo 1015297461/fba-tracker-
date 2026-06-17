@@ -180,176 +180,183 @@ export function PdfSplit() {
 
   return (
     <div className="pf-root">
-      {/* ---- 左侧：文件列表 + 配置 ---- */}
+
+      {/* ===================== 左侧面板 ===================== */}
       <div className="pf-side">
-        <div className="pf-side-title">批量拆分 PDF</div>
 
-        <div
-          className="pf-dropzone"
-          onDrop={handleDrop}
-          onDragOver={e => e.preventDefault()}
-          onClick={() => inputRef.current?.click()}
-        >
-          {uploading ? '上传中，请稍候...' : '点击选择 / 拖入 PDF 文件'}
+        {/* 顶部固定：标题 + 上传区 */}
+        <div className="pf-side-top">
+          <div className="pf-side-title">批量拆分 PDF</div>
+          <div
+            className="pf-dropzone"
+            onDrop={handleDrop}
+            onDragOver={e => e.preventDefault()}
+            onClick={() => inputRef.current?.click()}
+          >
+            {uploading ? '上传中，请稍候...' : '点击选择 / 拖入 PDF 文件'}
+          </div>
+          <input
+            ref={inputRef} type="file" accept=".pdf" multiple hidden
+            onChange={e => { if (e.target.files) uploadFiles(e.target.files); e.target.value = ''; }}
+          />
+          {uploadErr && <div className="pf-error">{uploadErr}</div>}
         </div>
-        <input
-          ref={inputRef} type="file" accept=".pdf" multiple hidden
-          onChange={e => { if (e.target.files) uploadFiles(e.target.files); e.target.value = ''; }}
-        />
 
-        {uploadErr && <div className="pf-error">{uploadErr}</div>}
-
-        {/* 每个文件独立配置卡片 */}
-        {files.map(f => {
-          const cfg = fileConfigs[f.file_id] ?? { ...DEFAULT_CONFIG, expanded: true };
-          return (
-            <div key={f.file_id} className="pf-file-card">
-              <div className="pf-file-card-head">
-                <div className="pf-file-info">
-                  <span className="pf-file-name" title={f.name}>{f.name}</span>
-                  <span className="pf-file-meta">{f.pages} 页 · {(f.size / 1024).toFixed(0)} KB</span>
-                </div>
-                <button
-                  className="pf-icon-btn"
-                  title={cfg.expanded ? '收起' : '展开'}
-                  onClick={() => updateConfig(f.file_id, { expanded: !cfg.expanded })}
-                >{cfg.expanded ? '▲' : '▼'}</button>
-                <button
-                  className="pf-icon-btn pf-icon-del"
-                  title="移除"
-                  onClick={() => removeFile(f.file_id)}
-                >×</button>
-              </div>
-
-              {cfg.expanded && (
-                <div className="pf-file-card-body">
-                  {/* 拆分方式 */}
-                  <div className="pf-mode-tabs pf-mode-sm">
-                    <button
-                      className="pf-mode-btn"
-                      data-active={cfg.mode === 'max_pages'}
-                      onClick={() => updateConfig(f.file_id, { mode: 'max_pages' })}
-                    >按最大页数</button>
-                    <button
-                      className="pf-mode-btn"
-                      data-active={cfg.mode === 'custom_ranges'}
-                      onClick={() => updateConfig(f.file_id, { mode: 'custom_ranges' })}
-                    >自定义范围</button>
-                  </div>
-
-                  {cfg.mode === 'max_pages' ? (
-                    <>
-                      <div className="pf-sub-field">
-                        <label className="pf-sub-label">每份最大页数</label>
-                        <input
-                          className="pf-input pf-input-sm" type="number" min="1"
-                          value={cfg.maxPages}
-                          onChange={e => updateConfig(f.file_id, { maxPages: e.target.value })}
-                          placeholder="50"
-                        />
-                      </div>
-                      <div className="pf-sub-row">
-                        <div className="pf-sub-field">
-                          <label className="pf-sub-label">起始页</label>
-                          <input
-                            className="pf-input pf-input-sm" type="number" min="1"
-                            value={cfg.pageFrom}
-                            onChange={e => updateConfig(f.file_id, { pageFrom: e.target.value })}
-                            placeholder="1"
-                          />
-                        </div>
-                        <div className="pf-sub-field">
-                          <label className="pf-sub-label">结束页</label>
-                          <input
-                            className="pf-input pf-input-sm" type="number" min="1"
-                            value={cfg.pageTo}
-                            onChange={e => updateConfig(f.file_id, { pageTo: e.target.value })}
-                            placeholder={String(f.pages)}
-                          />
-                        </div>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="pf-sub-field">
-                      <label className="pf-sub-label">页码范围</label>
-                      <input
-                        className="pf-input pf-input-sm" type="text"
-                        value={cfg.rangesStr}
-                        onChange={e => updateConfig(f.file_id, { rangesStr: e.target.value })}
-                        placeholder="例：1-50, 51-200"
-                      />
-                      <span className="pf-hint">多段用逗号分隔，每段生成一个文件</span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        {/* 输出目录 */}
-        <div className="pf-section">
-          <div className="pf-label">输出目录</div>
-          <div className="pf-dir-radios">
-            <label className="pf-dir-radio">
-              <input
-                type="radio" name="dirMode"
-                checked={dirMode === 'original'}
-                onChange={() => setDirMode('original')}
-              />
-              <span>原文件目录</span>
-            </label>
-            <label className="pf-dir-radio">
-              <input
-                type="radio" name="dirMode"
-                checked={dirMode === 'custom'}
-                onChange={() => setDirMode('custom')}
-              />
-              <span>自定义</span>
-            </label>
-          </div>
-          <div className="pf-dir-picker">
-            <div
-              className={`pf-dir-path${selectedPath ? '' : ' pf-dir-path-empty'}`}
-              title={selectedPath || dirPlaceholder}
-            >
-              {selectedPath || dirPlaceholder}
-            </div>
-            <button
-              className="btn btn-sm pf-browse-btn"
-              onClick={handleBrowse}
-              disabled={browsing}
-            >
-              {browsing ? '…' : '浏览'}
-            </button>
-          </div>
-          {selectedPath && (
-            <button className="pf-clear-path" onClick={() => setSelectedPath('')}>
-              ✕ 清除
-            </button>
+        {/* 中间可滚动：文件配置卡片 */}
+        <div className="pf-side-files">
+          {files.length === 0 && (
+            <div className="pf-files-empty">暂无文件，请在上方添加</div>
           )}
+          {files.map(f => {
+            const cfg = fileConfigs[f.file_id] ?? { ...DEFAULT_CONFIG, expanded: true };
+            return (
+              <div key={f.file_id} className="pf-file-card">
+                <div className="pf-file-card-head">
+                  <div className="pf-file-info">
+                    <span className="pf-file-name" title={f.name}>{f.name}</span>
+                    <span className="pf-file-meta">{f.pages} 页 · {(f.size / 1024).toFixed(0)} KB</span>
+                  </div>
+                  <button
+                    className="pf-icon-btn"
+                    title={cfg.expanded ? '收起' : '展开'}
+                    onClick={() => updateConfig(f.file_id, { expanded: !cfg.expanded })}
+                  >{cfg.expanded ? '▲' : '▼'}</button>
+                  <button
+                    className="pf-icon-btn pf-icon-del"
+                    title="移除"
+                    onClick={() => removeFile(f.file_id)}
+                  >×</button>
+                </div>
+
+                {cfg.expanded && (
+                  <div className="pf-file-card-body">
+                    <div className="pf-mode-tabs pf-mode-sm">
+                      <button
+                        className="pf-mode-btn"
+                        data-active={cfg.mode === 'max_pages'}
+                        onClick={() => updateConfig(f.file_id, { mode: 'max_pages' })}
+                      >按最大页数</button>
+                      <button
+                        className="pf-mode-btn"
+                        data-active={cfg.mode === 'custom_ranges'}
+                        onClick={() => updateConfig(f.file_id, { mode: 'custom_ranges' })}
+                      >自定义范围</button>
+                    </div>
+
+                    {cfg.mode === 'max_pages' ? (
+                      <>
+                        <div className="pf-sub-field">
+                          <label className="pf-sub-label">每份最大页数</label>
+                          <input
+                            className="pf-input pf-input-sm" type="number" min="1"
+                            value={cfg.maxPages}
+                            onChange={e => updateConfig(f.file_id, { maxPages: e.target.value })}
+                            placeholder="50"
+                          />
+                        </div>
+                        <div className="pf-sub-row">
+                          <div className="pf-sub-field">
+                            <label className="pf-sub-label">起始页</label>
+                            <input
+                              className="pf-input pf-input-sm" type="number" min="1"
+                              value={cfg.pageFrom}
+                              onChange={e => updateConfig(f.file_id, { pageFrom: e.target.value })}
+                              placeholder="1"
+                            />
+                          </div>
+                          <div className="pf-sub-field">
+                            <label className="pf-sub-label">结束页</label>
+                            <input
+                              className="pf-input pf-input-sm" type="number" min="1"
+                              value={cfg.pageTo}
+                              onChange={e => updateConfig(f.file_id, { pageTo: e.target.value })}
+                              placeholder={String(f.pages)}
+                            />
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="pf-sub-field">
+                        <label className="pf-sub-label">页码范围</label>
+                        <input
+                          className="pf-input pf-input-sm" type="text"
+                          value={cfg.rangesStr}
+                          onChange={e => updateConfig(f.file_id, { rangesStr: e.target.value })}
+                          placeholder="例：1-50, 51-200"
+                        />
+                        <span className="pf-hint">多段用逗号分隔，每段生成一个文件</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
 
-        {runErr && <div className="pf-error">{runErr}</div>}
+        {/* 底部固定：输出目录 + 运行按钮 */}
+        <div className="pf-side-bottom">
+          <div className="pf-section">
+            <div className="pf-label">输出目录</div>
+            <div className="pf-dir-radios">
+              <label className="pf-dir-radio">
+                <input
+                  type="radio" name="dirMode"
+                  checked={dirMode === 'original'}
+                  onChange={() => setDirMode('original')}
+                />
+                <span>原文件目录</span>
+              </label>
+              <label className="pf-dir-radio">
+                <input
+                  type="radio" name="dirMode"
+                  checked={dirMode === 'custom'}
+                  onChange={() => setDirMode('custom')}
+                />
+                <span>自定义</span>
+              </label>
+            </div>
+            <div className="pf-dir-picker">
+              <div
+                className={`pf-dir-path${selectedPath ? '' : ' pf-dir-path-empty'}`}
+                title={selectedPath || dirPlaceholder}
+              >
+                {selectedPath || dirPlaceholder}
+              </div>
+              <button
+                className="btn btn-sm pf-browse-btn"
+                onClick={handleBrowse}
+                disabled={browsing}
+              >
+                {browsing ? '…' : '浏览'}
+              </button>
+            </div>
+            {selectedPath && (
+              <button className="pf-clear-path" onClick={() => setSelectedPath('')}>
+                ✕ 清除
+              </button>
+            )}
+          </div>
 
-        <button
-          className="btn btn-primary pf-run-btn"
-          disabled={running || !files.length || uploading}
-          onClick={handleRun}
-        >
-          {running ? '拆分中...' : `开始拆分${files.length ? `（${files.length} 个文件）` : ''}`}
-        </button>
+          {runErr && <div className="pf-error">{runErr}</div>}
+
+          <button
+            className="btn btn-primary pf-run-btn"
+            disabled={running || !files.length || uploading}
+            onClick={handleRun}
+          >
+            {running ? '拆分中...' : `开始拆分${files.length ? `（${files.length} 个文件）` : ''}`}
+          </button>
+        </div>
       </div>
 
-      {/* ---- 右侧：结果区 ---- */}
+      {/* ===================== 右侧结果区 ===================== */}
       <div className="pf-main">
         {results.length === 0 && !running && (
           <div className="pf-placeholder">
             <div className="pf-placeholder-icon">✂️</div>
             <div className="pf-placeholder-text">添加 PDF 文件后点击「开始拆分」</div>
-            <div className="pf-placeholder-sub">
-              每个文件可单独设置拆分方式和页码范围
-            </div>
+            <div className="pf-placeholder-sub">每个文件可单独设置拆分方式和页码范围</div>
           </div>
         )}
         {running && (
