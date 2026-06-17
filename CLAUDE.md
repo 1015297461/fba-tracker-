@@ -29,6 +29,7 @@ python3 server.py --port 8099   # 临时换端口测试，避免和正在跑的�
 server.py                  # 后端入口：HTTP 路由 + DbState(SQLite) + AuthManager + 定时任务
 rank_fetcher.py             # 关键词排名抓取器（正则解析，无 bs4 依赖）
 product_fetcher.py          # 产品详情抓取器（bs4 解析 + 反爬：会话池/令牌桶/CAPTCHA检测）
+pdf_splitter.py             # PDF 拆分工具后端逻辑（依赖 pypdf，pip3 install pypdf）
 
 index.html                   # 唯一 HTML 入口，引用 styles.css + compiled/bundle.js
 styles.css                   # 全局样式（2198 行，按模块分区注释，如 PRODUCT SCRAPE 区块）
@@ -56,6 +57,7 @@ src/
     tools/
       KeywordRank.tsx           # 工具：关键词排名监控
       ProductScrape.tsx         # 工具：产品采集（含详情预览弹窗 + 图片 Lightbox）
+      PdfSplit.tsx              # 工具：批量 PDF 拆分（按最大页数 / 自定义范围）
 
 README.md                    # 项目入口：简介 + 快速开始 + 文档导航
 docs/
@@ -82,6 +84,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | `audit_log` | 产品数据变更审计 |
 | `keyword_tasks` / `rank_snapshots` | 关键词排名：任务配置 + 历史快照 |
 | `scrape_tasks` / `scrape_products` | 产品采集：任务记录 + 落库的商品详情 |
+| `review_tasks` / `review_results` | 评论采集：任务记录 + 评论池（按 asin+review_id 去重） |
 
 ### API 路由
 
@@ -93,6 +96,10 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | POST | `/api/login` / `/api/logout` | Token 登录/登出（`fba-users.json`） |
 | GET/POST/DELETE | `/api/rank/*` | 关键词排名：任务列表/历史/创建/删除/单关键词 |
 | GET/POST/DELETE | `/api/scrape/*` | 产品采集：任务列表/结果/运行/删除/重置会话 |
+| GET/POST/DELETE | `/api/review/*` | 评论采集：任务列表/结果/运行/删除 |
+| POST | `/api/pdf/upload` | 上传 PDF（`application/octet-stream` + `X-Filename`），返回 `{file_id,name,pages,size}` |
+| POST | `/api/pdf/split` | 拆分任务，body `{jobs:[...]}`，返回 `{results:[...]}` |
+| GET | `/api/pdf/download?id=` | 下载拆分结果文件（无需 Auth，按 download_id 查临时注册表） |
 
 ### 同步机制（详见 `docs/operations.md` 第7节）
 客户端每 4s 轮询 `version`，编辑后 600ms 防抖 PUT 带 `baseVersion`；后端乐观锁，冲突时返回服务器最新版本，客户端整体覆盖（`ProductContext.tsx` 中 `versionRef`/`syncedVersionRef` 相关逻辑）。

@@ -33,10 +33,11 @@ import secrets
 import datetime
 import time
 import random
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 import rank_fetcher
 import product_fetcher
+import pdf_splitter
 
 
 # ---------------------------------------------------------------------------
@@ -1072,6 +1073,19 @@ def make_handler(state, auth):
                 })
                 return
 
+            if path == "/api/pdf/download":
+                q = parse_qs(urlparse(self.path).query)
+                dl_id = (q.get("id") or [""])[0]
+                if not dl_id:
+                    self._send_json(400, {"error": "id required"})
+                    return
+                fpath = pdf_splitter.get_download_path(dl_id)
+                if not fpath:
+                    self._send_json(404, {"error": "文件不存在或已过期，请重新拆分"})
+                    return
+                self._send_file(fpath)
+                return
+
             return super().do_GET()
 
         # ---- POST ----
@@ -1202,6 +1216,41 @@ def make_handler(state, auth):
                     task_id=task_id_in,
                 )
                 self._send_json(200, {"taskId": task_id, "results": results})
+                return
+
+            if path == "/api/pdf/upload":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                if not pdf_splitter.check_pypdf():
+                    self._send_json(503, {"error": "后端未安装 pypdf，请运行: pip3 install pypdf"})
+                    return
+                length = int(self.headers.get("Content-Length", "0"))
+                if length == 0:
+                    self._send_json(400, {"error": "empty body"})
+                    return
+                filename = unquote(self.headers.get("X-Filename", "upload.pdf"))
+                data = self.rfile.read(length)
+                try:
+                    info = pdf_splitter.save_upload(filename, data)
+                    self._send_json(200, info)
+                except Exception as e:
+                    self._send_json(500, {"error": str(e)})
+                return
+
+            if path == "/api/pdf/split":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                jobs = payload.get("jobs")
+                if not isinstance(jobs, list) or not jobs:
+                    self._send_json(400, {"error": "jobs must be a non-empty array"})
+                    return
+                results = [pdf_splitter.run_split_job(job) for job in jobs]
+                self._send_json(200, {"results": results})
                 return
 
             self.send_error(404)
@@ -1336,6 +1385,30 @@ def make_handler(state, auth):
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_file(self, path, download_name=None):
+            import mimetypes
+            try:
+                size = os.path.getsize(path)
+                ctype, _ = mimetypes.guess_type(path)
+                ctype = ctype or "application/octet-stream"
+                fname = download_name or os.path.basename(path)
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(size))
+                self.send_header(
+                    "Content-Disposition",
+                    f'attachment; filename="{fname}"',
+                )
+                self.end_headers()
+                with open(path, "rb") as f:
+                    while True:
+                        chunk = f.read(65536)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+            except OSError:
+                self.send_error(500)
+
     return Handler
 
 
@@ -1365,6 +1438,7 @@ def main():
 
     db_state = DbState(db_path)
     db_state.import_from_json(os.path.abspath(args.migrate))
+    pdf_splitter.cleanup_old_tmp()
 
     auth_mgr = AuthManager(users_path)
     handler  = make_handler(db_state, auth_mgr)

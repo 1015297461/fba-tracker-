@@ -2271,6 +2271,68 @@ select.meta-edit { cursor: pointer; }
 .rf-ok { color: var(--green); }
 
 .rf-empty { color: var(--ink-3); font-size: 13px; padding: 14px 4px; }
+
+/* ============================================================
+   PDF SPLIT（PDF 拆分工具）
+   ============================================================ */
+.pf-root { display: grid; grid-template-columns: 300px 1fr; height: 100%; overflow: hidden; }
+
+/* ---- 左侧：配置区 ---- */
+.pf-side { border-right: 1px solid var(--border); background: var(--bg-2); overflow-y: auto; padding: 14px 12px; display: flex; flex-direction: column; gap: 10px; }
+.pf-side-title { font-size: 14px; font-weight: 600; color: var(--ink); padding-bottom: 4px; border-bottom: 1px solid var(--border); margin-bottom: 2px; }
+
+.pf-dropzone { border: 2px dashed var(--border-strong); border-radius: 8px; padding: 18px 12px; text-align: center; font-size: 12px; color: var(--ink-3); cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+.pf-dropzone:hover { border-color: var(--accent); background: var(--bg-3, var(--bg-2)); color: var(--ink-2); }
+
+.pf-file-list { display: flex; flex-direction: column; gap: 6px; }
+.pf-file-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; background: var(--card-bg); border: 1px solid var(--border); }
+.pf-file-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pf-file-name { font-size: 12px; font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-file-meta { font-size: 11px; color: var(--ink-3); }
+.pf-remove-btn { flex-shrink: 0; width: 22px; height: 22px; border-radius: 4px; border: none; background: none; color: var(--ink-3); cursor: pointer; font-size: 16px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.pf-remove-btn:hover { background: var(--bg-3, var(--border)); color: var(--red); }
+
+.pf-section { display: flex; flex-direction: column; gap: 6px; }
+.pf-label { font-size: 12px; color: var(--ink-2); font-weight: 500; }
+.pf-mode-tabs { display: flex; border-radius: 6px; overflow: hidden; border: 1px solid var(--border-strong); }
+.pf-mode-btn { flex: 1; padding: 6px 0; font-size: 12px; font-weight: 500; border: none; background: var(--card-bg); color: var(--ink-3); cursor: pointer; transition: background 0.15s, color 0.15s; }
+.pf-mode-btn[data-active="true"] { background: var(--accent); color: #fff; }
+
+.pf-field { display: flex; flex-direction: column; gap: 4px; }
+.pf-field-row { flex-direction: row; gap: 8px; }
+.pf-field-row > div { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.pf-input { font: inherit; height: 30px; padding: 0 9px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--card-bg); color: var(--ink); font-size: 12px; outline: none; width: 100%; box-sizing: border-box; }
+.pf-input:focus { border-color: var(--accent); }
+.pf-hint { font-size: 11px; color: var(--ink-4); line-height: 1.4; }
+
+.pf-error { font-size: 12px; color: var(--red); padding: 6px 8px; border-radius: 6px; background: rgba(220,38,38,0.06); border: 1px solid rgba(220,38,38,0.15); }
+
+.pf-run-btn { width: 100%; justify-content: center; margin-top: 4px; }
+
+/* ---- 右侧：结果区 ---- */
+.pf-main { overflow-y: auto; padding: 20px; display: flex; flex-direction: column; }
+
+.pf-placeholder { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; padding: 40px; }
+.pf-placeholder-icon { font-size: 36px; opacity: 0.35; }
+.pf-placeholder-text { font-size: 14px; color: var(--ink-2); font-weight: 500; }
+.pf-placeholder-sub { font-size: 12px; color: var(--ink-4); max-width: 320px; line-height: 1.5; }
+
+.pf-results { display: flex; flex-direction: column; gap: 12px; }
+.pf-results-head { font-size: 13px; font-weight: 600; color: var(--ink); padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+
+.pf-result-card { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--card-bg); }
+.pf-result-header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--bg-2); border-bottom: 1px solid var(--border); }
+.pf-result-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-result-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; flex-shrink: 0; }
+.pf-badge-ok { color: var(--green); background: rgba(22,163,74,0.1); }
+.pf-badge-fail { color: var(--red); background: rgba(220,38,38,0.1); }
+.pf-result-error { padding: 8px 14px; font-size: 12px; color: var(--red); }
+
+.pf-output-list { padding: 8px 14px; display: flex; flex-direction: column; gap: 4px; }
+.pf-output-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.pf-output-name { flex: 1; font-size: 12px; color: var(--ink-2); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-dl-btn { flex-shrink: 0; text-decoration: none; }
+.pf-output-saved { flex-shrink: 0; font-size: 11px; color: var(--green); font-weight: 500; }
 .rf-empty-lg { display: flex; align-items: center; justify-content: center; height: 100%; font-size: 13px; text-align: center; padding: 40px; }
 
 /* ---- 右侧：评论结果表格 ---- */
