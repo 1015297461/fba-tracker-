@@ -80,13 +80,14 @@ export function EditField({ label, value, onChange, type, mono, placeholder, wid
   );
 }
 
-export function StageCard({ stage, productId, stageKey, stageData, children, extraHeader, defaultOpen = true }: {
+export function StageCard({ stage, productId, stageKey, stageData, children, extraHeader, titleExtra, defaultOpen = true }: {
   stage: StageDefinition;
   productId: string;
   stageKey: string;
   stageData: any;
   children?: React.ReactNode;
   extraHeader?: React.ReactNode;
+  titleExtra?: React.ReactNode;
   defaultOpen?: boolean;
 }) {
   const { updateStage } = useProducts();
@@ -100,6 +101,7 @@ export function StageCard({ stage, productId, stageKey, stageData, children, ext
           {open ? '▾' : '▸'}
         </button>
         <span className="stage-card-title">{stage.name}</span>
+        {titleExtra}
 
         <div className="stage-card-dates">
           <span className="dlbl">开始</span>

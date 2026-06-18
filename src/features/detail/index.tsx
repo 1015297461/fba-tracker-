@@ -467,12 +467,14 @@ function TabProd({ p }: { p: any }) {
         <span className="shs-val">{totalOrderQty} pcs</span>
         {skuEntries.length > 0 && (
           <span className="shs-tooltip">
-            {skuEntries.map(e => (
-              <span key={e.name} className="shs-tooltip-row">
-                <span className="shs-tooltip-name">{e.name}</span>
-                <span className="shs-tooltip-qty">{e.qty} pcs</span>
-              </span>
-            ))}
+            <span className="shs-tooltip-inner">
+              {skuEntries.map(e => (
+                <span key={e.name} className="shs-tooltip-row">
+                  <span className="shs-tooltip-name">{e.name}</span>
+                  <span className="shs-tooltip-qty">{e.qty} pcs</span>
+                </span>
+              ))}
+            </span>
           </span>
         )}
       </span>
@@ -487,7 +489,7 @@ function TabProd({ p }: { p: any }) {
 
   return (
     <>
-      <StageCard stage={STAGES[9]} productId={p.id} stageKey="production" stageData={prod} extraHeader={prodHeaderExtra}>
+      <StageCard stage={STAGES[9]} productId={p.id} stageKey="production" stageData={prod} titleExtra={prodHeaderExtra}>
         <div className="record-list">
           {(prod.batches || []).map((b: any, idx: number) => {
             const skuSubtotal = hasVariants && (b.items||[]).length > 0
