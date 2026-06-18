@@ -4,6 +4,7 @@ import { useProducts, _variantInUse } from '../../context/ProductContext';
 import { StatusSelect, EditField, StageCard, RecordCard, AddRecordButton, VariantSelector } from '../../components';
 import { TabEval } from '../list-view';
 import { uid } from '../../data/products';
+import type { ProductionBatch, Shipment, BalancePayment } from '../../data/types';
 
 function TabVariants({ p }: { p: any }) {
   const { addVariant, updateVariant, removeVariant } = useProducts() as any;
@@ -405,12 +406,68 @@ function TabDesign({ p }: { p: any }) {
   );
 }
 
-function getEffectiveBalancePayments(b: any): any[] {
+function getEffectiveBalancePayments(b: ProductionBatch): BalancePayment[] {
   const bps = b.balancePayments || [];
   if (bps.length > 0) return bps;
   if ((Number(b.balanceAmt) || 0) > 0)
     return [{ id: b.id + '-bp0', amount: Number(b.balanceAmt) || 0, date: b.balanceDate || '', note: '' }];
   return [];
+}
+
+interface BatchComputedResult {
+  skuSubtotal: number;
+  extraSubtotal: number;
+  skuTotal: number;
+  depositPct: number;
+  balancePct: number;
+  theorDeposit: number;
+  orderQty: number;
+  validShipments: Shipment[];
+  shippedQty: number;
+  actualShippedValue: number;
+  effectiveTotal: number;
+  pendingQty: number;
+  actualTotalPaid: number;
+  paidComplete: boolean;
+}
+
+function computeBatch(b: ProductionBatch, hasVariants: boolean): BatchComputedResult {
+  const skuSubtotal = hasVariants && b.items.length > 0
+    ? b.items.reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.unitPrice) || 0), 0)
+    : (Number(b.qty) || 0) * (Number(b.unitPrice) || 0);
+  const extraSubtotal = (b.extraCosts || []).reduce((s, c) => s + (Number(c.qty) || 0) * (Number(c.unitPrice) || 0), 0);
+  const skuTotal = skuSubtotal + extraSubtotal;
+  const depositPct = Number(b.depositPct) || 0;
+  const balancePct = b.balancePct != null ? Number(b.balancePct) : Math.max(0, 100 - depositPct);
+  const theorDeposit = +(skuTotal * depositPct / 100).toFixed(2);
+  const orderQty = hasVariants && b.items.length > 0
+    ? b.items.reduce((s, i) => s + (Number(i.qty) || 0), 0)
+    : (Number(b.qty) || 0);
+  const validShipments = (b.shipments || []).filter(sh => !!sh.shipDate);
+  const shippedQty = validShipments.reduce((sum, sh) => {
+    if (hasVariants) return sum + (sh.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0);
+    return sum + (Number(sh.qty) || 0);
+  }, 0);
+  const actualShippedValue = validShipments.reduce((sum, sh) => {
+    if (hasVariants) return sum + (sh.items || []).reduce((s, si) => {
+      const bi = b.items.find(x => x.variantId === si.variantId);
+      return s + (Number(si.qty) || 0) * (Number(bi?.unitPrice) || 0);
+    }, 0);
+    return sum + (Number(sh.qty) || 0) * (Number(b.unitPrice) || 0);
+  }, 0);
+  const effectiveTotal = actualShippedValue > 0 ? actualShippedValue : skuTotal;
+  const pendingQty = orderQty - shippedQty;
+  const effBps = getEffectiveBalancePayments(b);
+  const tailPaid = effBps.reduce((s, bp) => s + (Number(bp.amount) || 0), 0);
+  const actualTotalPaid = (Number(b.depositActual) || 0) + tailPaid;
+  const paidComplete = effectiveTotal > 0 && actualTotalPaid >= effectiveTotal;
+  return {
+    skuSubtotal, extraSubtotal, skuTotal,
+    depositPct, balancePct, theorDeposit,
+    orderQty, validShipments, shippedQty,
+    actualShippedValue, effectiveTotal, pendingQty,
+    actualTotalPaid, paidComplete,
+  };
 }
 
 function TabProd({ p }: { p: any }) {
@@ -432,17 +489,13 @@ function TabProd({ p }: { p: any }) {
   const isCollapsed = (key: string) => collapsedSections.has(key);
 
   // 跨批次汇总：总下单量 + SKU 明细 + 总结算金额
-  const allBatches = prod.batches || [];
-  const totalOrderQty = allBatches.reduce((sum: number, b: any) => {
-    if (hasVariants && (b.items||[]).length > 0)
-      return sum + (b.items||[]).reduce((s: number, i: any) => s + (Number(i.qty)||0), 0);
-    return sum + (Number(b.qty)||0);
-  }, 0);
+  const allBatches: ProductionBatch[] = prod.batches || [];
+  const totalOrderQty = allBatches.reduce((sum, b) => sum + computeBatch(b, hasVariants).orderQty, 0);
 
   const skuQtyMap: Record<string, { name: string; qty: number }> = {};
   if (hasVariants) {
     for (const b of allBatches) {
-      for (const item of (b.items || [])) {
+      for (const item of b.items) {
         const vid = item.variantId || item.id;
         if (!skuQtyMap[vid]) skuQtyMap[vid] = { name: item.variantName || item.variantId || 'SKU', qty: 0 };
         skuQtyMap[vid].qty += Number(item.qty) || 0;
@@ -450,22 +503,7 @@ function TabProd({ p }: { p: any }) {
     }
   }
 
-  const totalSettlement = allBatches.reduce((sum: number, b: any) => {
-    const skuSub = hasVariants && (b.items||[]).length > 0
-      ? (b.items||[]).reduce((s: number, i: any) => s + (Number(i.qty)||0)*(Number(i.unitPrice)||0), 0)
-      : (Number(b.qty)||0) * (Number(b.unitPrice)||0);
-    const extraSub = (b.extraCosts||[]).reduce((s: number, c: any) => s + (Number(c.qty)||0)*(Number(c.unitPrice)||0), 0);
-    const skuTotal = skuSub + extraSub;
-    const validShip = (b.shipments||[]).filter((sh: any) => !!sh.shipDate);
-    const shipped = validShip.reduce((s: number, sh: any) => {
-      if (hasVariants) return s + (sh.items||[]).reduce((ss: number, si: any) => {
-        const bi = (b.items||[]).find((x: any) => x.variantId === si.variantId);
-        return ss + (Number(si.qty)||0) * (Number(bi?.unitPrice)||0);
-      }, 0);
-      return s + (Number(sh.qty)||0) * (Number(b.unitPrice)||0);
-    }, 0);
-    return sum + (shipped > 0 ? shipped : skuTotal);
-  }, 0);
+  const totalSettlement = allBatches.reduce((sum, b) => sum + computeBatch(b, hasVariants).effectiveTotal, 0);
 
   const skuEntries = Object.values(skuQtyMap).filter(e => e.qty > 0);
   const prodHeaderExtra = totalOrderQty > 0 ? (
@@ -499,52 +537,23 @@ function TabProd({ p }: { p: any }) {
     <>
       <StageCard stage={STAGES[9]} productId={p.id} stageKey="production" stageData={prod} titleExtra={prodHeaderExtra}>
         <div className="record-list">
-          {(prod.batches || []).map((b: any, idx: number) => {
-            const skuSubtotal = hasVariants && (b.items||[]).length > 0
-              ? (b.items||[]).reduce((s: number, i: any) => s + (Number(i.qty)||0)*(Number(i.unitPrice)||0), 0)
-              : (Number(b.qty)||0) * (Number(b.unitPrice)||0);
-            const extraSubtotal = (b.extraCosts||[]).reduce((s: number, c: any) => s + (Number(c.qty)||0)*(Number(c.unitPrice)||0), 0);
-            const skuTotal = skuSubtotal + extraSubtotal;
-            const depositPct  = Number(b.depositPct) || 0;
-            const balancePct  = b.balancePct != null ? Number(b.balancePct) : Math.max(0, 100 - depositPct);
-            const theorDeposit = +(skuTotal * depositPct  / 100).toFixed(2);
-            const orderQty = hasVariants && (b.items||[]).length > 0
-              ? (b.items||[]).reduce((s: number, i: any) => s + (Number(i.qty)||0), 0)
-              : (Number(b.qty)||0);
-            const validShipments = (b.shipments||[]).filter((sh: any) => !!sh.shipDate);
-            const shippedQty = validShipments.reduce((sum: number, sh: any) => {
-              if (hasVariants) return sum + (sh.items||[]).reduce((s: number, i: any) => s + (Number(i.qty)||0), 0);
-              return sum + (Number(sh.qty)||0);
-            }, 0);
-            const actualShippedValue = validShipments.reduce((sum: number, sh: any) => {
-              if (hasVariants) return sum + (sh.items||[]).reduce((s: number, si: any) => {
-                const bi = (b.items||[]).find((x: any) => x.variantId === si.variantId);
-                return s + (Number(si.qty)||0) * (Number(bi?.unitPrice)||0);
-              }, 0);
-              return sum + (Number(sh.qty)||0) * (Number(b.unitPrice)||0);
-            }, 0);
-            const effectiveTotal = actualShippedValue > 0 ? actualShippedValue : skuTotal;
-            const pendingQty = orderQty - shippedQty;
-            const pendingClass = pendingQty < 0 ? 'rmc-warn' : pendingQty === 0 && orderQty > 0 ? 'rmc-done' : 'rmc-pending';
-            // payment status
-            const effBpsMeta = getEffectiveBalancePayments(b);
-            const tailPaidMeta = effBpsMeta.reduce((s: number, bp: any) => s + (Number(bp.amount)||0), 0);
-            const actualTotalPaidMeta = (Number(b.depositActual)||0) + tailPaidMeta;
-            const paidComplete = effectiveTotal > 0 && actualTotalPaidMeta >= effectiveTotal;
-            const paidClass = paidComplete ? 'rmc-done' : actualTotalPaidMeta > 0 ? 'rmc-pending' : 'rmc-warn';
+          {allBatches.map((b, idx) => {
+            const c = computeBatch(b, hasVariants);
+            const pendingClass = c.pendingQty < 0 ? 'rmc-warn' : c.pendingQty === 0 && c.orderQty > 0 ? 'rmc-done' : 'rmc-pending';
+            const paidClass = c.paidComplete ? 'rmc-done' : c.actualTotalPaid > 0 ? 'rmc-pending' : 'rmc-warn';
             const batchMeta = (
               <>
-                {orderQty > 0 && <span className="record-meta-chip"><span className="rmc-lbl">下单</span><span className="rmc-val">{orderQty} pcs</span></span>}
-                {shippedQty > 0 && <span className="record-meta-chip"><span className="rmc-lbl">已出</span><span className="rmc-val">{shippedQty} pcs</span></span>}
-                {orderQty > 0 && <span className={"record-meta-chip " + pendingClass}>
+                {c.orderQty > 0 && <span className="record-meta-chip"><span className="rmc-lbl">下单</span><span className="rmc-val">{c.orderQty} pcs</span></span>}
+                {c.shippedQty > 0 && <span className="record-meta-chip"><span className="rmc-lbl">已出</span><span className="rmc-val">{c.shippedQty} pcs</span></span>}
+                {c.orderQty > 0 && <span className={"record-meta-chip " + pendingClass}>
                   <span className="rmc-lbl">待出</span>
-                  <span className="rmc-val">{pendingQty > 0 ? pendingQty + ' pcs' : pendingQty < 0 ? '超出' + Math.abs(pendingQty) : '✓'}</span>
+                  <span className="rmc-val">{c.pendingQty > 0 ? c.pendingQty + ' pcs' : c.pendingQty < 0 ? '超出' + Math.abs(c.pendingQty) : '✓'}</span>
                 </span>}
-                {effectiveTotal > 0 && orderQty > 0 && <span className={"record-meta-chip " + paidClass}>
-                  <span className="rmc-val">{paidComplete ? '已付清' : actualTotalPaidMeta > 0 ? '未付清 ¥' + (effectiveTotal - actualTotalPaidMeta).toFixed(2) : '未付款'}</span>
+                {c.effectiveTotal > 0 && c.orderQty > 0 && <span className={"record-meta-chip " + paidClass}>
+                  <span className="rmc-val">{c.paidComplete ? '已付清' : c.actualTotalPaid > 0 ? '未付清 ¥' + (c.effectiveTotal - c.actualTotalPaid).toFixed(2) : '未付款'}</span>
                 </span>}
-                {actualTotalPaidMeta > 0 && (
-                  <span className="record-meta-chip"><span className="rmc-lbl">已付</span><span className="rmc-val mono">¥{actualTotalPaidMeta.toFixed(2)}</span></span>
+                {c.actualTotalPaid > 0 && (
+                  <span className="record-meta-chip"><span className="rmc-lbl">已付</span><span className="rmc-val mono">¥{c.actualTotalPaid.toFixed(2)}</span></span>
                 )}
                 {b.orderDate && <span className="record-meta-chip"><span className="rmc-lbl">下单日</span><span className="rmc-val">{b.orderDate}</span></span>}
               </>
@@ -586,7 +595,7 @@ function TabProd({ p }: { p: any }) {
                     <div />
                     <div className="calc-field">
                       <span className="calc-field-label">SKU 小计</span>
-                      <span className="calc-field-value mono">¥{skuSubtotal.toFixed(2)}</span>
+                      <span className="calc-field-value mono">¥{c.skuSubtotal.toFixed(2)}</span>
                     </div>
                   </div>
                 )}
@@ -597,21 +606,21 @@ function TabProd({ p }: { p: any }) {
                       <button className="sec-toggle" onClick={e => { e.stopPropagation(); toggleSection(b.id+'|sku'); }}>{isCollapsed(b.id+'|sku') ? '▸' : '▾'}</button>
                       <span className="sku-items-title">SKU 明细</span>
                       <span className="sku-items-sum mono">
-                        共 {(b.items||[]).reduce((s: number, i: any) => s+(Number(i.qty)||0), 0)} pcs
+                        共 {b.items.reduce((s, i) => s + (Number(i.qty) || 0), 0)} pcs
                         {(() => {
-                          const totalRcvd = (b.items||[]).reduce((ts: number, it: any) => ts + validShipments.reduce((s: number, sh: any) => s + ((sh.items||[]).find((si: any) => si.variantId === it.variantId)?.qty || 0), 0), 0);
+                          const totalRcvd = b.items.reduce((ts, it) => ts + c.validShipments.reduce((s, sh) => s + ((sh.items || []).find(si => si.variantId === it.variantId)?.qty || 0), 0), 0);
                           return totalRcvd > 0 ? <>&nbsp;·&nbsp;已到 <strong>{totalRcvd} pcs</strong></> : null;
                         })()}
-                        &nbsp;·&nbsp;SKU 小计 <strong>¥{skuSubtotal.toFixed(2)}</strong>
+                        &nbsp;·&nbsp;SKU 小计 <strong>¥{c.skuSubtotal.toFixed(2)}</strong>
                       </span>
                       <button className="btn btn-sm btn-add" onClick={e => { e.stopPropagation(); const v0 = variants[0]; addBatchItem(p.id, b.id, { variantId:v0?.id||'', variantName:v0?.name||v0?.sku||'SKU', qty:0, unitPrice:0 }); }}>+ 添加 SKU</button>
                     </div>
                     {!isCollapsed(b.id+'|sku') && <table className="sku-items-table">
                       <thead><tr><th>变体</th><th className="num">下单数量</th><th className="num">实际到货</th><th className="num">待出货</th><th className="num">单价(¥)</th><th className="num">小计(¥)</th><th></th></tr></thead>
                       <tbody>
-                        {(b.items||[]).map((item: any) => {
-                          const itemReceived = validShipments.reduce((s: number, sh: any) =>
-                            s + ((sh.items||[]).find((si: any) => si.variantId === item.variantId)?.qty || 0), 0);
+                        {b.items.map((item) => {
+                          const itemReceived = c.validShipments.reduce((s, sh) =>
+                            s + ((sh.items || []).find(si => si.variantId === item.variantId)?.qty || 0), 0);
                           const itemPending = (Number(item.qty)||0) - itemReceived;
                           return (
                           <tr key={item.id}>
@@ -642,8 +651,8 @@ function TabProd({ p }: { p: any }) {
                     <button className="sec-toggle" onClick={e => { e.stopPropagation(); toggleSection(b.id+'|extra'); }}>{isCollapsed(b.id+'|extra') ? '▸' : '▾'}</button>
                     <span className="sku-items-title">其他费用</span>
                     <span className="sku-items-sum mono">
-                      {(b.extraCosts||[]).length > 0
-                        ? <>小计 <strong>¥{extraSubtotal.toFixed(2)}</strong></>
+                      {(b.extraCosts || []).length > 0
+                        ? <>小计 <strong>¥{c.extraSubtotal.toFixed(2)}</strong></>
                         : '代采配件 / 运费 / 其他'}
                     </span>
                     <button className="btn btn-sm btn-add" onClick={() =>
@@ -681,22 +690,20 @@ function TabProd({ p }: { p: any }) {
 
                 {(() => {
                   const effBps = getEffectiveBalancePayments(b);
-                  const tailPaid = effBps.reduce((s: number, bp: any) => s + (Number(bp.amount)||0), 0);
-                  const actualTotalPaid = (Number(b.depositActual)||0) + tailPaid;
                   const payKey = b.id + '|pay';
                   return (
                 <div className="payment-section">
                   <div className="payment-section-title" style={{cursor:'pointer'}} onClick={() => toggleSection(payKey)}>
                     <button className="sec-toggle" onClick={e => { e.stopPropagation(); toggleSection(payKey); }}>{isCollapsed(payKey) ? '▸' : '▾'}</button>
                     <span>付款条款</span>
-                    {effectiveTotal > 0 && (
+                    {c.effectiveTotal > 0 && (
                       <span className="payment-hdr-summary" style={{marginLeft:12, fontSize:11.5, fontFamily:'var(--font-mono)'}}>
-                        已付 <strong style={actualTotalPaid >= effectiveTotal ? {color:'var(--green)'} : {color:'var(--orange)'}}>¥{actualTotalPaid.toFixed(2)}</strong>
-                        &nbsp;/&nbsp;¥{effectiveTotal.toFixed(2)}
-                        {actualTotalPaid >= effectiveTotal
+                        已付 <strong style={c.actualTotalPaid >= c.effectiveTotal ? {color:'var(--green)'} : {color:'var(--orange)'}}>¥{c.actualTotalPaid.toFixed(2)}</strong>
+                        &nbsp;/&nbsp;¥{c.effectiveTotal.toFixed(2)}
+                        {c.actualTotalPaid >= c.effectiveTotal
                           ? <>&nbsp;·&nbsp;<strong style={{color:'var(--green)'}}>✓ 已付清</strong></>
-                          : actualTotalPaid > 0
-                            ? <>&nbsp;·&nbsp;待付 <strong style={{color:'var(--orange)'}}>¥{(effectiveTotal - actualTotalPaid).toFixed(2)}</strong></>
+                          : c.actualTotalPaid > 0
+                            ? <>&nbsp;·&nbsp;待付 <strong style={{color:'var(--orange)'}}>¥{(c.effectiveTotal - c.actualTotalPaid).toFixed(2)}</strong></>
                             : <>&nbsp;·&nbsp;<span style={{color:'var(--orange)',fontWeight:600}}>未付款</span></>
                         }
                       </span>
@@ -706,12 +713,12 @@ function TabProd({ p }: { p: any }) {
                   <div className="fieldgrid cols-4">
                     <div className="calc-field">
                       <span className="calc-field-label">订单金额</span>
-                      <span className="calc-field-value mono" style={{fontWeight:600,color:'var(--blue)'}}>¥{skuTotal.toFixed(2)}</span>
+                      <span className="calc-field-value mono" style={{fontWeight:600,color:'var(--blue)'}}>¥{c.skuTotal.toFixed(2)}</span>
                     </div>
-                    {actualShippedValue > 0 ? (
+                    {c.actualShippedValue > 0 ? (
                       <div className="calc-field">
                         <span className="calc-field-label">实际出货结算</span>
-                        <span className="calc-field-value mono" style={{fontWeight:600,color: actualShippedValue !== skuTotal ? 'var(--orange)' : 'var(--green)'}}>¥{actualShippedValue.toFixed(2)}</span>
+                        <span className="calc-field-value mono" style={{fontWeight:600,color: c.actualShippedValue !== c.skuTotal ? 'var(--orange)' : 'var(--green)'}}>¥{c.actualShippedValue.toFixed(2)}</span>
                       </div>
                     ) : <div />}
                     <div /><div />
@@ -719,21 +726,21 @@ function TabProd({ p }: { p: any }) {
                       onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositPct:v })} />
                     <div className="calc-field">
                       <span className="calc-field-label">理论预付款</span>
-                      <span className="calc-field-value mono">¥{theorDeposit.toFixed(2)}</span>
+                      <span className="calc-field-value mono">¥{c.theorDeposit.toFixed(2)}</span>
                     </div>
                     <EditField label="实际预付款 (¥)" type="number" mono prefix="¥" value={b.depositActual||0}
                       onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositActual:v })} />
                     <EditField label="预付款日期" type="date" mono value={b.depositDate||''}
                       onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositDate:v })} />
-                    <EditField label="尾款比例" type="number" mono suffix="%" value={balancePct}
+                    <EditField label="尾款比例" type="number" mono suffix="%" value={c.balancePct}
                       onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { balancePct:Number(v) })} />
                     <div className="calc-field">
                       <span className="calc-field-label">应结尾款</span>
-                      <span className="calc-field-value mono">¥{Math.max(0, effectiveTotal - (Number(b.depositActual)||0)).toFixed(2)}</span>
+                      <span className="calc-field-value mono">¥{Math.max(0, c.effectiveTotal - (Number(b.depositActual)||0)).toFixed(2)}</span>
                     </div>
                     <div className="calc-field">
                       <span className="calc-field-label">已付总金额</span>
-                      <span className="calc-field-value mono" style={actualTotalPaid >= effectiveTotal ? {color:'var(--green)',fontWeight:600} : {color:'var(--orange)',fontWeight:600}}>¥{actualTotalPaid.toFixed(2)}</span>
+                      <span className="calc-field-value mono" style={c.actualTotalPaid >= c.effectiveTotal ? {color:'var(--green)',fontWeight:600} : {color:'var(--orange)',fontWeight:600}}>¥{c.actualTotalPaid.toFixed(2)}</span>
                     </div>
                     <div />
                   </div>
@@ -787,7 +794,7 @@ function TabProd({ p }: { p: any }) {
                 })()}
 
                 {(() => {
-                  const isOver = orderQty > 0 && shippedQty > orderQty;
+                  const isOver = c.orderQty > 0 && c.shippedQty > c.orderQty;
                   return (
                     <div className="batch-ship-block">
                       <div className="batch-ship-block-hdr" style={{cursor:'pointer'}} onClick={() => toggleSection(b.id+'|ship')}>
@@ -795,7 +802,7 @@ function TabProd({ p }: { p: any }) {
                         <span className="batch-ship-block-title">出货明细</span>
                         <span className={'batch-ship-block-sum' + (isOver ? ' warn' : '')}>
                           {(b.shipments||[]).length > 0
-                            ? <>{shippedQty} / {orderQty} pcs 已出{isOver ? ' · 超出订单数量!' : ''}</>
+                            ? <>{c.shippedQty} / {c.orderQty} pcs 已出{isOver ? ' · 超出订单数量!' : ''}</>
                             : '尚无出货记录'}
                         </span>
                         <button className="btn btn-sm btn-add" onClick={e => { e.stopPropagation();

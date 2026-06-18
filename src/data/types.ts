@@ -26,6 +26,73 @@ export interface LogEntry {
   text: string;
 }
 
+export interface BatchItem {
+  id: string;
+  variantId: string;
+  variantName: string;
+  qty: number;
+  unitPrice: number;
+}
+
+export interface ExtraCost {
+  id: string;
+  name: string;
+  qty: number;
+  unitPrice: number;
+}
+
+export interface ShipmentItem {
+  id: string;
+  variantId: string;
+  variantName: string;
+  qty: number;
+}
+
+export interface Shipment {
+  id: string;
+  status?: string;
+  expectedShip: string;
+  shipDate: string;
+  qty: number;
+  items: ShipmentItem[];
+  method: string;
+  carrier: string;
+  tracking: string;
+  fbaShipId: string;
+  etaDate: string;
+  note: string;
+}
+
+export interface BalancePayment {
+  id: string;
+  amount: number;
+  date: string;
+  shipmentRef?: string;
+  note: string;
+}
+
+export interface ProductionBatch {
+  id: string;
+  batchNo: string;
+  factory: string;
+  orderDate: string;
+  expectedShip: string;
+  qty: number;
+  unitPrice: number;
+  depositPct: number;
+  depositActual: number;
+  depositDate: string;
+  balancePct?: number;
+  balanceAmt?: number;
+  balanceDate?: string;
+  status?: string;
+  note: string;
+  items: BatchItem[];
+  extraCosts: ExtraCost[];
+  shipments?: Shipment[];
+  balancePayments?: BalancePayment[];
+}
+
 export interface Variant {
   id: string;
   name: string;

@@ -321,16 +321,9 @@ effBps = balancePayments.length > 0
 
 ---
 
-### ⏸ P6 — 整个模块零 TypeScript 类型约束（类型安全）
+### ✅ P6 — 整个模块零 TypeScript 类型约束（类型安全）
 
-**位置**：`types.ts`、`ProductContext.tsx`、`index.tsx`
-
-`stages: Record<string, any>` 导致 `b`、`sh`、`bp` 等全为 `any`，编译器无法发现：
-- 字段名拼写错误（如 `sh.shipdate` vs `sh.shipDate`）
-- 数值/字符串混用（如 `b.qty` 有时是 `""` 空字符串）
-- 删除字段后引用处未同步更新
-
-**建议**：为生产模块定义专用接口（见第 7 节），优先级可以排在功能稳定后。
+**修复**：在 `types.ts` 中新增 `BatchItem`、`ExtraCost`、`ShipmentItem`、`Shipment`、`BalancePayment`、`ProductionBatch` 六个接口。`getEffectiveBalancePayments` 和 `computeBatch` 函数使用强类型参数；`TabProd` 内 `allBatches` 和 `.map()` 回调的 `b` 均改为 `ProductionBatch` 类型，编译器现可捕获字段名拼写错误和类型混用。`Product.stages: Record<string, any>` 保持不变（容纳全部 18 个阶段）。
 
 ---
 
@@ -344,100 +337,23 @@ effBps = balancePayments.length > 0
 
 **✅ 已实施：消除重复计算（P1）**：出货 IIFE 直接复用外层 `orderQty`/`shippedQty`。
 
-**待处理：提取批次计算纯函数**（P6 实施时一并做）
+**✅ 已实施：提取批次计算纯函数**（与 P6 一并完成）
 
-当前批次内 ~15 个计算变量仍散落在 `.map()` 回调里。建议提取为：
-```tsx
-function computeBatch(b: Batch, hasVariants: boolean, variants: Variant[]) {
-  // 返回 { skuSubtotal, skuTotal, effectiveTotal, orderQty,
-  //         shippedQty, actualTotalPaid, paidComplete, ... }
-}
-```
-好处：单元测试友好，逻辑一处维护。适合与 P6 类型重构一起完成。
+`computeBatch(b: ProductionBatch, hasVariants: boolean): BatchComputedResult` 已提取（位于 `getEffectiveBalancePayments` 之后，`TabProd` 之前）。返回 14 个计算字段：`skuSubtotal`、`extraSubtotal`、`skuTotal`、`depositPct`、`balancePct`、`theorDeposit`、`orderQty`、`validShipments`、`shippedQty`、`actualShippedValue`、`effectiveTotal`、`pendingQty`、`actualTotalPaid`、`paidComplete`。`.map()` 回调及跨批次聚合均调用此函数，无内联计算冗余。
 
 ### 7.2 业务逻辑层面
 
 **✅ 已实施：无定价保护（P5）**：付款 chip 加 `orderQty > 0` 条件。
 
-**待讨论：`extraCosts` 的结算归属**
+**已确认现状：`extraCosts` 的结算归属**
 
 当前其他费用不计入 `actualShippedValue`，需与实际付款协议对齐：
 
-- **方案 A（现状）**：其他费用全额在订单时确认，不随出货分摊
-- **方案 B**：按出货比例分摊 → `actualShippedValue += extraSubtotal × (shippedQty / orderQty)`
+- **方案 A（已采用）**：其他费用全额在订单时确认，不随出货分摊（保持现状）
 
-### 7.3 类型安全（优先级：低，但长期价值高）
+### 7.3 类型安全（✅ 已实施，P6）
 
-建议在 `types.ts` 中补充：
-
-```typescript
-interface BatchItem {
-  id: string;
-  variantId: string;
-  variantName: string;
-  qty: number;
-  unitPrice: number;
-}
-
-interface ExtraCost {
-  id: string;
-  name: string;
-  qty: number;
-  unitPrice: number;
-}
-
-interface ShipmentItem {
-  id: string;
-  variantId: string;
-  variantName: string;
-  qty: number;
-}
-
-interface Shipment {
-  id: string;
-  status: string;
-  expectedShip: string;
-  shipDate: string;          // 核心字段：非空才生效
-  qty: number;               // 无变体时
-  items: ShipmentItem[];     // 有变体时
-  method: string;
-  carrier: string;
-  tracking: string;
-  fbaShipId: string;
-  etaDate: string;
-  note: string;
-}
-
-interface BalancePayment {
-  id: string;
-  amount: number;
-  date: string;
-  shipmentRef: string;
-  note: string;
-}
-
-interface ProductionBatch {
-  id: string;
-  batchNo: string;
-  factory: string;
-  orderDate: string;
-  expectedShip: string;
-  qty: number;
-  unitPrice: number;
-  depositPct: number;
-  depositActual: number;
-  depositDate: string;
-  balancePct: number;
-  balanceAmt?: number;       // 废弃字段，保留兼容
-  balanceDate?: string;      // 废弃字段，保留兼容
-  status: string;
-  note: string;
-  items: BatchItem[];
-  extraCosts: ExtraCost[];
-  shipments: Shipment[];
-  balancePayments: BalancePayment[];
-}
-```
+`types.ts` 已新增以下接口（全部 `export`，供 `detail/index.tsx` 导入使用）：`BatchItem`、`ExtraCost`、`ShipmentItem`、`Shipment`、`BalancePayment`、`ProductionBatch`。
 
 ---
 
@@ -446,12 +362,12 @@ interface ProductionBatch {
 | 维度 | 评分 | 说明 |
 |---|---|---|
 | 业务逻辑完整性 | ★★★★☆ | 核心流程完整，extraCosts 结算归属有歧义 |
-| 代码可维护性 | ★★★☆☆ | 计算逻辑重复、类型全 any、单函数过长 |
-| 类型安全 | ★★☆☆☆ | 全模块 any，编译器无保护 |
+| 代码可维护性 | ★★★★☆ | computeBatch 集中计算逻辑，类型保护核心路径，单函数仍较长但已分层 |
+| 类型安全 | ★★★★☆ | 生产批次/出货/付款核心路径已有强类型，stages 通用层仍为 any |
 | 用户体验 | ★★★★☆ | 信息密度高，空批次状态误报是主要问题 |
 | 数据一致性 | ★★★★☆ | 乐观锁保证多人协作，单人使用无问题 |
 
 ---
 
-*文档生成日期：2026-06-18 | 最后更新：2026-06-18 | P1-P5 修复对应 commit bd30e2f*  
+*文档生成日期：2026-06-18 | 最后更新：2026-06-18 | P1-P5 修复对应 commit bd30e2f，P6 + 7.1 修复对应本次 commit*  
 *关联文档：`docs/business-overview.md` §2.2-2.3 / `CLAUDE.md` §已知大文件*
