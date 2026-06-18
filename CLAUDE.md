@@ -119,6 +119,9 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 - `src/context/ProductContext.tsx`（867 行，~19 个 update 函数）
 - `styles.css`（2434 行，按模块分区，新模块追加在文件末尾对应分区注释下）
 - `product_fetcher.py`（1368 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
+  限流参数（均可用环境变量覆盖，当前默认值）：
+  `SCRAPER_CONCURRENCY=3`（并发 worker 数）、`SCRAPER_MIN_INTERVAL_MS=700`（请求最小间隔 ms）、
+  `SCRAPER_REFILL_MS=1500`（令牌桶补充间隔 ms）、`SCRAPER_BUCKET_CAPACITY=8`（令牌桶容量）
 
 ## 暂时隐藏的功能（注释保留，可随时恢复）
 
