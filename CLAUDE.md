@@ -3,6 +3,10 @@
 修改代码前先看这份文档，能省掉重新通读全项目的时间。
 业务逻辑/领域规则见 `docs/business-overview.md`；面向最终用户的部署/协作说明见 `docs/operations.md`。
 
+## AI 助手协作规则
+
+**每次对代码做实质性改动后（新功能/参数调整/接口变更/文件增删），在提交前自动检查并同步更新 `CLAUDE.md` 和 `docs/business-overview.md`，需要改的直接改，不需要每次询问用户。**
+
 ## 一句话
 
 一个局域网内多人协作的 FBA 选品/生产/上架进度追踪工具。Python `http.server` 后端 + SQLite 存储，
@@ -115,9 +119,9 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 
 ## 已知的体量较大的文件（非 bug，但改动前建议先用 grep/大纲定位再改）
 
-- `src/features/detail/index.tsx`（1355 行，11 个组件）
+- `src/features/detail/index.tsx`（1420 行，11 个组件；`TabProd` 内含跨批次汇总：总下单量/SKU明细tooltip/总结算金额，通过 `extraHeader` 注入 StageCard 标题行）
 - `src/context/ProductContext.tsx`（867 行，~19 个 update 函数）
-- `styles.css`（2434 行，按模块分区，新模块追加在文件末尾对应分区注释下）
+- `styles.css`（2473 行，按模块分区，新模块追加在文件末尾对应分区注释下）
 - `product_fetcher.py`（1368 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
   限流参数（均可用环境变量覆盖，当前默认值）：
   `SCRAPER_CONCURRENCY=3`（并发 worker 数）、`SCRAPER_MIN_INTERVAL_MS=700`（请求最小间隔 ms）、

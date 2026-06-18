@@ -423,9 +423,71 @@ function TabProd({ p }: { p: any }) {
   });
   const isCollapsed = (key: string) => collapsedSections.has(key);
 
+  // 跨批次汇总：总下单量 + SKU 明细 + 总结算金额
+  const allBatches = prod.batches || [];
+  const totalOrderQty = allBatches.reduce((sum: number, b: any) => {
+    if (hasVariants && (b.items||[]).length > 0)
+      return sum + (b.items||[]).reduce((s: number, i: any) => s + (Number(i.qty)||0), 0);
+    return sum + (Number(b.qty)||0);
+  }, 0);
+
+  const skuQtyMap: Record<string, { name: string; qty: number }> = {};
+  if (hasVariants) {
+    for (const b of allBatches) {
+      for (const item of (b.items || [])) {
+        const vid = item.variantId || item.id;
+        if (!skuQtyMap[vid]) skuQtyMap[vid] = { name: item.variantName || item.variantId || 'SKU', qty: 0 };
+        skuQtyMap[vid].qty += Number(item.qty) || 0;
+      }
+    }
+  }
+
+  const totalSettlement = allBatches.reduce((sum: number, b: any) => {
+    const skuSub = hasVariants && (b.items||[]).length > 0
+      ? (b.items||[]).reduce((s: number, i: any) => s + (Number(i.qty)||0)*(Number(i.unitPrice)||0), 0)
+      : (Number(b.qty)||0) * (Number(b.unitPrice)||0);
+    const extraSub = (b.extraCosts||[]).reduce((s: number, c: any) => s + (Number(c.qty)||0)*(Number(c.unitPrice)||0), 0);
+    const skuTotal = skuSub + extraSub;
+    const validShip = (b.shipments||[]).filter((sh: any) => !!sh.shipDate);
+    const shipped = validShip.reduce((s: number, sh: any) => {
+      if (hasVariants) return s + (sh.items||[]).reduce((ss: number, si: any) => {
+        const bi = (b.items||[]).find((x: any) => x.variantId === si.variantId);
+        return ss + (Number(si.qty)||0) * (Number(bi?.unitPrice)||0);
+      }, 0);
+      return s + (Number(sh.qty)||0) * (Number(b.unitPrice)||0);
+    }, 0);
+    return sum + (shipped > 0 ? shipped : skuTotal);
+  }, 0);
+
+  const skuEntries = Object.values(skuQtyMap).filter(e => e.qty > 0);
+  const prodHeaderExtra = totalOrderQty > 0 ? (
+    <div className="stage-hdr-stats">
+      <span className="shs-item">
+        <span className="shs-lbl">总下单</span>
+        <span className="shs-val">{totalOrderQty} pcs</span>
+        {skuEntries.length > 0 && (
+          <span className="shs-tooltip">
+            {skuEntries.map(e => (
+              <span key={e.name} className="shs-tooltip-row">
+                <span className="shs-tooltip-name">{e.name}</span>
+                <span className="shs-tooltip-qty">{e.qty} pcs</span>
+              </span>
+            ))}
+          </span>
+        )}
+      </span>
+      {totalSettlement > 0 && (
+        <span className="shs-item">
+          <span className="shs-lbl">总结算</span>
+          <span className="shs-val mono">¥{totalSettlement.toFixed(2)}</span>
+        </span>
+      )}
+    </div>
+  ) : null;
+
   return (
     <>
-      <StageCard stage={STAGES[9]} productId={p.id} stageKey="production" stageData={prod}>
+      <StageCard stage={STAGES[9]} productId={p.id} stageKey="production" stageData={prod} extraHeader={prodHeaderExtra}>
         <div className="record-list">
           {(prod.batches || []).map((b: any, idx: number) => {
             const skuSubtotal = hasVariants && (b.items||[]).length > 0
