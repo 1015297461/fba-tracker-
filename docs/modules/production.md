@@ -160,7 +160,6 @@ paidComplete    = effectiveTotal > 0 && actualTotalPaid >= effectiveTotal
 **理论金额（仅展示，不影响付清判断）**
 ```
 theorDeposit = skuTotal × depositPct / 100
-theorBalance = skuTotal × balancePct / 100      ← ⚠️ 注意：基于 skuTotal 而非 effectiveTotal
 ```
 
 ### 3.3 数量计算链
@@ -283,81 +282,46 @@ effBps = balancePayments.length > 0
            ? [{ amount: balanceAmt, date: balanceDate }]  ← 旧版单笔兜底
            : []                                     ← 无尾款记录
 
-此逻辑在 batchMeta 和 payment section 中各出现一次，
-两处必须保持一致，修改时需同步更新。
+此逻辑已提取为 `getEffectiveBalancePayments(b)` 辅助函数，两处统一调用。
 ```
 
 ---
 
 ## 6. 已知问题
 
-### P1 — `shippedQty` 在同一批次内重复计算（代码质量）
+> **状态说明**：✅ 已修复（commit bd30e2f，2026-06-18）/ ⏸ 待处理
 
-**位置**：`index.tsx` ~507 行（batchMeta 区域）和 ~795 行（出货明细区块）
+### ✅ P1 — `shippedQty` 在同一批次内重复计算（代码质量）
 
-```tsx
-// 第一次（~507）
-const validShipments = (b.shipments||[]).filter((sh: any) => !!sh.shipDate);
-const shippedQty = validShipments.reduce(...)
-
-// 第二次（~795，重新从 b.shipments 过滤）
-const shippedQty = (b.shipments||[]).filter((sh: any) => !!sh.shipDate).reduce(...)
-```
-
-相同逻辑写两遍，维护时改一处容易漏另一处。**建议**：提取为批次级别的局部计算对象，全批次复用。
+**修复**：出货明细 IIFE 内删除重复的 `const batchTotalQty` 和 `const shippedQty` 声明，直接引用外层闭包中已计算的 `orderQty` 和 `shippedQty`。
 
 ---
 
-### P2 — `tailRemain` 死代码（代码质量）
+### ✅ P2 — `tailRemain` 死代码（代码质量）
 
-**位置**：`index.tsx` ~686 行（付款条款 IIFE 内）
-
-```tsx
-const tailRemain = theorBalance - tailPaid;  // 计算后从未使用
-```
-
-`theorBalance` 基于 `skuTotal × balancePct%`，而"应结尾款"实际展示的是 `effectiveTotal - depositActual`，两者语义不同，`tailRemain` 是遗留变量。**建议**：直接删除。
+**修复**：删除 `const tailRemain = theorBalance - tailPaid`，该变量计算后从未被渲染或使用。
 
 ---
 
-### P3 — `balancePayments` 兼容逻辑重复（可维护性）
+### ✅ P3 — `balancePayments` 兼容逻辑重复（可维护性）
 
-**位置**：`index.tsx` ~523 行（`effBpsMeta`）和 ~681 行（`effBps`）
-
-两处实现完全相同但变量名不同，若未来旧字段迁移完成需要删除兼容逻辑，容易遗漏其中一处。**建议**：提取为 `getEffectiveBalancePayments(b)` 工具函数。
+**修复**：提取 `getEffectiveBalancePayments(b)` 辅助函数（位于 `TabProd` 定义之前），原两处内联逻辑统一替换为函数调用。
 
 ---
 
-### P4 — `theorBalance` 基于 `skuTotal` 而非 `effectiveTotal`（业务逻辑）
+### ✅ P4 — `theorBalance` 死代码（与 P2 关联）
 
-**位置**：`index.tsx` ~503 行
-
-```tsx
-const theorBalance = +(skuTotal * balancePct / 100).toFixed(2);  // 基于订单金额
-// 但"应结尾款"展示的是：
-Math.max(0, effectiveTotal - depositActual)                       // 基于结算基准
-```
-
-两个"尾款"概念并存：理论尾款（基于订单）和实际应结尾款（基于 effectiveTotal）。当有部分出货时，两者会出现差异，容易造成用户困惑。**建议**：统一口径，"应结尾款"改为 `max(0, effectiveTotal - depositActual)`（现已如此），将 `theorBalance` 仅用于"理论参考值"并在 UI 上明确标注。
+**修复**：`theorBalance` 仅被 `tailRemain` 引用，随 P2 一并删除。"应结尾款"展示值使用 `max(0, effectiveTotal - depositActual)`，口径已统一。
 
 ---
 
-### P5 — 无定价时付款状态误报"未付款"（用户体验）
+### ✅ P5 — 无定价时付款状态误报"未付款"（用户体验）
 
-**位置**：`index.tsx` ~540 行
-
-当批次刚创建、单价未填时 `effectiveTotal = 0`，此时：
-```tsx
-paidComplete = effectiveTotal > 0 && ...  // false
-paidClass = 'rmc-warn'                    // 橙色
-显示 "未付款"
-```
-
-批次刚建还没填价格，就显示橙色"未付款"，误导性强。**建议**：增加判断，`effectiveTotal = 0` 时不渲染付款状态 chip。
+**修复**：付款状态 chip 渲染条件由 `effectiveTotal > 0` 加强为 `effectiveTotal > 0 && orderQty > 0`，避免仅有 `extraCosts` 但 SKU 数量未填时误显示橙色"未付款"。
 
 ---
 
-### P6 — 整个模块零 TypeScript 类型约束（类型安全）
+### ⏸ P6 — 整个模块零 TypeScript 类型约束（类型安全）
 
 **位置**：`types.ts`、`ProductContext.tsx`、`index.tsx`
 
@@ -372,69 +336,35 @@ paidClass = 'rmc-warn'                    // 橙色
 
 ## 7. 优化建议
 
-### 7.1 代码层面（优先级：高）
+### 7.1 代码层面
 
-**重构：提取批次计算函数**
+**✅ 已实施：删除死代码（P2/P4）**：`tailRemain`、`theorBalance` 已删除。
 
-当前批次内的所有计算（~20 个变量）散落在一个大 `map` 回调里，且部分重复。建议提取为纯函数：
+**✅ 已实施：提取兼容函数（P3）**：`getEffectiveBalancePayments(b)` 已提取，两处调用统一。
 
+**✅ 已实施：消除重复计算（P1）**：出货 IIFE 直接复用外层 `orderQty`/`shippedQty`。
+
+**待处理：提取批次计算纯函数**（P6 实施时一并做）
+
+当前批次内 ~15 个计算变量仍散落在 `.map()` 回调里。建议提取为：
 ```tsx
 function computeBatch(b: Batch, hasVariants: boolean, variants: Variant[]) {
-  const skuSubtotal = ...;
-  const extraSubtotal = ...;
-  const skuTotal = ...;
-  const validShipments = ...;
-  const shippedQty = ...;
-  const actualShippedValue = ...;
-  const effectiveTotal = ...;
-  const orderQty = ...;
-  const pendingQty = ...;
-  const effBps = getEffectiveBalancePayments(b);
-  const tailPaid = ...;
-  const actualTotalPaid = ...;
-  const paidComplete = ...;
-  return { skuSubtotal, skuTotal, effectiveTotal, shippedQty, actualTotalPaid, paidComplete, ... };
+  // 返回 { skuSubtotal, skuTotal, effectiveTotal, orderQty,
+  //         shippedQty, actualTotalPaid, paidComplete, ... }
 }
 ```
+好处：单元测试友好，逻辑一处维护。适合与 P6 类型重构一起完成。
 
-好处：消除重复计算，单元测试友好，逻辑一处维护。
+### 7.2 业务逻辑层面
 
-**删除死代码**
+**✅ 已实施：无定价保护（P5）**：付款 chip 加 `orderQty > 0` 条件。
 
-```tsx
-// 删除以下两行：
-const tailRemain = theorBalance - tailPaid;
-// theorBalance 若仅用于展示可保留，否则一并删除
-```
+**待讨论：`extraCosts` 的结算归属**
 
-**提取兼容函数**
+当前其他费用不计入 `actualShippedValue`，需与实际付款协议对齐：
 
-```tsx
-function getEffectiveBalancePayments(b: any) {
-  const bps = b.balancePayments || [];
-  if (bps.length > 0) return bps;
-  if (Number(b.balanceAmt) > 0)
-    return [{ id: b.id + '-bp0', amount: Number(b.balanceAmt), date: b.balanceDate || '', note: '' }];
-  return [];
-}
-```
-
-### 7.2 业务逻辑层面（优先级：中）
-
-**明确 extraCosts 的结算归属**
-
-当前其他费用不计入 `actualShippedValue`。需要与实际业务对齐：
-
-- **方案 A（现状）**：其他费用一次性全额在订单签订时确认，不随出货分摊 → `effectiveTotal` 在部分出货时只含 SKU 金额，其他费用差额需单独追踪
-- **方案 B**：其他费用按出货比例分摊 → `actualShippedValue += extraSubtotal × (shippedQty / orderQty)`
-
-**增加无定价保护**
-
-```tsx
-// 建议修改付款 chip 渲染条件：
-{effectiveTotal > 0 && orderQty > 0 && <span ...>...</span>}
-//                    ↑ 增加：有下单数量才显示，否则可能是空批次
-```
+- **方案 A（现状）**：其他费用全额在订单时确认，不随出货分摊
+- **方案 B**：按出货比例分摊 → `actualShippedValue += extraSubtotal × (shippedQty / orderQty)`
 
 ### 7.3 类型安全（优先级：低，但长期价值高）
 
@@ -523,5 +453,5 @@ interface ProductionBatch {
 
 ---
 
-*文档生成日期：2026-06-18 | 对应代码版本：commit f0c327e 之后*  
+*文档生成日期：2026-06-18 | 最后更新：2026-06-18 | P1-P5 修复对应 commit bd30e2f*  
 *关联文档：`docs/business-overview.md` §2.2-2.3 / `CLAUDE.md` §已知大文件*
