@@ -68,6 +68,8 @@ README.md                    # 项目入口：简介 + 快速开始 + 文档导�
 docs/
   business-overview.md        # 业务逻辑：FBA流程/SKU变体/生产批次规则/工具模块定位
   operations.md               # 部署/协作/同步操作手册（原 README-sync.md）
+  modules/
+    production.md             # 生产出货模块深度文档：数据模型/计算链/流程图/已知问题/优化建议
   plans/
     product-scrape-integration-plan.md  # 产品采集模块实施方案（已完成，归档）
   uploads/                     # 参考文档（产品文档等，非应用功能使用）
