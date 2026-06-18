@@ -540,8 +540,8 @@ function TabProd({ p }: { p: any }) {
                 {effectiveTotal > 0 && <span className={"record-meta-chip " + paidClass}>
                   <span className="rmc-val">{paidComplete ? '已付清' : actualTotalPaidMeta > 0 ? '未付清 ¥' + (effectiveTotal - actualTotalPaidMeta).toFixed(2) : '未付款'}</span>
                 </span>}
-                {actualShippedValue > 0 && actualShippedValue !== skuTotal && (
-                  <span className="record-meta-chip"><span className="rmc-lbl">结算</span><span className="rmc-val">¥{actualShippedValue.toFixed(2)}</span></span>
+                {actualTotalPaidMeta > 0 && (
+                  <span className="record-meta-chip"><span className="rmc-lbl">已付</span><span className="rmc-val mono">¥{actualTotalPaidMeta.toFixed(2)}</span></span>
                 )}
                 {b.orderDate && <span className="record-meta-chip"><span className="rmc-lbl">下单日</span><span className="rmc-val">{b.orderDate}</span></span>}
               </>
