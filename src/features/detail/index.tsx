@@ -405,6 +405,14 @@ function TabDesign({ p }: { p: any }) {
   );
 }
 
+function getEffectiveBalancePayments(b: any): any[] {
+  const bps = b.balancePayments || [];
+  if (bps.length > 0) return bps;
+  if ((Number(b.balanceAmt) || 0) > 0)
+    return [{ id: b.id + '-bp0', amount: Number(b.balanceAmt) || 0, date: b.balanceDate || '', note: '' }];
+  return [];
+}
+
 function TabProd({ p }: { p: any }) {
   const { addRecord, updateRecord, removeRecord,
           addBatchItem, updateBatchItem, removeBatchItem,
@@ -500,7 +508,6 @@ function TabProd({ p }: { p: any }) {
             const depositPct  = Number(b.depositPct) || 0;
             const balancePct  = b.balancePct != null ? Number(b.balancePct) : Math.max(0, 100 - depositPct);
             const theorDeposit = +(skuTotal * depositPct  / 100).toFixed(2);
-            const theorBalance = +(skuTotal * balancePct  / 100).toFixed(2);
             const orderQty = hasVariants && (b.items||[]).length > 0
               ? (b.items||[]).reduce((s: number, i: any) => s + (Number(i.qty)||0), 0)
               : (Number(b.qty)||0);
@@ -520,11 +527,7 @@ function TabProd({ p }: { p: any }) {
             const pendingQty = orderQty - shippedQty;
             const pendingClass = pendingQty < 0 ? 'rmc-warn' : pendingQty === 0 && orderQty > 0 ? 'rmc-done' : 'rmc-pending';
             // payment status
-            const bpsForMeta = b.balancePayments || [];
-            const effBpsMeta = bpsForMeta.length > 0 ? bpsForMeta
-              : (Number(b.balanceAmt) || 0) > 0
-                ? [{ id: b.id + '-bp0', amount: Number(b.balanceAmt) || 0, date: b.balanceDate || '', note: '' }]
-                : [];
+            const effBpsMeta = getEffectiveBalancePayments(b);
             const tailPaidMeta = effBpsMeta.reduce((s: number, bp: any) => s + (Number(bp.amount)||0), 0);
             const actualTotalPaidMeta = (Number(b.depositActual)||0) + tailPaidMeta;
             const paidComplete = effectiveTotal > 0 && actualTotalPaidMeta >= effectiveTotal;
@@ -537,7 +540,7 @@ function TabProd({ p }: { p: any }) {
                   <span className="rmc-lbl">待出</span>
                   <span className="rmc-val">{pendingQty > 0 ? pendingQty + ' pcs' : pendingQty < 0 ? '超出' + Math.abs(pendingQty) : '✓'}</span>
                 </span>}
-                {effectiveTotal > 0 && <span className={"record-meta-chip " + paidClass}>
+                {effectiveTotal > 0 && orderQty > 0 && <span className={"record-meta-chip " + paidClass}>
                   <span className="rmc-val">{paidComplete ? '已付清' : actualTotalPaidMeta > 0 ? '未付清 ¥' + (effectiveTotal - actualTotalPaidMeta).toFixed(2) : '未付款'}</span>
                 </span>}
                 {actualTotalPaidMeta > 0 && (
@@ -677,13 +680,8 @@ function TabProd({ p }: { p: any }) {
                 </div>
 
                 {(() => {
-                  const bps = b.balancePayments || [];
-                  const effBps = bps.length > 0 ? bps
-                    : (Number(b.balanceAmt) || 0) > 0
-                      ? [{ id: b.id + '-bp0', amount: Number(b.balanceAmt) || 0, date: b.balanceDate || '', note: '' }]
-                      : [];
+                  const effBps = getEffectiveBalancePayments(b);
                   const tailPaid = effBps.reduce((s: number, bp: any) => s + (Number(bp.amount)||0), 0);
-                  const tailRemain = theorBalance - tailPaid;
                   const actualTotalPaid = (Number(b.depositActual)||0) + tailPaid;
                   const payKey = b.id + '|pay';
                   return (
@@ -789,14 +787,7 @@ function TabProd({ p }: { p: any }) {
                 })()}
 
                 {(() => {
-                  const batchTotalQty = hasVariants && (b.items||[]).length > 0
-                    ? (b.items||[]).reduce((s: number, i: any) => s + (Number(i.qty)||0), 0)
-                    : (Number(b.qty)||0);
-                  const shippedQty = (b.shipments||[]).filter((sh: any) => !!sh.shipDate).reduce((sum: number, sh: any) => {
-                    if (hasVariants) return sum + (sh.items||[]).reduce((s: number, i: any) => s + (Number(i.qty)||0), 0);
-                    return sum + (Number(sh.qty)||0);
-                  }, 0);
-                  const isOver = batchTotalQty > 0 && shippedQty > batchTotalQty;
+                  const isOver = orderQty > 0 && shippedQty > orderQty;
                   return (
                     <div className="batch-ship-block">
                       <div className="batch-ship-block-hdr" style={{cursor:'pointer'}} onClick={() => toggleSection(b.id+'|ship')}>
@@ -804,7 +795,7 @@ function TabProd({ p }: { p: any }) {
                         <span className="batch-ship-block-title">出货明细</span>
                         <span className={'batch-ship-block-sum' + (isOver ? ' warn' : '')}>
                           {(b.shipments||[]).length > 0
-                            ? <>{shippedQty} / {batchTotalQty} pcs 已出{isOver ? ' · 超出订单数量!' : ''}</>
+                            ? <>{shippedQty} / {orderQty} pcs 已出{isOver ? ' · 超出订单数量!' : ''}</>
                             : '尚无出货记录'}
                         </span>
                         <button className="btn btn-sm btn-add" onClick={e => { e.stopPropagation();

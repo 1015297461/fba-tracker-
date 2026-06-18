@@ -121,7 +121,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 
 ## 已知的体量较大的文件（非 bug，但改动前建议先用 grep/大纲定位再改）
 
-- `src/features/detail/index.tsx`（1420 行，11 个组件；`TabProd` 内含跨批次汇总：总下单量/SKU明细tooltip/总结算金额，通过 `extraHeader` 注入 StageCard 标题行）
+- `src/features/detail/index.tsx`（1413 行，11 个组件；`TabProd` 前有 `getEffectiveBalancePayments(b)` 辅助函数；跨批次汇总通过 `titleExtra` 注入 StageCard 标题行）
 - `src/context/ProductContext.tsx`（867 行，~19 个 update 函数）
 - `styles.css`（2473 行，按模块分区，新模块追加在文件末尾对应分区注释下）
 - `product_fetcher.py`（1368 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
