@@ -1218,25 +1218,6 @@ def make_handler(state, auth):
                 self._send_json(200, {"taskId": task_id, "results": results})
                 return
 
-            if path == "/api/system/pick-directory":
-                if not auth.verify(_extract_token(self)):
-                    self._send_json(401, {"error": "请先登录"})
-                    return
-                import subprocess
-                try:
-                    result = subprocess.run(
-                        ["osascript", "-e",
-                         'POSIX path of (choose folder with prompt "选择输出目录")'],
-                        capture_output=True, text=True, timeout=60,
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        self._send_json(200, {"path": result.stdout.strip(), "cancelled": False})
-                    else:
-                        self._send_json(200, {"path": None, "cancelled": True})
-                except Exception as e:
-                    self._send_json(500, {"error": str(e)})
-                return
-
             if path == "/api/pdf/upload":
                 if not auth.verify(_extract_token(self)):
                     self._send_json(401, {"error": "请先登录"})
@@ -1270,6 +1251,36 @@ def make_handler(state, auth):
                     return
                 results = [pdf_splitter.run_split_job(job) for job in jobs]
                 self._send_json(200, {"results": results})
+                return
+
+            if path == "/api/pdf/zip":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                ids = payload.get("ids")
+                if not isinstance(ids, list) or not ids:
+                    self._send_json(400, {"error": "ids must be a non-empty array"})
+                    return
+                zip_name = str(payload.get("name", "split_results.zip"))
+                try:
+                    data = pdf_splitter.create_zip(ids)
+                except Exception as e:
+                    self._send_json(500, {"error": str(e)})
+                    return
+                from urllib.parse import quote
+                encoded_name = quote(zip_name, safe="")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header(
+                    "Content-Disposition",
+                    f'attachment; filename="{zip_name.encode("ascii","replace").decode("ascii")}"; filename*=UTF-8\'\'{encoded_name}',
+                )
+                self.end_headers()
+                self.wfile.write(data)
                 return
 
             self.send_error(404)
@@ -1406,17 +1417,21 @@ def make_handler(state, auth):
 
         def _send_file(self, path, download_name=None):
             import mimetypes
+            from urllib.parse import quote
             try:
                 size = os.path.getsize(path)
                 ctype, _ = mimetypes.guess_type(path)
                 ctype = ctype or "application/octet-stream"
                 fname = download_name or os.path.basename(path)
+                # RFC 5987：非 ASCII 文件名用 UTF-8 percent-encoding
+                ascii_fname = fname.encode("ascii", "replace").decode("ascii")
+                encoded_fname = quote(fname, safe="")
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(size))
                 self.send_header(
                     "Content-Disposition",
-                    f'attachment; filename="{fname}"',
+                    f'attachment; filename="{ascii_fname}"; filename*=UTF-8\'\'{encoded_fname}',
                 )
                 self.end_headers()
                 with open(path, "rb") as f:

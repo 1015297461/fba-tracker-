@@ -302,3 +302,28 @@ def get_download_path(download_id: str):
     if path and os.path.exists(path):
         return path
     return None
+
+
+def create_zip(download_ids: list) -> bytes:
+    """
+    将多个 download_id 对应的文件打包成 ZIP，返回 bytes。
+    无效/已过期的 id 自动跳过；文件名冲突时追加 _2, _3 ... 后缀。
+    """
+    import zipfile
+    import io
+    buf = io.BytesIO()
+    seen: dict = {}
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for did in download_ids:
+            fpath = _download_registry.get(did)
+            if not fpath or not os.path.exists(fpath):
+                continue
+            fname = os.path.basename(fpath)
+            if fname in seen:
+                seen[fname] += 1
+                stem, ext = os.path.splitext(fname)
+                fname = f"{stem}_{seen[fname]}{ext}"
+            else:
+                seen[fname] = 1
+            zf.write(fpath, fname)
+    return buf.getvalue()

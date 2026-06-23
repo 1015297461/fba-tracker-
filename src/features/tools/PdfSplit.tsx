@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 
 interface FileItem {
   file_id: string;
@@ -41,18 +41,56 @@ const DEFAULT_CONFIG: Omit<FileConfig, 'expanded'> = {
   rangesStr: '',
 };
 
+const MIN_SIDE_WIDTH = 220;
+const MAX_SIDE_WIDTH = 560;
+const DEFAULT_SIDE_WIDTH = 300;
+
 export function PdfSplit() {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [fileConfigs, setFileConfigs] = useState<Record<string, FileConfig>>({});
   const [uploading, setUploading] = useState(false);
   const [uploadErr, setUploadErr] = useState('');
-  const [dirMode, setDirMode] = useState<'original' | 'custom'>('original');
-  const [selectedPath, setSelectedPath] = useState('');
-  const [browsing, setBrowsing] = useState(false);
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<SplitResult[]>([]);
   const [runErr, setRunErr] = useState('');
+  const [batchDlLoading, setBatchDlLoading] = useState(false);
+  const [sideWidth, setSideWidth] = useState(DEFAULT_SIDE_WIDTH);
   const inputRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+  const dragStartX = useRef(0);
+  const dragStartWidth = useRef(0);
+
+  // ---- 拖拽调整左侧宽度 ----
+  const onResizeMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    dragStartX.current = e.clientX;
+    dragStartWidth.current = sideWidth;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, [sideWidth]);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      const delta = e.clientX - dragStartX.current;
+      const next = Math.min(MAX_SIDE_WIDTH, Math.max(MIN_SIDE_WIDTH, dragStartWidth.current + delta));
+      setSideWidth(next);
+    };
+    const onUp = () => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
 
   const updateConfig = (fid: string, patch: Partial<FileConfig>) =>
     setFileConfigs(prev => ({ ...prev, [fid]: { ...prev[fid], ...patch } }));
@@ -117,34 +155,8 @@ export function PdfSplit() {
     setFileConfigs(prev => { const next = { ...prev }; delete next[fid]; return next; });
   };
 
-  const handleBrowse = async () => {
-    setBrowsing(true);
-    try {
-      const res = await fetch('/api/system/pick-directory', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${getToken()}` },
-      });
-      const data = await res.json();
-      if (res.ok && !data.cancelled && data.path) {
-        setSelectedPath(data.path);
-      }
-    } catch {
-      // user cancelled or server error
-    }
-    setBrowsing(false);
-  };
-
-  const handleDirModeChange = (newMode: 'original' | 'custom') => {
-    setDirMode(newMode);
-    if (newMode === 'original') {
-      // 立即弹出 OS 文件夹选择框，让用户定位到原文件目录
-      handleBrowse();
-    }
-  };
-
   const handleRun = async () => {
     if (!files.length) { setRunErr('请先添加 PDF 文件'); return; }
-    if (!selectedPath.trim()) { setRunErr('请先选择输出目录'); return; }
     setRunning(true);
     setRunErr('');
     setResults([]);
@@ -157,7 +169,7 @@ export function PdfSplit() {
         page_from: Math.max(1, parseInt(cfg.pageFrom) || 1),
         page_to: parseInt(cfg.pageTo) || f.pages,
         ranges_str: cfg.rangesStr,
-        output_dir: selectedPath.trim(),
+        output_dir: '',
       };
     });
     try {
@@ -181,13 +193,51 @@ export function PdfSplit() {
     setRunning(false);
   };
 
+  const handleBatchDownload = async () => {
+    const allIds = results.flatMap(r =>
+      r.status === 'success' ? r.output_files.filter(f => f.download_id).map(f => f.download_id as string) : []
+    );
+    if (!allIds.length) return;
+    setBatchDlLoading(true);
+    try {
+      const res = await fetch('/api/pdf/zip', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getToken()}`,
+        },
+        body: JSON.stringify({ ids: allIds, name: 'split_results.zip' }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || '打包失败，请重试');
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'split_results.zip';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      alert('网络错误，请检查服务是否正常');
+    }
+    setBatchDlLoading(false);
+  };
+
   const successCount = results.filter(r => r.status === 'success').length;
+  const totalOutputFiles = results.flatMap(r =>
+    r.status === 'success' ? r.output_files.filter(f => f.download_id) : []
+  ).length;
 
   return (
-    <div className="pf-root">
+    <div className="pf-root" ref={rootRef}>
 
       {/* ===================== 左侧面板 ===================== */}
-      <div className="pf-side">
+      <div className="pf-side" style={{ width: sideWidth, minWidth: sideWidth, maxWidth: sideWidth }}>
 
         {/* 顶部固定：标题 + 上传区 */}
         <div className="pf-side-top">
@@ -218,7 +268,10 @@ export function PdfSplit() {
               <div key={f.file_id} className="pf-file-card">
                 <div className="pf-file-card-head">
                   <div className="pf-file-info">
-                    <span className="pf-file-name" title={f.name}>{f.name}</span>
+                    <span
+                      className="pf-file-name"
+                      data-tooltip={f.name}
+                    >{f.name}</span>
                     <span className="pf-file-meta">{f.pages} 页 · {(f.size / 1024).toFixed(0)} KB</span>
                   </div>
                   <button
@@ -299,66 +352,8 @@ export function PdfSplit() {
           })}
         </div>
 
-        {/* 底部固定：输出目录 + 运行按钮 */}
+        {/* 底部固定：运行按钮 */}
         <div className="pf-side-bottom">
-          <div className="pf-section">
-            <div className="pf-label">输出目录</div>
-            <div className="pf-dir-radios">
-              <label className="pf-dir-radio">
-                <input
-                  type="radio" name="dirMode"
-                  checked={dirMode === 'original'}
-                  onChange={() => handleDirModeChange('original')}
-                />
-                <span>原文件目录</span>
-              </label>
-              <label className="pf-dir-radio">
-                <input
-                  type="radio" name="dirMode"
-                  checked={dirMode === 'custom'}
-                  onChange={() => setDirMode('custom')}
-                />
-                <span>自定义</span>
-              </label>
-            </div>
-
-            {/* 原文件目录：显示已选路径，点击可重新选择 */}
-            {dirMode === 'original' && (
-              <div
-                className={`pf-dir-path pf-dir-path-clickable${selectedPath ? '' : ' pf-dir-path-empty'}`}
-                title={selectedPath ? '点击重新选择' : '正在打开选择框...'}
-                onClick={handleBrowse}
-              >
-                {browsing ? '正在打开…' : (selectedPath || '未选择，点击重新定位')}
-              </div>
-            )}
-
-            {/* 自定义：路径展示 + 浏览按钮 */}
-            {dirMode === 'custom' && (
-              <div className="pf-dir-picker">
-                <div
-                  className={`pf-dir-path${selectedPath ? '' : ' pf-dir-path-empty'}`}
-                  title={selectedPath || '请选择自定义输出文件夹'}
-                >
-                  {selectedPath || '请选择自定义输出文件夹'}
-                </div>
-                <button
-                  className="btn btn-sm pf-browse-btn"
-                  onClick={handleBrowse}
-                  disabled={browsing}
-                >
-                  {browsing ? '…' : '浏览'}
-                </button>
-              </div>
-            )}
-
-            {selectedPath && (
-              <button className="pf-clear-path" onClick={() => setSelectedPath('')}>
-                ✕ 清除
-              </button>
-            )}
-          </div>
-
           {runErr && <div className="pf-error">{runErr}</div>}
 
           <button
@@ -370,6 +365,9 @@ export function PdfSplit() {
           </button>
         </div>
       </div>
+
+      {/* ===================== 拖拽分隔条 ===================== */}
+      <div className="pf-resize-handle" onMouseDown={onResizeMouseDown} />
 
       {/* ===================== 右侧结果区 ===================== */}
       <div className="pf-main">
@@ -388,8 +386,16 @@ export function PdfSplit() {
         {results.length > 0 && (
           <div className="pf-results">
             <div className="pf-results-head">
-              拆分完成 · {successCount}/{results.length} 个文件成功
-              <span className="pf-results-dir" title={selectedPath}>→ {selectedPath}</span>
+              <span>拆分完成 · {successCount}/{results.length} 个文件成功</span>
+              {totalOutputFiles > 0 && (
+                <button
+                  className="pf-batch-dl-btn"
+                  onClick={handleBatchDownload}
+                  disabled={batchDlLoading}
+                >
+                  {batchDlLoading ? '打包中...' : `全部下载 ZIP（${totalOutputFiles} 个）`}
+                </button>
+              )}
             </div>
             {results.map((r, i) => (
               <div key={i} className="pf-result-card">
@@ -407,7 +413,18 @@ export function PdfSplit() {
                     {r.output_files.map((of, j) => (
                       <div key={j} className="pf-output-item">
                         <span className="pf-output-name">{of.name}</span>
-                        <span className="pf-output-saved">已保存</span>
+                        {of.download_id
+                          ? (
+                            <a
+                              className="pf-output-dl"
+                              href={`/api/pdf/download?id=${of.download_id}`}
+                              download={of.name}
+                            >
+                              下载
+                            </a>
+                          )
+                          : <span className="pf-output-saved">已保存</span>
+                        }
                       </div>
                     ))}
                   </div>

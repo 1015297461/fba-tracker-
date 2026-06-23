@@ -90,7 +90,7 @@ src/
       KeywordRank.tsx           # 工具：关键词排名监控
       ProductScrape.tsx         # 工具：产品采集（含详情预览弹窗 + 图片 Lightbox + ASIN搜索过滤）
       ReviewFetch.tsx           # 工具：评论采集（多ASIN批量抓取，按评分/排序/是否验证购买过滤）
-      PdfSplit.tsx              # 工具：批量 PDF 拆分（每文件独立配置拆分方式，OS原生目录选择）
+      PdfSplit.tsx              # 工具：批量 PDF 拆分（每文件独立配置拆分方式，拆分结果通过浏览器下载）
 
 README.md                    # 项目入口：简介 + 快速开始 + 文档导航
 docs/
@@ -135,7 +135,6 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | POST | `/api/pdf/upload` | 上传 PDF（`application/octet-stream` + `X-Filename`），返回 `{file_id,name,pages,size}` |
 | POST | `/api/pdf/split` | 拆分任务，body `{jobs:[...]}`，返回 `{results:[...]}` |
 | GET | `/api/pdf/download?id=` | 下载拆分结果文件（按 download_id 查临时注册表） |
-| POST | `/api/system/pick-directory` | 调用 macOS `osascript` 弹出原生文件夹选择框，返回 `{path, cancelled}` |
 
 ### 同步机制（详见 `docs/operations.md` 第7节）
 客户端每 4s 轮询 `version`，编辑后 600ms 防抖 PUT 带 `baseVersion`；后端乐观锁，冲突时返回服务器最新版本，客户端整体覆盖（`ProductContext.tsx` 中 `versionRef`/`syncedVersionRef` 相关逻辑）。
