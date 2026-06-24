@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 
 interface ExportJob {
   id: string;
@@ -48,9 +48,11 @@ function StatusBadge({ status }: { status: ExportJob['status'] }) {
 function ProgressBar({ cur, total }: { cur: number; total: number }) {
   const pct = total > 0 ? Math.round((cur / total) * 100) : 0;
   return (
-    <div className="exp-progress">
-      <div className="exp-progress-bar" style={{ width: `${pct}%` }} />
-      <span className="exp-progress-label">{cur}/{total} 张图片</span>
+    <div className="exp-progress-wrap">
+      <div className="exp-progress">
+        <div className="exp-progress-bar" style={{ width: `${pct}%` }} />
+      </div>
+      <span className="exp-progress-label">{cur}/{total} 张图片 · {pct}%</span>
     </div>
   );
 }
@@ -59,29 +61,37 @@ export function MyExports() {
   const [jobs, setJobs] = useState<ExportJob[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchJobs = useCallback(async () => {
-    try {
-      const res = await fetch('/api/exports/list', {
-        headers: { Authorization: `Bearer ${getToken()}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setJobs(data.jobs || []);
-      }
-    } catch {
-      // ignore network errors
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // 有进行中任务时每 2 秒刷新，否则每 10 秒刷新一次
+  // 自调度轮询：用 setTimeout 链而非 setInterval，每次拿到最新数据后再决定下一次间隔
+  // 避免首次渲染时 jobs=[] 导致 hasActive=false 、轮询被设成 10s 的问题
   useEffect(() => {
-    fetchJobs();
-    const hasActive = jobs.some(j => j.status === 'pending' || j.status === 'processing');
-    const id = setInterval(fetchJobs, hasActive ? 2000 : 10000);
-    return () => clearInterval(id);
-  }, [fetchJobs, jobs.some(j => j.status === 'pending' || j.status === 'processing')]);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const res = await fetch('/api/exports/list', {
+          headers: { Authorization: `Bearer ${getToken()}` },
+        });
+        if (res.ok && !cancelled) {
+          const data = await res.json();
+          const newJobs: ExportJob[] = data.jobs || [];
+          setJobs(newJobs);
+          setLoading(false);
+          const hasActive = newJobs.some(j => j.status === 'pending' || j.status === 'processing');
+          if (!cancelled) timer = setTimeout(poll, hasActive ? 2000 : 10000);
+        }
+      } catch {
+        if (!cancelled) timer = setTimeout(poll, 5000);
+      }
+    };
+
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
 
   const handleDelete = async (jid: string) => {
     try {
@@ -174,26 +184,37 @@ export function MyExports() {
   );
 }
 
-/** 供侧边栏用：返回活跃任务数（pending + processing） */
+/** 供侧边栏用：返回活跃任务数（pending + processing），有活跃任务时 3s 轮询，无时 15s */
 export function useExportBadge(): number {
   const [count, setCount] = useState(0);
 
   useEffect(() => {
-    const fetch_ = async () => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      if (cancelled) return;
       try {
         const res = await fetch('/api/exports/list', {
           headers: { Authorization: `Bearer ${localStorage.getItem('fba-auth-v1') || ''}` },
         });
-        if (res.ok) {
+        if (res.ok && !cancelled) {
           const data = await res.json();
           const jobs: ExportJob[] = data.jobs || [];
-          setCount(jobs.filter(j => j.status === 'pending' || j.status === 'processing').length);
+          const active = jobs.filter(j => j.status === 'pending' || j.status === 'processing').length;
+          setCount(active);
+          if (!cancelled) timer = setTimeout(poll, active > 0 ? 3000 : 15000);
         }
-      } catch { /* ignore */ }
+      } catch {
+        if (!cancelled) timer = setTimeout(poll, 10000);
+      }
     };
-    fetch_();
-    const id = setInterval(fetch_, 3000);
-    return () => clearInterval(id);
+
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   return count;

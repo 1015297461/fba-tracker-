@@ -2566,9 +2566,10 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .exp-badge-failed     { background: #fff1f2; color: #be123c; border-color: #fecdd3; }
 
 /* ---- 进度条 ---- */
-.exp-progress { position: relative; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
-.exp-progress-bar { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.3s; }
-.exp-progress-label { position: absolute; right: 0; top: 8px; font-size: 10px; color: var(--ink-4); }
+.exp-progress-wrap { display: flex; flex-direction: column; gap: 4px; }
+.exp-progress { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.exp-progress-bar { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.4s ease; }
+.exp-progress-label { font-size: 11px; color: var(--ink-3); }
 
 /* ---- 错误信息 ---- */
 .exp-error { font-size: 11px; color: var(--red); background: #fff1f2;
