@@ -2174,9 +2174,22 @@ select.meta-edit { cursor: pointer; }
 .ps-search-input:focus { border-color: var(--accent); }
 .ps-search-input::placeholder { color: var(--ink-3); }
 
-.ps-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px; border-top: 1px solid var(--border); flex-shrink: 0; }
-.ps-page-info { font-size: 12px; color: var(--ink-3); }
-.ps-page-btns { display: flex; gap: 6px; }
+.ps-pagination { display: flex; align-items: center; gap: 12px; padding: 10px 20px; border-top: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
+.ps-page-info { font-size: 12px; color: var(--ink-3); flex-shrink: 0; }
+.ps-page-btns { display: flex; align-items: center; gap: 6px; flex: 1; justify-content: center; }
+.ps-page-num { font-size: 12px; color: var(--ink-2); white-space: nowrap; padding: 0 4px; }
+.ps-page-tools { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.ps-page-label { font-size: 12px; color: var(--ink-3); }
+.ps-page-size-select { font-size: 12px; padding: 2px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--ink); cursor: pointer; }
+.ps-page-jump { width: 48px; font-size: 12px; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--ink); text-align: center; }
+.ps-page-jump::-webkit-inner-spin-button, .ps-page-jump::-webkit-outer-spin-button { -webkit-appearance: none; }
+/* 多选 */
+.ps-col-chk { width: 36px; padding: 0 8px; text-align: center; }
+.ps-col-chk input[type=checkbox] { cursor: pointer; accent-color: var(--accent); width: 14px; height: 14px; }
+tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
+.ps-select-bar { display: flex; align-items: center; gap: 10px; padding: 6px 16px; background: var(--accent-bg, #e8efff); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--ink-2); flex-shrink: 0; }
+.ps-select-link { background: none; border: none; cursor: pointer; font-size: 12px; color: var(--accent); padding: 0; text-decoration: underline; }
+.ps-select-clear { color: var(--ink-3); }
 
 .ps-table-wrap { overflow: auto; flex: 1; }
 .ps-table { border-collapse: collapse; width: 100%; font-size: 13px; }

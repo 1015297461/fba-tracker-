@@ -33,7 +33,7 @@ function mkInfo(code: string) {
 }
 
 const BATCH_SIZE = 3;
-const PAGE_SIZE = 20;
+const PAGE_SIZE_OPTIONS = [50, 100, 150];
 
 // ============================================================
 // ProductDetailDialog (must be defined before ProductScrape)
@@ -447,6 +447,7 @@ async function createExportJob(
   taskId: string,
   label: string,
   onDone: () => void,
+  asins: string[] | null = null,
 ) {
   const token = localStorage.getItem('fba-auth-v1') || '';
   const date = new Date().toISOString().slice(0, 10);
@@ -458,7 +459,7 @@ async function createExportJob(
         type: 'scrape_xlsx',
         label,
         fileName: `amazon_products_${date}.xlsx`,
-        params: { taskId },
+        params: { taskId, asins },
       }),
     });
     if (!res.ok) {
@@ -487,7 +488,10 @@ export function ProductScrape() {
   const [selectedProduct, setSelectedProduct] = React.useState<ScrapedProduct | null>(null);
   const [detailOpen, setDetailOpen] = React.useState(false);
   const [page, setPage] = React.useState(1);
+  const [pageSize, setPageSize] = React.useState(50);
+  const [pageInput, setPageInput] = React.useState('');
   const [searchQuery, setSearchQuery] = React.useState('');
+  const [selectedAsins, setSelectedAsins] = React.useState<Set<string>>(new Set());
   const [hoverPreview, setHoverPreview] = React.useState<{ src: string; top: number; left: number } | null>(null);
   const [exportQueued, setExportQueued] = React.useState(false);
 
@@ -588,11 +592,12 @@ export function ProductScrape() {
   }
 
   function clearResults() {
-    setProducts([]); setAsinInput(''); setActiveTaskId(null); setErr(''); setPage(1); setSearchQuery('');
+    setProducts([]); setAsinInput(''); setActiveTaskId(null); setErr('');
+    setPage(1); setSearchQuery(''); setSelectedAsins(new Set());
   }
 
   async function viewTask(t: ScrapeTask) {
-    setActiveTaskId(t.id); setErr(''); setPage(1); setSearchQuery('');
+    setActiveTaskId(t.id); setErr(''); setPage(1); setSearchQuery(''); setSelectedAsins(new Set());
     try { setProducts(await apiGetProducts(t.id)); }
     catch (e: any) { setErr(e.message || '加载失败'); setProducts([]); }
   }
@@ -601,7 +606,7 @@ export function ProductScrape() {
     if (!confirm(`删除任务（${mkInfo(t.marketplace).flag} ${mkInfo(t.marketplace).name} · ${t.total} 个 ASIN）及其结果？`)) return;
     await apiDeleteTask(t.id);
     setTasks(ts => ts.filter(x => x.id !== t.id));
-    if (activeTaskId === t.id) { setProducts([]); setActiveTaskId(null); }
+    if (activeTaskId === t.id) { setProducts([]); setActiveTaskId(null); setSelectedAsins(new Set()); }
   }
 
   const successCount = products.filter(p => p.status === 'success').length;
@@ -614,10 +619,38 @@ export function ProductScrape() {
     return products.filter(p => p.asin.includes(q));
   }, [products, searchQuery]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredProducts.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(filteredProducts.length / pageSize));
   React.useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages]);
-  React.useEffect(() => { setPage(1); }, [searchQuery]);
-  const pagedProducts = filteredProducts.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  React.useEffect(() => { setPage(1); }, [searchQuery, pageSize]);
+  const pagedProducts = filteredProducts.slice((page - 1) * pageSize, page * pageSize);
+
+  // ---- 多选辅助 ----
+  const pagedAsins = pagedProducts.map(p => p.asin);
+  const isAllPageSelected = pagedAsins.length > 0 && pagedAsins.every(a => selectedAsins.has(a));
+  const isIndeterminate   = !isAllPageSelected && pagedAsins.some(a => selectedAsins.has(a));
+
+  function toggleOne(asin: string) {
+    setSelectedAsins(prev => {
+      const next = new Set(prev);
+      next.has(asin) ? next.delete(asin) : next.add(asin);
+      return next;
+    });
+  }
+  function togglePage() {
+    if (isAllPageSelected) {
+      setSelectedAsins(prev => { const n = new Set(prev); pagedAsins.forEach(a => n.delete(a)); return n; });
+    } else {
+      setSelectedAsins(prev => { const n = new Set(prev); pagedAsins.forEach(a => n.add(a)); return n; });
+    }
+  }
+  function selectAll()   { setSelectedAsins(new Set(filteredProducts.map(p => p.asin))); }
+  function clearSelect() { setSelectedAsins(new Set()); }
+
+  function jumpPage(val: string) {
+    const n = parseInt(val);
+    if (!isNaN(n) && n >= 1 && n <= totalPages) setPage(n);
+    setPageInput('');
+  }
 
   return (
     <div className="ps-root">
@@ -721,20 +754,34 @@ export function ProductScrape() {
                   {retrying ? '重试中…' : `重试失败 (${failedCount})`}
                 </button>
               )}
-              <button className="btn btn-sm" onClick={() => exportCSV(products, marketplace)}>导出 CSV</button>
+              <button className="btn btn-sm" onClick={() => exportCSV(
+                selectedAsins.size > 0 ? products.filter(p => selectedAsins.has(p.asin)) : products,
+                marketplace
+              )}>
+                导出 CSV{selectedAsins.size > 0 ? `（已选 ${selectedAsins.size}）` : ''}
+              </button>
               <button
                 className="btn btn-sm"
                 disabled={exportQueued || !activeTaskId}
                 onClick={async () => {
                   if (!activeTaskId) return;
                   setExportQueued(true);
-                  const label = `产品采集 · ${products.length} 个ASIN`;
+                  const exportAsins = selectedAsins.size > 0 ? [...selectedAsins] : null;
+                  const count = exportAsins ? exportAsins.length : products.length;
+                  const label = `产品采集 · ${count} 个ASIN`;
                   await createExportJob(activeTaskId, label, () => {
                     alert('导出任务已创建，请在「我的导出」中查看进度');
-                  });
+                  }, exportAsins);
                   setExportQueued(false);
                 }}
-              >{exportQueued ? '提交中…' : '导出 Excel（含主图）'}</button>
+              >{exportQueued ? '提交中…' : `导出 Excel${selectedAsins.size > 0 ? `（已选 ${selectedAsins.size}）` : '（含主图）'}`}</button>
+            </div>
+          )}
+          {selectedAsins.size > 0 && (
+            <div className="ps-select-bar">
+              <span>已选 <strong>{selectedAsins.size}</strong> 条</span>
+              <button className="ps-select-link" onClick={selectAll}>全选所有 {filteredProducts.length} 条</button>
+              <button className="ps-select-link ps-select-clear" onClick={clearSelect}>取消选择</button>
             </div>
           )}
         </div>
@@ -749,6 +796,15 @@ export function ProductScrape() {
             <table className="ps-table">
               <thead>
                 <tr>
+                  <th className="ps-col-chk">
+                    <input
+                      type="checkbox"
+                      checked={isAllPageSelected}
+                      ref={el => { if (el) el.indeterminate = isIndeterminate; }}
+                      onChange={togglePage}
+                      title="选择当前页"
+                    />
+                  </th>
                   <th className="ps-col-img">图片</th>
                   <th className="ps-col-asin">ASIN</th>
                   <th className="ps-col-title">标题</th>
@@ -764,7 +820,14 @@ export function ProductScrape() {
               </thead>
               <tbody>
                 {pagedProducts.map((p, i) => (
-                  <tr key={p.asin + i}>
+                  <tr key={p.asin + i} data-selected={selectedAsins.has(p.asin)}>
+                    <td className="ps-col-chk">
+                      <input
+                        type="checkbox"
+                        checked={selectedAsins.has(p.asin)}
+                        onChange={() => toggleOne(p.asin)}
+                      />
+                    </td>
                     <td className="ps-col-img">
                       {p.mainImage
                         ? <img className="ps-thumb" src={p.mainImage} alt=""
@@ -804,17 +867,43 @@ export function ProductScrape() {
               </tbody>
             </table>
           </div>
-          {totalPages > 1 && (
-            <div className="ps-pagination">
-              <span className="ps-page-info">第 {page}/{totalPages} 页 · 共 {filteredProducts.length} 条{searchQuery.trim() ? `（全部 ${products.length} 条）` : ''}</span>
-              <div className="ps-page-btns">
-                <button className="btn btn-sm" onClick={() => setPage(1)} disabled={page <= 1}>首页</button>
-                <button className="btn btn-sm" onClick={() => setPage(p => p - 1)} disabled={page <= 1}>上一页</button>
-                <button className="btn btn-sm" onClick={() => setPage(p => p + 1)} disabled={page >= totalPages}>下一页</button>
-                <button className="btn btn-sm" onClick={() => setPage(totalPages)} disabled={page >= totalPages}>末页</button>
-              </div>
+          <div className="ps-pagination">
+            <span className="ps-page-info">
+              共 {filteredProducts.length} 条{searchQuery.trim() ? `（全部 ${products.length} 条）` : ''}
+            </span>
+            <div className="ps-page-btns">
+              <button className="btn btn-sm" onClick={() => setPage(1)} disabled={page <= 1}>首页</button>
+              <button className="btn btn-sm" onClick={() => setPage(p => p - 1)} disabled={page <= 1}>上一页</button>
+              <span className="ps-page-num">第 {page} / {totalPages} 页</span>
+              <button className="btn btn-sm" onClick={() => setPage(p => p + 1)} disabled={page >= totalPages}>下一页</button>
+              <button className="btn btn-sm" onClick={() => setPage(totalPages)} disabled={page >= totalPages}>末页</button>
             </div>
-          )}
+            <div className="ps-page-tools">
+              <span className="ps-page-label">每页</span>
+              <select
+                className="ps-page-size-select"
+                value={pageSize}
+                onChange={e => setPageSize(Number(e.target.value))}
+              >
+                {PAGE_SIZE_OPTIONS.map(n => (
+                  <option key={n} value={n}>{n} 条</option>
+                ))}
+              </select>
+              <span className="ps-page-label">跳至</span>
+              <input
+                className="ps-page-jump"
+                type="number"
+                min={1}
+                max={totalPages}
+                value={pageInput}
+                placeholder={String(page)}
+                onChange={e => setPageInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') jumpPage(pageInput); }}
+                onBlur={() => { if (pageInput) jumpPage(pageInput); }}
+              />
+              <span className="ps-page-label">页</span>
+            </div>
+          </div>
           </>
         )}
       </div>
