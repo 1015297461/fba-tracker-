@@ -3,6 +3,7 @@ import { STATUS_LABELS } from '../../data/constants';
 // import { computeStats } from '../../data/calc';
 import { useProducts } from '../../context/ProductContext';
 import type { Product } from '../../data/types';
+import { useExportBadge } from '../exports/MyExports';
 
 function useSyncLabel() {
   const ctx = useProducts();
@@ -30,13 +31,15 @@ function useSyncLabel() {
   return { label: timeStr ? `已同步 ${timeStr}` : '已同步', cls: 'sync-online', icon: '☁' };
 }
 
-export function Sidebar({ view, setView, filter, setFilter, products }: {
+export function Sidebar({ view, setView, filter, setFilter, products, onExports }: {
   view: string;
   setView: (v: string) => void;
   filter: string;
   setFilter: (f: string) => void;
   products: Product[];
+  onExports?: () => void;
 }) {
+  const exportBadge = useExportBadge();
   const counts: Record<string, number> = {
     all: products.length,
     active: products.filter(p => p.status === 'active').length,
@@ -136,6 +139,20 @@ export function Sidebar({ view, setView, filter, setFilter, products }: {
       </div>
       */}
 
+      <div className="sb-exports-entry">
+        <button
+          className="sb-exports-btn"
+          data-active={view === 'myExports'}
+          onClick={() => setView('myExports')}
+        >
+          <span className="ic">📥</span>
+          <span>我的导出</span>
+          {exportBadge > 0 && (
+            <span className="sb-exports-badge">{exportBadge}</span>
+          )}
+        </button>
+      </div>
+
     </aside>
   );
 }
@@ -147,7 +164,7 @@ export function TopBar({ view, product, theme, onToggleTheme, onNewProduct }: {
   onToggleTheme: () => void;
   onNewProduct: () => void;
 }) {
-  const titles: Record<string, string> = { list: '产品列表', progress: '进度总览', table: '数据表格', keywordRank: '关键词排名', productScrape: '产品采集', reviewFetch: '评论采集', pdfSplit: 'PDF拆分' };
+  const titles: Record<string, string> = { list: '产品列表', progress: '进度总览', table: '数据表格', keywordRank: '关键词排名', productScrape: '产品采集', reviewFetch: '评论采集', pdfSplit: 'PDF拆分', myExports: '我的导出' };
   const ctx = useProducts();
   const { label: syncLabel, cls: syncCls, icon: syncIcon } = useSyncLabel();
   const currentUser = ctx?.currentUser;

@@ -14,6 +14,8 @@
 
 **在回复或 commit message 中声称"已更新/已修复/已同步"某个文件之前，必须确认该文件已显式出现在 `git add` 命令中。不允许基于意图而非事实做出陈述——先执行，再描述结果，不能倒过来。**
 
+**验证/测试阶段如有文件写入磁盘（如 `/tmp/*.xlsx`、scratchpad 下的文件等），测试结束后必须立即删除，不能遗留。优先用 `io.BytesIO` 等纯内存方式做验证，避免写磁盘。**
+
 ### Git 提交规范
 
 **提交时机：以"一个完整的逻辑变更单元"为粒度，而非每完成一个子任务就提交。**
@@ -91,6 +93,8 @@ src/
       ProductScrape.tsx         # 工具：产品采集（含详情预览弹窗 + 图片 Lightbox + ASIN搜索过滤）
       ReviewFetch.tsx           # 工具：评论采集（多ASIN批量抓取，按评分/排序/是否验证购买过滤）
       PdfSplit.tsx              # 工具：批量 PDF 拆分（每文件独立配置拆分方式，拆分结果通过浏览器下载）
+  exports/
+    MyExports.tsx             # 共用「我的导出」视图：展示所有后台导出任务进度和下载入口；useExportBadge() 供侧边栏徽标使用
 
 README.md                    # 项目入口：简介 + 快速开始 + 文档导航
 docs/
@@ -131,7 +135,10 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | POST | `/api/login` / `/api/logout` | Token 登录/登出（`fba-users.json`） |
 | GET/POST/DELETE | `/api/rank/*` | 关键词排名：任务列表/历史/创建/删除/单关键词 |
 | GET/POST/DELETE | `/api/scrape/*` | 产品采集：任务列表/结果/运行/删除/重置会话 |
-| POST | `/api/scrape/export-xlsx` | 导出产品数据为 Excel（含嵌入主图），body `{taskId}`，返回 `.xlsx` 文件流 |
+| POST | `/api/exports/create` | 创建后台导出任务，body `{type,label,fileName,params}`，立即返回 `{jobId}` |
+| GET | `/api/exports/list` | 列出所有导出记录（最近 100 条） |
+| DELETE | `/api/exports?id=` | 删除导出记录及临时文件 |
+| POST | `/api/scrape/export-xlsx` | （旧接口保留兼容，新逻辑请用 /api/exports/create）|
 | GET/POST/DELETE | `/api/review/*` | 评论采集：任务列表/结果/运行/删除 |
 | POST | `/api/pdf/upload` | 上传 PDF（`application/octet-stream` + `X-Filename`），返回 `{file_id,name,pages,size}` |
 | POST | `/api/pdf/split` | 拆分任务，body `{jobs:[...]}`，返回 `{results:[...]}` |

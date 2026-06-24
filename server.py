@@ -237,6 +237,20 @@ class DbState:
                     UNIQUE(asin, review_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_review_res_asin ON review_results(asin);
+                CREATE TABLE IF NOT EXISTS export_jobs (
+                    id             TEXT PRIMARY KEY,
+                    type           TEXT NOT NULL,
+                    label          TEXT,
+                    params         TEXT DEFAULT '{}',
+                    status         TEXT DEFAULT 'pending',
+                    progress_cur   INTEGER DEFAULT 0,
+                    progress_total INTEGER DEFAULT 0,
+                    error          TEXT,
+                    download_id    TEXT,
+                    file_name      TEXT,
+                    created_at     TEXT,
+                    completed_at   TEXT
+                );
             """)
             # 兼容旧版数据库：幂等追加缺失列
             existing_products = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
@@ -727,6 +741,57 @@ class DbState:
                 conn.execute("DELETE FROM review_tasks WHERE id=?", [task_id])
                 conn.commit()
 
+    # ---- 导出任务 ----
+
+    def create_export_job(self, job_type: str, label: str, params: dict, progress_total: int) -> str:
+        import secrets
+        jid = "ej" + secrets.token_hex(8)
+        now = _now_iso()
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO export_jobs
+                       (id, type, label, params, status, progress_cur, progress_total, created_at)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    [jid, job_type, label, json.dumps(params, ensure_ascii=False),
+                     "pending", 0, progress_total, now]
+                )
+                conn.commit()
+        return jid
+
+    def update_export_job(self, jid: str, **kwargs):
+        allowed = {"status", "progress_cur", "progress_total", "error",
+                   "download_id", "file_name", "completed_at"}
+        fields = {k: v for k, v in kwargs.items() if k in allowed}
+        if not fields:
+            return
+        sets = ", ".join(f"{k}=?" for k in fields)
+        vals = list(fields.values()) + [jid]
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(f"UPDATE export_jobs SET {sets} WHERE id=?", vals)
+                conn.commit()
+
+    def list_export_jobs(self, limit: int = 100) -> list:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM export_jobs ORDER BY created_at DESC LIMIT ?", [limit]
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_pending_export_job(self):
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM export_jobs WHERE status='pending' ORDER BY created_at ASC LIMIT 1"
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_export_job(self, jid: str):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM export_jobs WHERE id=?", [jid])
+                conn.commit()
+
     def import_from_json(self, json_path):
         """首次启动时从旧版 fba-data.json 一键迁移"""
         if not os.path.exists(json_path):
@@ -971,12 +1036,11 @@ def _extract_token(handler):
     return None
 
 
-def _build_products_xlsx(products: list) -> bytes:
+def _build_products_xlsx(products: list, progress_cb=None) -> bytes:
     """
     将产品列表构建成含嵌入主图的 Excel 文件，返回 bytes。
-    - A 列：主图（90×90px）
-    - B 列起：ASIN / 标题 / 品牌 / 价格 / 评分 / 评论数 / 链接
-    图片从亚马逊 CDN 并发下载（最多 5 线程），失败时留空不中断。
+    progress_cb(cur, total)：每张图片完成时回调，可选。
+    图片从亚马逊 CDN 并发下载（最多 5 线程），失败时自动重试 2 次，仍失败留空不中断。
     """
     import io
     import time
@@ -996,30 +1060,35 @@ def _build_products_xlsx(products: list) -> bytes:
         "Referer": "https://www.amazon.com/",
         "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
     }
-    IMG_PX   = 90   # 嵌入图片像素尺寸
-    ROW_H    = 70   # 行高（pt，约 93px）
-    COL_A_W  = 14   # A 列宽度（Excel 单位）
+    IMG_PX   = 90
+    ROW_H    = 70
+    COL_A_W  = 14
 
     def _fetch_image(url: str):
-        """下载并缩放图片，返回 BytesIO；失败返回 None。"""
+        """下载并缩放图片，最多重试 3 次（含首次），失败返回 None。"""
         if not url:
             return None
-        try:
-            req = urllib.request.Request(url, headers=IMG_HEADERS)
-            with urllib.request.urlopen(req, timeout=8) as r:
-                data = r.read()
-            pil = PILImage.open(io.BytesIO(data)).convert("RGB")
-            pil.thumbnail((IMG_PX, IMG_PX), PILImage.LANCZOS)
-            buf = io.BytesIO()
-            pil.save(buf, format="JPEG", quality=85)
-            buf.seek(0)
-            return buf
-        except Exception:
-            return None
+        for attempt in range(3):
+            try:
+                req = urllib.request.Request(url, headers=IMG_HEADERS)
+                with urllib.request.urlopen(req, timeout=12) as r:
+                    data = r.read()
+                pil = PILImage.open(io.BytesIO(data)).convert("RGB")
+                pil.thumbnail((IMG_PX, IMG_PX), PILImage.LANCZOS)
+                buf = io.BytesIO()
+                pil.save(buf, format="JPEG", quality=85)
+                buf.seek(0)
+                return buf
+            except Exception:
+                if attempt < 2:
+                    time.sleep(1)
+        return None
 
-    # 并发下载所有主图
-    image_map: dict = {}   # asin -> BytesIO | None
+    # 并发下载所有主图，每完成一张触发进度回调
+    image_map: dict = {}
     urls = {p["asin"]: p.get("mainImage") or "" for p in products}
+    total = len(urls)
+    cur = 0
     with ThreadPoolExecutor(max_workers=5) as pool:
         futures = {pool.submit(_fetch_image, url): asin for asin, url in urls.items()}
         for fut in as_completed(futures):
@@ -1028,6 +1097,12 @@ def _build_products_xlsx(products: list) -> bytes:
                 image_map[asin] = fut.result()
             except Exception:
                 image_map[asin] = None
+            cur += 1
+            if progress_cb:
+                try:
+                    progress_cb(cur, total)
+                except Exception:
+                    pass
 
     # 构建 Excel
     wb = Workbook()
@@ -1101,6 +1176,104 @@ def _build_products_xlsx(products: list) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+class ExportWorker:
+    """
+    后台常驻线程，轮询 export_jobs 表中 pending 任务并异步处理。
+    每 2 秒检查一次队列，支持并发执行（最多 2 个任务同时跑）。
+    """
+
+    def __init__(self, state):
+        self._state = state
+        self._executor = None
+        self._active: dict = {}   # jid -> Future
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="ExportWorker")
+
+    def start(self):
+        import concurrent.futures
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="ExportJob")
+        self._thread.start()
+
+    def _loop(self):
+        while True:
+            try:
+                self._tick()
+            except Exception as e:
+                print(f"[export-worker] tick error: {e}")
+            threading.Event().wait(2.0)
+
+    def _tick(self):
+        # 清理已完成的 future
+        with self._lock:
+            done = [jid for jid, fut in self._active.items() if fut.done()]
+            for jid in done:
+                del self._active[jid]
+        # 最多同时跑 2 个
+        if len(self._active) >= 2:
+            return
+        job = self._state.get_pending_export_job()
+        if not job:
+            return
+        jid = job["id"]
+        with self._lock:
+            if jid in self._active:
+                return
+            fut = self._executor.submit(self._run_job, job)
+            self._active[jid] = fut
+
+    def _run_job(self, job: dict):
+        jid = job["id"]
+        self._state.update_export_job(jid, status="processing")
+        try:
+            params = json.loads(job.get("params") or "{}")
+            job_type = job["type"]
+
+            if job_type == "scrape_xlsx":
+                task_id = params.get("taskId", "")
+                asins   = params.get("asins")        # None = 全部
+                products = self._state.get_scrape_products(task_id)
+                if asins:
+                    asin_set = set(asins)
+                    products = [p for p in products if p.get("asin") in asin_set]
+
+                def _cb(cur, total):
+                    self._state.update_export_job(jid, progress_cur=cur, progress_total=total)
+
+                self._state.update_export_job(jid, progress_total=len(products))
+                data = _build_products_xlsx(products, progress_cb=_cb)
+
+                import uuid
+                did = uuid.uuid4().hex[:16]
+                # 注册到 pdf_splitter 下载注册表（复用现有下载接口）
+                import tempfile, os
+                tmp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "pdf_tmp", "out")
+                os.makedirs(tmp_dir, exist_ok=True)
+                fname = job.get("file_name") or f"export_{jid[:8]}.xlsx"
+                fpath = os.path.join(tmp_dir, f"{did}_{fname}")
+                with open(fpath, "wb") as f:
+                    f.write(data)
+                pdf_splitter._download_registry[did] = fpath
+
+                self._state.update_export_job(
+                    jid,
+                    status="done",
+                    progress_cur=len(products),
+                    download_id=did,
+                    completed_at=_now_iso(),
+                )
+            else:
+                raise ValueError(f"unknown job type: {job_type}")
+
+        except Exception as e:
+            self._state.update_export_job(
+                jid,
+                status="failed",
+                error=str(e),
+                completed_at=_now_iso(),
+            )
+            print(f"[export-worker] job {jid} failed: {e}")
 
 
 def make_handler(state, auth):
@@ -1181,6 +1354,13 @@ def make_handler(state, auth):
                     "taskId": task_id,
                     "products": state.get_scrape_products(task_id),
                 })
+                return
+
+            if path == "/api/exports/list":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                self._send_json(200, {"jobs": state.list_export_jobs()})
                 return
 
             if path == "/api/review/tasks":
@@ -1415,6 +1595,32 @@ def make_handler(state, auth):
                 self.wfile.write(data)
                 return
 
+            if path == "/api/exports/create":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                job_type = (payload.get("type") or "").strip()
+                if job_type not in ("scrape_xlsx",):
+                    self._send_json(400, {"error": f"unsupported type: {job_type}"})
+                    return
+                params  = payload.get("params") or {}
+                label   = (payload.get("label") or "导出任务").strip()
+                fname   = (payload.get("fileName") or f"export_{_now_iso()[:10]}.xlsx").strip()
+                # 预估 progress_total（按产品数）
+                task_id = params.get("taskId", "")
+                asins   = params.get("asins")
+                products = state.get_scrape_products(task_id) if task_id else []
+                if asins:
+                    products = [p for p in products if p.get("asin") in set(asins)]
+                total = len(products)
+                jid = state.create_export_job(job_type, label, {**params, "asins": asins}, total)
+                state.update_export_job(jid, file_name=fname)
+                self._send_json(200, {"jobId": jid})
+                return
+
             if path == "/api/scrape/export-xlsx":
                 if not auth.verify(_extract_token(self)):
                     self._send_json(401, {"error": "请先登录"})
@@ -1528,6 +1734,29 @@ def make_handler(state, auth):
                 self._send_json(200, {"ok": True})
                 return
 
+            if path == "/api/exports":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                q = parse_qs(urlparse(self.path).query)
+                jid = (q.get("id") or [""])[0]
+                if not jid:
+                    self._send_json(400, {"error": "id required"})
+                    return
+                jobs = state.list_export_jobs()
+                for j in jobs:
+                    if j["id"] == jid and j.get("download_id"):
+                        fpath = pdf_splitter._download_registry.pop(j["download_id"], None)
+                        if fpath:
+                            try:
+                                os.remove(fpath)
+                            except OSError:
+                                pass
+                        break
+                state.delete_export_job(jid)
+                self._send_json(200, {"ok": True})
+                return
+
             self.send_error(404)
 
         # ---- PUT ----
@@ -1638,6 +1867,10 @@ def main():
     pdf_splitter.cleanup_old_tmp()
 
     auth_mgr = AuthManager(users_path)
+
+    export_worker = ExportWorker(db_state)
+    export_worker.start()
+
     handler  = make_handler(db_state, auth_mgr)
     server   = ThreadingServer((args.host, args.port), handler)
 

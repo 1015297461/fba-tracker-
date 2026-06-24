@@ -10,6 +10,7 @@ import { KeywordRank } from './features/tools/KeywordRank';
 import { ProductScrape } from './features/tools/ProductScrape';
 import { ReviewFetch } from './features/tools/ReviewFetch';
 import { PdfSplit } from './features/tools/PdfSplit';
+import { MyExports } from './features/exports/MyExports';
 import { PRODUCTS } from './data/products';
 
 function LoginScreen({ onLogin }: { onLogin: (u: string, p: string) => Promise<boolean> }) {
@@ -132,6 +133,7 @@ function AppShell() {
         {view === 'productScrape' && <ProductScrape />}
         {view === 'reviewFetch' && <ReviewFetch />}
         {view === 'pdfSplit' && <PdfSplit />}
+        {view === 'myExports' && <MyExports />}
       </div>
       <TweaksPanel title="Tweaks">
         <TweakSection label="主题" />

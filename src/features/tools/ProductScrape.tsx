@@ -443,34 +443,32 @@ function exportCSV(products: ScrapedProduct[], marketplace: string) {
   URL.revokeObjectURL(url);
 }
 
-async function exportXLSX(taskId: string, setLoading: (v: boolean) => void) {
-  if (!taskId) return;
-  setLoading(true);
+async function createExportJob(
+  taskId: string,
+  label: string,
+  onDone: () => void,
+) {
+  const token = localStorage.getItem('fba-auth-v1') || '';
+  const date = new Date().toISOString().slice(0, 10);
   try {
-    const token = localStorage.getItem('fba-auth-v1') || '';
-    const res = await fetch('/api/scrape/export-xlsx', {
+    const res = await fetch('/api/exports/create', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({ taskId }),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        type: 'scrape_xlsx',
+        label,
+        fileName: `amazon_products_${date}.xlsx`,
+        params: { taskId },
+      }),
     });
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
-      alert(d.error || '导出失败，请重试');
+      alert(d.error || '创建导出任务失败，请重试');
       return;
     }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `amazon_products_${new Date().toISOString().slice(0, 10)}.xlsx`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    onDone();
   } catch {
     alert('网络错误，请检查服务是否正常');
-  } finally {
-    setLoading(false);
   }
 }
 
@@ -491,7 +489,7 @@ export function ProductScrape() {
   const [page, setPage] = React.useState(1);
   const [searchQuery, setSearchQuery] = React.useState('');
   const [hoverPreview, setHoverPreview] = React.useState<{ src: string; top: number; left: number } | null>(null);
-  const [xlsxExporting, setXlsxExporting] = React.useState(false);
+  const [exportQueued, setExportQueued] = React.useState(false);
 
   function showThumbPreview(e: React.MouseEvent<HTMLImageElement>, src: string) {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -726,9 +724,17 @@ export function ProductScrape() {
               <button className="btn btn-sm" onClick={() => exportCSV(products, marketplace)}>导出 CSV</button>
               <button
                 className="btn btn-sm"
-                disabled={xlsxExporting || !activeTaskId}
-                onClick={() => exportXLSX(activeTaskId!, setXlsxExporting)}
-              >{xlsxExporting ? '生成中…' : '导出 Excel（含主图）'}</button>
+                disabled={exportQueued || !activeTaskId}
+                onClick={async () => {
+                  if (!activeTaskId) return;
+                  setExportQueued(true);
+                  const label = `产品采集 · ${products.length} 个ASIN`;
+                  await createExportJob(activeTaskId, label, () => {
+                    alert('导出任务已创建，请在「我的导出」中查看进度');
+                  });
+                  setExportQueued(false);
+                }}
+              >{exportQueued ? '提交中…' : '导出 Excel（含主图）'}</button>
             </div>
           )}
         </div>
