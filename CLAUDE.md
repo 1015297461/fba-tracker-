@@ -131,6 +131,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | POST | `/api/login` / `/api/logout` | Token 登录/登出（`fba-users.json`） |
 | GET/POST/DELETE | `/api/rank/*` | 关键词排名：任务列表/历史/创建/删除/单关键词 |
 | GET/POST/DELETE | `/api/scrape/*` | 产品采集：任务列表/结果/运行/删除/重置会话 |
+| POST | `/api/scrape/export-xlsx` | 导出产品数据为 Excel（含嵌入主图），body `{taskId}`，返回 `.xlsx` 文件流 |
 | GET/POST/DELETE | `/api/review/*` | 评论采集：任务列表/结果/运行/删除 |
 | POST | `/api/pdf/upload` | 上传 PDF（`application/octet-stream` + `X-Filename`），返回 `{file_id,name,pages,size}` |
 | POST | `/api/pdf/split` | 拆分任务，body `{jobs:[...]}`，返回 `{results:[...]}` |

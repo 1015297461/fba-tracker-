@@ -443,6 +443,37 @@ function exportCSV(products: ScrapedProduct[], marketplace: string) {
   URL.revokeObjectURL(url);
 }
 
+async function exportXLSX(taskId: string, setLoading: (v: boolean) => void) {
+  if (!taskId) return;
+  setLoading(true);
+  try {
+    const token = localStorage.getItem('fba-auth-v1') || '';
+    const res = await fetch('/api/scrape/export-xlsx', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ taskId }),
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      alert(d.error || '导出失败，请重试');
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `amazon_products_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch {
+    alert('网络错误，请检查服务是否正常');
+  } finally {
+    setLoading(false);
+  }
+}
+
 // ---- Main View ----
 export function ProductScrape() {
   const [asinInput, setAsinInput]     = React.useState('');
@@ -460,6 +491,7 @@ export function ProductScrape() {
   const [page, setPage] = React.useState(1);
   const [searchQuery, setSearchQuery] = React.useState('');
   const [hoverPreview, setHoverPreview] = React.useState<{ src: string; top: number; left: number } | null>(null);
+  const [xlsxExporting, setXlsxExporting] = React.useState(false);
 
   function showThumbPreview(e: React.MouseEvent<HTMLImageElement>, src: string) {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -692,6 +724,11 @@ export function ProductScrape() {
                 </button>
               )}
               <button className="btn btn-sm" onClick={() => exportCSV(products, marketplace)}>导出 CSV</button>
+              <button
+                className="btn btn-sm"
+                disabled={xlsxExporting || !activeTaskId}
+                onClick={() => exportXLSX(activeTaskId!, setXlsxExporting)}
+              >{xlsxExporting ? '生成中…' : '导出 Excel（含主图）'}</button>
             </div>
           )}
         </div>
