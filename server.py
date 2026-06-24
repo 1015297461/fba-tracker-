@@ -1415,6 +1415,37 @@ def make_handler(state, auth):
                 self.wfile.write(data)
                 return
 
+            if path == "/api/scrape/export-xlsx":
+                if not auth.verify(_extract_token(self)):
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                task_id = (payload.get("taskId") or "").strip()
+                if not task_id:
+                    self._send_json(400, {"error": "taskId required"})
+                    return
+                products = state.get_scrape_products(task_id)
+                if not products:
+                    self._send_json(404, {"error": "该任务暂无产品数据"})
+                    return
+                try:
+                    xlsx_bytes = _build_products_xlsx(products)
+                except Exception as e:
+                    self._send_json(500, {"error": str(e)})
+                    return
+                from urllib.parse import quote
+                fname = f"amazon_products_{task_id[:8]}.xlsx"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                self.send_header("Content-Length", str(len(xlsx_bytes)))
+                self.send_header("Content-Disposition",
+                    f'attachment; filename="{fname}"; filename*=UTF-8\'\'{quote(fname, safe="")}')
+                self.end_headers()
+                self.wfile.write(xlsx_bytes)
+                return
+
             self.send_error(404)
 
         # ---- DELETE ----
@@ -1495,37 +1526,6 @@ def make_handler(state, auth):
                 marketplace = (payload.get("marketplace") or "").upper()
                 product_fetcher.reset_session(marketplace if marketplace else None)
                 self._send_json(200, {"ok": True})
-                return
-
-            if path == "/api/scrape/export-xlsx":
-                if not auth.verify(_extract_token(self)):
-                    self._send_json(401, {"error": "请先登录"})
-                    return
-                payload = self._read_json()
-                if payload is None:
-                    return
-                task_id = (payload.get("taskId") or "").strip()
-                if not task_id:
-                    self._send_json(400, {"error": "taskId required"})
-                    return
-                products = state.get_scrape_products(task_id)
-                if not products:
-                    self._send_json(404, {"error": "该任务暂无产品数据"})
-                    return
-                try:
-                    xlsx_bytes = _build_products_xlsx(products)
-                except Exception as e:
-                    self._send_json(500, {"error": str(e)})
-                    return
-                from urllib.parse import quote
-                fname = f"amazon_products_{task_id[:8]}.xlsx"
-                self.send_response(200)
-                self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                self.send_header("Content-Length", str(len(xlsx_bytes)))
-                self.send_header("Content-Disposition",
-                    f'attachment; filename="{fname}"; filename*=UTF-8\'\'{quote(fname, safe="")}')
-                self.end_headers()
-                self.wfile.write(xlsx_bytes)
                 return
 
             self.send_error(404)
