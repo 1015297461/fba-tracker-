@@ -488,7 +488,7 @@ function TabProd({ p }: { p: any }) {
   });
   const isCollapsed = (key: string) => collapsedSections.has(key);
 
-  // 跨批次汇总：总下单量 + SKU 明细 + 总结算金额
+  // 跨批次汇总：总下单量 + SKU 明细 + 总订单金额
   const allBatches: ProductionBatch[] = prod.batches || [];
   const totalOrderQty = allBatches.reduce((sum, b) => sum + computeBatch(b, hasVariants).orderQty, 0);
 
@@ -503,7 +503,8 @@ function TabProd({ p }: { p: any }) {
     }
   }
 
-  const totalSettlement = allBatches.reduce((sum, b) => sum + computeBatch(b, hasVariants).effectiveTotal, 0);
+  // 总订单金额 = 各批次订单金额（skuTotal）之和
+  const totalOrderAmount = allBatches.reduce((sum, b) => sum + computeBatch(b, hasVariants).skuTotal, 0);
 
   const skuEntries = Object.values(skuQtyMap).filter(e => e.qty > 0);
   const prodHeaderExtra = totalOrderQty > 0 ? (
@@ -524,10 +525,10 @@ function TabProd({ p }: { p: any }) {
           </span>
         )}
       </span>
-      {totalSettlement > 0 && (
+      {totalOrderAmount > 0 && (
         <span className="shs-item">
-          <span className="shs-lbl">总结算</span>
-          <span className="shs-val mono">¥{totalSettlement.toFixed(2)}</span>
+          <span className="shs-lbl">总订单金额</span>
+          <span className="shs-val mono">¥{totalOrderAmount.toFixed(2)}</span>
         </span>
       )}
     </div>
