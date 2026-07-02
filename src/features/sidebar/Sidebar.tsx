@@ -4,6 +4,7 @@ import { STATUS_LABELS } from '../../data/constants';
 import { useProducts } from '../../context/ProductContext';
 import type { Product } from '../../data/types';
 import { useExportBadge } from '../exports/MyExports';
+import { AI_SKILLS } from '../tools/AiAnalyze';
 
 function useSyncLabel() {
   const ctx = useProducts();
@@ -102,6 +103,20 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
       </div>
 
       <div className="sb-section">
+        <div className="sb-section-label">AI分析</div>
+        <div className="sb-view-tabs">
+          {AI_SKILLS.map(s => (
+            <button key={s.id} className="sb-view-btn"
+              data-active={view === 'aiAnalyze:' + s.id}
+              onClick={() => setView('aiAnalyze:' + s.id)}>
+              <span className="ic">{s.ic}</span>
+              <span>{s.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="sb-section">
         <div className="sb-section-label">状态筛选</div>
         <div className="sb-filter">
           {['all', 'active', 'hold', 'done', 'cancel'].map(k => (
@@ -165,6 +180,8 @@ export function TopBar({ view, product, theme, onToggleTheme, onNewProduct }: {
   onNewProduct: () => void;
 }) {
   const titles: Record<string, string> = { list: '产品列表', progress: '进度总览', table: '数据表格', keywordRank: '关键词排名', productScrape: '产品采集', reviewFetch: '评论采集', pdfSplit: 'PDF拆分', myExports: '我的导出' };
+  const aiSkill = view.startsWith('aiAnalyze:') ? AI_SKILLS.find(s => 'aiAnalyze:' + s.id === view) : null;
+  const viewTitle = aiSkill ? `AI分析 · ${aiSkill.label}` : titles[view];
   const ctx = useProducts();
   const { label: syncLabel, cls: syncCls, icon: syncIcon } = useSyncLabel();
   const currentUser = ctx?.currentUser;
@@ -183,7 +200,7 @@ export function TopBar({ view, product, theme, onToggleTheme, onNewProduct }: {
 
   return (
     <div className="topbar">
-      <span className="topbar-title">{titles[view]}</span>
+      <span className="topbar-title">{viewTitle}</span>
       {view === 'list' && product && (
         <>
           <span className="topbar-crumb">/</span>

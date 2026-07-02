@@ -2,6 +2,10 @@
 /data/
 *.tmp
 
+# AI分析 skill 的登录态/Cookie 及诊断产物（敏感，不入库）
+skills/*/data/
+skills/*/report/
+
 # macOS 系统文件
 .DS_Store
 .AppleDouble

@@ -93,6 +93,9 @@ src/
       ProductScrape.tsx         # 工具：产品采集（含详情预览弹窗 + 图片 Lightbox + ASIN搜索过滤 + 多选导出 + 每页50/100/150条分页跳转）
       ReviewFetch.tsx           # 工具：评论采集（多ASIN批量抓取，按评分/排序/是否验证购买过滤）
       PdfSplit.tsx              # 工具：批量 PDF 拆分（每文件独立配置拆分方式，拆分结果通过浏览器下载）
+      AiAnalyze.tsx             # 工具：AI分析（无人值守 shell 出去跑 `claude -p` 执行 Claude Code Skill；
+                                #   导出 AI_SKILLS 常量供 Sidebar.tsx / app.tsx 渲染"AI分析"分组按钮/视图路由/Tweaks下拉，
+                                #   新增 skill 只需在这个数组里加一条 + server.py 的 AI_SKILLS 字典加同 id 的一条）
   exports/
     MyExports.tsx             # 共用「我的导出」视图：展示所有后台导出任务进度和下载入口；useExportBadge() 供侧边栏徽标使用
 
@@ -106,6 +109,13 @@ docs/
     product-scrape-integration-plan.md  # 产品采集模块实施方案（已完成，归档）
   uploads/                     # 参考文档（产品文档等，非应用功能使用）
   screenshots/                 # 文档配图
+
+skills/                        # vendor 进来的 Claude Code Skill 副本（AI分析模块专用，各自自包含）
+  CosmoDiagnose/                # 与 /Users/dihting/Desktop/DT-20251208/200/PY/DTCOSMO/CosmoDiagnose 同源手动拷贝，
+                                #   非软链接/非自动同步，skill 本体升级需手动 cp 一份过来
+    SKILL.md / amz_login.py / amz_alexa.py
+    data/                      # 该 skill 自己的登录态 cookie + Alexa 反查结果（.gitignore 忽略）
+    report/{taskId}/           # 每次分析任务的4个输出文件，按 taskId 隔离，避免同 ASIN 重复分析互相覆盖（.gitignore 忽略）
 
 data/                          # 运行时数据（.gitignore 忽略，不进 git）
   fba-data.db / -shm / -wal     # SQLite 主库 + WAL 临时文件
@@ -124,6 +134,8 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | `keyword_tasks` / `rank_snapshots` | 关键词排名：任务配置 + 历史快照 |
 | `scrape_tasks` / `scrape_products` | 产品采集：任务记录 + 落库的商品详情 |
 | `review_tasks` / `review_results` | 评论采集：任务记录 + 评论池（按 asin+review_id 去重） |
+| `export_jobs` | 后台导出任务（`ExportWorker` 消费，最多2并发） |
+| `ai_analysis_tasks` | AI分析任务（`AiAnalysisWorker` 消费，强制串行1并发；`files` 字段是产出文件名列表 JSON） |
 
 ### API 路由
 
@@ -143,14 +155,30 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | POST | `/api/pdf/upload` | 上传 PDF（`application/octet-stream` + `X-Filename`），返回 `{file_id,name,pages,size}` |
 | POST | `/api/pdf/split` | 拆分任务，body `{jobs:[...]}`，返回 `{results:[...]}` |
 | GET | `/api/pdf/download?id=` | 下载拆分结果文件（按 download_id 查临时注册表） |
+| POST | `/api/ai/run` | 创建AI分析任务，body `{skillId,asin,params}`，立即返回 `{taskId}`（实际执行交给 `AiAnalysisWorker` 后台线程，不阻塞） |
+| GET | `/api/ai/tasks?skillId=` | 列出AI分析历史任务（可按 skillId 过滤） |
+| GET | `/api/ai/task?id=` | 单个AI分析任务详情（前端轮询用） |
+| DELETE | `/api/ai/tasks?id=` | 删除AI分析任务记录，并 `shutil.rmtree` 对应 `skills/<Skill>/report/<taskId>/` 目录 |
+| GET | `/api/ai/file?taskId=&name=&mode=inline\|download` | 读取AI分析产出文件；**不做 Bearer 头校验**（iframe/下载链接等浏览器原生导航不带自定义头，和 `/api/pdf/download` 一致），靠不可猜测的 taskId + 该任务的文件名白名单做访问控制 |
 
 ### 同步机制（详见 `docs/operations.md` 第7节）
 客户端每 4s 轮询 `version`，编辑后 600ms 防抖 PUT 带 `baseVersion`；后端乐观锁，冲突时返回服务器最新版本，客户端整体覆盖（`ProductContext.tsx` 中 `versionRef`/`syncedVersionRef` 相关逻辑）。
+
+### AI分析模块（`AiAnalysisWorker` + `AI_SKILLS`，`server.py` 中紧挨 `ExportWorker`）
+
+不同于其它"工具模块"（本地计算/请求外部页面），AI分析是无人值守 shell 出去跑一次真实的 `claude -p`（Claude Code headless 会话），复用 `skills/<Skill>/SKILL.md` 里已经写好的分析流程，不是重新实现一套 agent 循环：
+
+- **并发**：强制串行（`ThreadPoolExecutor(max_workers=1)`），因为单次分析涉及真实 Playwright 浏览器 + Claude API 调用，成本和资源都不便宜。
+- **权限**：`AI_ALLOWED_TOOLS` 收窄到 skill 自己声明允许用的工具（`Bash Read Write Edit mcp__playwright__* mcp__sif-mcp__*`），不用 `--dangerously-skip-permissions`/`bypassPermissions` 整体放开——无人值守时被 Claude Code 自身的安全分类器判定为高风险操作，需要显式收窄权限而非笼统跳过。
+- **预算**：`AI_MAX_BUDGET_USD`（当前 `8`）是初始估值，未经真实多次运行校准，跑几次后应参考 `--output-format json` 返回的 `total_cost_usd` 调整。
+- **输出隔离**：调用时在 prompt 里显式让 skill 把产物存到 `report/<taskId>/` 而非 skill 自己 `SKILL.md` 里默认的 `report/` 根目录，避免同一 ASIN 反复分析互相覆盖。
+- **新增 skill**：`server.py` 的 `AI_SKILLS` 字典和 `AiAnalyze.tsx` 的 `AI_SKILLS` 数组各加一条同 `id` 的项即可，Sidebar 的"AI分析"分组、`app.tsx` 的视图路由/Tweaks下拉都是从这个数组派生的，不用逐处手改。
 
 ## 前端架构
 
 - **状态管理**：单一 `ProductContext`（无 Redux/Zustand），`useProducts()` 暴露数据 + 一组 `update*()` 函数，每个对应 `Product`/`Variant`/`Stage` 等不同粒度的字段更新，最终都落到 `products` 数组并触发同步。
 - **视图路由**：无 react-router，`app.tsx` 的 `AppShell` 用 `view` 状态字符串切换（`'list' | 'progress' | 'table' | 'keywordRank' | 'productScrape' | 'reviewFetch' | 'pdfSplit'`），Sidebar/TopBar 负责切换按钮和标题映射。新增视图需同时更新 `app.tsx`（渲染分支）、`Sidebar.tsx`（工具列表 + titles 映射）。
+  "AI分析"是个例外：`view` 用 `'aiAnalyze:' + skillId` 动态拼出来的 key（而非固定字符串），因为它是一个按 skill 分组、未来会有多个入口的分组，`app.tsx` 用 `view.startsWith('aiAnalyze:')` 判断+ `.slice()` 取出 skillId 传给 `<AiAnalyze skillId=.../>`，Sidebar 的按钮和 TopBar 的标题也是从 `AiAnalyze.tsx` 导出的 `AI_SKILLS` 数组动态渲染，不是写死的按钮列表。
 - **数据模型核心**：`Product.stages: Record<stageKey, StageData>`，`stageKey` 取自 `STAGES`（18个阶段，每个归属 `TABS` 中某个 tab，各阶段业务含义见 `docs/business-overview.md` 第1节），`Product.variants: Variant[]` 为 SKU 变体，变体也有自己的 `stages` 子集（`VARIANT_STAGE_KEYS`）。
 - **"工具模块"模式**（关键词排名 / 产品采集 共享）：左侧输入+历史任务列表，右侧结果表格+操作；后端各有一个 `xxx_fetcher.py` 抓取器 + `server.py` 中的 `/api/xxx/*` 路由 + `run_xxx_task()`。新增同类工具时可参照 `ProductScrape.tsx` + `product_fetcher.py` + `docs/plans/product-scrape-integration-plan.md`。
 

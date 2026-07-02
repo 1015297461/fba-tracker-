@@ -10,6 +10,7 @@ import { KeywordRank } from './features/tools/KeywordRank';
 import { ProductScrape } from './features/tools/ProductScrape';
 import { ReviewFetch } from './features/tools/ReviewFetch';
 import { PdfSplit } from './features/tools/PdfSplit';
+import { AiAnalyze, AI_SKILLS } from './features/tools/AiAnalyze';
 import { MyExports } from './features/exports/MyExports';
 import { PRODUCTS } from './data/products';
 
@@ -133,6 +134,7 @@ function AppShell() {
         {view === 'productScrape' && <ProductScrape />}
         {view === 'reviewFetch' && <ReviewFetch />}
         {view === 'pdfSplit' && <PdfSplit />}
+        {view.startsWith('aiAnalyze:') && <AiAnalyze skillId={view.slice('aiAnalyze:'.length)} />}
         {view === 'myExports' && <MyExports />}
       </div>
       <TweaksPanel title="Tweaks">
@@ -158,6 +160,7 @@ function AppShell() {
             { value: 'productScrape', label: '🛒 产品采集' },
             { value: 'reviewFetch', label: '💬 评论采集' },
             { value: 'pdfSplit', label: '✂️ PDF拆分' },
+            ...AI_SKILLS.map(s => ({ value: 'aiAnalyze:' + s.id, label: `${s.ic} ${s.label}` })),
           ]}
           onChange={v => changeView(v)}
         />
