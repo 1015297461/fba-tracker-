@@ -13,7 +13,9 @@ if len(sys.argv) < 2:
 ASIN = sys.argv[1]
 NUM_QUESTIONS = int(sys.argv[2]) if len(sys.argv) > 2 else 10
 BASE = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE, 'data')
+# 按 FBA2 登录用户名分区存储登录态（COSMO_FBA_USER 由 server.py 起子进程时注入）；
+# 独立跑该脚本（不经过 FBA2）时退化为 default 子目录。
+DATA_DIR = os.path.join(BASE, 'data', os.environ.get('COSMO_FBA_USER', 'default'))
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE = os.path.join(DATA_DIR, 'amz_state.json')
 OUTPUT_FILE = os.path.join(DATA_DIR, f'{ASIN}_alexa_qa.json')

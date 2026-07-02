@@ -81,7 +81,8 @@ function AppShell() {
   function changeView(v: string) { setView(v); setTweak('view', v); }
   function toggleTheme() { setTweak('theme', theme === 'dark' ? 'light' : 'dark'); }
 
-  const { products, createProduct } = useProducts() as any;
+  const { products, createProduct, currentUser } = useProducts() as any;
+  const isRoot = currentUser?.role === 'root';
   const filteredProducts = filter === 'all' ? products : products.filter((p: any) => p.status === filter);
   const activeProduct = filteredProducts.find((p: any) => p.id === activeId) || filteredProducts[0];
 
@@ -134,7 +135,7 @@ function AppShell() {
         {view === 'productScrape' && <ProductScrape />}
         {view === 'reviewFetch' && <ReviewFetch />}
         {view === 'pdfSplit' && <PdfSplit />}
-        {view.startsWith('aiAnalyze:') && <AiAnalyze skillId={view.slice('aiAnalyze:'.length)} />}
+        {isRoot && view.startsWith('aiAnalyze:') && <AiAnalyze skillId={view.slice('aiAnalyze:'.length)} />}
         {view === 'myExports' && <MyExports />}
       </div>
       <TweaksPanel title="Tweaks">
@@ -160,7 +161,7 @@ function AppShell() {
             { value: 'productScrape', label: '🛒 产品采集' },
             { value: 'reviewFetch', label: '💬 评论采集' },
             { value: 'pdfSplit', label: '✂️ PDF拆分' },
-            ...AI_SKILLS.map(s => ({ value: 'aiAnalyze:' + s.id, label: `${s.ic} ${s.label}` })),
+            ...(isRoot ? AI_SKILLS.map(s => ({ value: 'aiAnalyze:' + s.id, label: `${s.ic} ${s.label}` })) : []),
           ]}
           onChange={v => changeView(v)}
         />

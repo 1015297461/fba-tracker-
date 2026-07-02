@@ -8,7 +8,9 @@ import json, time, os, sys
 from playwright.sync_api import sync_playwright
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE, 'data')
+# 按 FBA2 登录用户名分区存储登录态（COSMO_FBA_USER 由 server.py 起子进程时注入）；
+# 独立跑该脚本（不经过 FBA2）时退化为 default 子目录。
+DATA_DIR = os.path.join(BASE, 'data', os.environ.get('COSMO_FBA_USER', 'default'))
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE = os.path.join(DATA_DIR, 'amz_state.json')
 TIMEOUT_SECONDS = 300  # 最长等待 5 分钟

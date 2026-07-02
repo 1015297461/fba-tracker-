@@ -2595,8 +2595,13 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .ai-err { color: var(--red); font-size: 12px; }
 .ai-err-block { padding: 10px 12px; border: 1px solid var(--red); border-radius: 8px; background: #fff1f2; }
 
+.ai-login-block { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--blue); border-radius: 8px; background: var(--blue-soft); font-size: 12px; color: var(--ink-2); }
+.ai-login-hint { font-size: 11px; color: var(--ink-3); }
+
 .ai-actions { display: flex; gap: 8px; }
 .ai-actions .btn { flex: 1; justify-content: center; }
+.ai-cancel-btn { color: var(--red); border-color: var(--red); }
+.ai-cancel-btn:hover { background: #fff1f2 !important; }
 
 .ai-history { display: flex; flex-direction: column; gap: 8px; }
 .ai-history-head { font-weight: 600; font-size: 13px; color: var(--ink); }
@@ -2618,6 +2623,7 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .ai-status-running { background: #fffbe6; color: #b45309; border-color: #fde68a; }
 .ai-status-done    { background: #f0fdf4; color: #15803d; border-color: #bbf7d0; }
 .ai-status-failed  { background: #fff1f2; color: #be123c; border-color: #fecdd3; }
+.ai-status-cancelled { background: var(--bg-3, #f0f0f0); color: var(--ink-3); border-color: var(--border); }
 
 /* ---- 右侧：详情 ---- */
 .ai-main { padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }

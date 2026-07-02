@@ -14,7 +14,7 @@ export const AI_SKILLS = [
 ];
 
 const STATUS_LABEL: Record<string, string> = {
-  pending: '排队中', running: '分析中…', done: '已完成', failed: '失败',
+  pending: '排队中', running: '分析中…', done: '已完成', failed: '失败', cancelled: '已终止',
 };
 
 interface AiFile { name: string; type: string; }
@@ -23,12 +23,20 @@ interface AiTask {
   skillId: string;
   asin: string;
   params: { alexaQuestions?: number };
-  status: 'pending' | 'running' | 'done' | 'failed';
+  status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
   error: string | null;
   summary: string | null;
   files: AiFile[];
   createdAt: string;
   completedAt: string | null;
+}
+
+class ApiError extends Error {
+  code?: string;
+  constructor(message: string, code?: string) {
+    super(message);
+    this.code = code;
+  }
 }
 
 function mapTask(row: any): AiTask {
@@ -65,12 +73,32 @@ async function apiRunAi(skillId: string, asin: string, params: any): Promise<str
   });
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
-    throw new Error(e.error || '创建任务失败');
+    throw new ApiError(e.error || '创建任务失败', e.code);
   }
   return (await r.json()).taskId;
 }
 async function apiDeleteAiTask(id: string): Promise<void> {
   await fetch('/api/ai/tasks?id=' + encodeURIComponent(id), { method: 'DELETE', headers: authHeaders() });
+}
+async function apiLoginSkill(skillId: string): Promise<void> {
+  const r = await fetch('/api/ai/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ skillId }),
+  });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || '发起登录失败');
+  }
+}
+async function apiCancelTask(id: string): Promise<void> {
+  const r = await fetch('/api/ai/cancel', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ id }),
+  });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || '终止失败');
+  }
 }
 
 function fmtDateTime(iso: string | null): string {
@@ -97,6 +125,9 @@ export function AiAnalyze({ skillId }: { skillId: string }) {
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState('');
   const [loadErr, setLoadErr] = useState('');
+  const [loginRequired, setLoginRequired] = useState(false);
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [preview, setPreview] = useState<{ taskId: string; name: string; type: string; text?: string } | null>(null);
 
   const asin = asinInput.trim().toUpperCase();
@@ -138,18 +169,34 @@ export function AiAnalyze({ skillId }: { skillId: string }) {
     return () => { cancelled = true; if (timer) clearInterval(timer); };
   }, [activeId]);
 
-  async function runAnalyze() {
-    if (!asinValid) { setErr('请输入有效的 ASIN（10 位字母数字）'); return; }
-    setErr(''); setSubmitting(true);
+  async function runAnalyze(overrideAsin?: string, overrideParams?: any) {
+    const useAsin = overrideAsin ?? asin;
+    if (!overrideAsin && !asinValid) { setErr('请输入有效的 ASIN（10 位字母数字）'); return; }
+    setErr(''); setLoginRequired(false); setSubmitting(true);
     try {
-      const taskId = await apiRunAi(skillId, asin, { alexaQuestions });
-      setAsinInput('');
+      const taskId = await apiRunAi(skillId, useAsin, overrideParams ?? { alexaQuestions });
+      if (!overrideAsin) setAsinInput('');
       await reloadTasks();
       setActiveId(taskId);
     } catch (e: any) {
-      setErr(e.message || '创建任务失败');
+      if (e instanceof ApiError && e.code === 'login_required') {
+        setLoginRequired(true);
+      } else {
+        setErr(e.message || '创建任务失败');
+      }
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function triggerLogin() {
+    setLoggingIn(true); setErr('');
+    try {
+      await apiLoginSkill(skillId);
+    } catch (e: any) {
+      setErr(e.message || '发起登录失败');
+    } finally {
+      setLoggingIn(false);
     }
   }
 
@@ -158,6 +205,24 @@ export function AiAnalyze({ skillId }: { skillId: string }) {
     await apiDeleteAiTask(t.id);
     setTasks(ts => ts.filter(x => x.id !== t.id));
     if (activeId === t.id) { setActiveId(null); setActive(null); }
+  }
+
+  async function cancelTask(t: AiTask) {
+    if (!confirm(`确定要终止「${t.asin}」这次分析吗？终止后不可恢复，如需重试请用「重新运行」。`)) return;
+    setCancelling(true); setErr('');
+    try {
+      await apiCancelTask(t.id);
+      await reloadTasks();
+      if (activeId === t.id) setActive(await apiGetAiTask(t.id));
+    } catch (e: any) {
+      setErr(e.message || '终止失败');
+    } finally {
+      setCancelling(false);
+    }
+  }
+
+  function rerunTask(t: AiTask) {
+    runAnalyze(t.asin, t.params);
   }
 
   async function openPreview(file: AiFile) {
@@ -196,8 +261,18 @@ export function AiAnalyze({ skillId }: { skillId: string }) {
 
         {err && <div className="ai-err">{err}</div>}
 
+        {loginRequired && (
+          <div className="ai-login-block">
+            <div>需要在本机重新登录 Amazon 账号才能开始分析。</div>
+            <button className="btn btn-sm" onClick={triggerLogin} disabled={loggingIn}>
+              {loggingIn ? '正在弹出登录窗口…' : '去登录'}
+            </button>
+            <div className="ai-login-hint">点击后会在本机弹出一个浏览器窗口，登录完成后请重新点击「开始分析」。</div>
+          </div>
+        )}
+
         <div className="ai-actions">
-          <button className="btn btn-primary btn-sm" onClick={runAnalyze} disabled={submitting || !asinValid}>
+          <button className="btn btn-primary btn-sm" onClick={() => runAnalyze()} disabled={submitting || !asinValid}>
             {submitting ? '提交中…' : '开始分析'}
           </button>
         </div>
@@ -240,13 +315,34 @@ export function AiAnalyze({ skillId }: { skillId: string }) {
             </div>
 
             {(active.status === 'pending' || active.status === 'running') && (
-              <div className="ai-running">
-                正在跑分析（真实调用 Claude Code，通常需要数分钟），可以先做别的事，这里会自动刷新状态…
-              </div>
+              <>
+                <div className="ai-running">
+                  正在跑分析（真实调用 Claude Code，通常需要数分钟），可以先做别的事，这里会自动刷新状态…
+                </div>
+                <div className="ai-actions">
+                  <button className="btn btn-sm ai-cancel-btn" onClick={() => cancelTask(active)} disabled={cancelling}>
+                    {cancelling ? '终止中…' : '结束分析'}
+                  </button>
+                </div>
+              </>
             )}
 
             {active.status === 'failed' && (
-              <div className="ai-err ai-err-block">分析失败：{active.error || '未知错误'}</div>
+              <>
+                <div className="ai-err ai-err-block">分析失败：{active.error || '未知错误'}</div>
+                <div className="ai-actions">
+                  <button className="btn btn-sm" onClick={() => rerunTask(active)} disabled={submitting}>重新运行</button>
+                </div>
+              </>
+            )}
+
+            {active.status === 'cancelled' && (
+              <>
+                <div className="ai-err ai-err-block">已终止：{active.error || '用户手动结束'}</div>
+                <div className="ai-actions">
+                  <button className="btn btn-sm" onClick={() => rerunTask(active)} disabled={submitting}>重新运行</button>
+                </div>
+              </>
             )}
 
             {active.status === 'done' && (
@@ -263,6 +359,9 @@ export function AiAnalyze({ skillId }: { skillId: string }) {
                     </div>
                   ))}
                   {!active.files.length && <div className="ai-empty">未生成任何文件</div>}
+                </div>
+                <div className="ai-actions">
+                  <button className="btn btn-sm" onClick={() => rerunTask(active)} disabled={submitting}>重新运行</button>
                 </div>
               </>
             )}

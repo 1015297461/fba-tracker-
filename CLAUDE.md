@@ -135,7 +135,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | `scrape_tasks` / `scrape_products` | 产品采集：任务记录 + 落库的商品详情 |
 | `review_tasks` / `review_results` | 评论采集：任务记录 + 评论池（按 asin+review_id 去重） |
 | `export_jobs` | 后台导出任务（`ExportWorker` 消费，最多2并发） |
-| `ai_analysis_tasks` | AI分析任务（`AiAnalysisWorker` 消费，强制串行1并发；`files` 字段是产出文件名列表 JSON） |
+| `ai_analysis_tasks` | AI分析任务（`AiAnalysisWorker` 消费，强制串行1并发；`files` 字段是产出文件名列表 JSON；`status` 除 pending/running/done/failed 外还有 `cancelled`；`username` 记录发起人，登录态按用户名分区要用） |
 
 ### API 路由
 
@@ -160,6 +160,8 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | GET | `/api/ai/task?id=` | 单个AI分析任务详情（前端轮询用） |
 | DELETE | `/api/ai/tasks?id=` | 删除AI分析任务记录，并 `shutil.rmtree` 对应 `skills/<Skill>/report/<taskId>/` 目录 |
 | GET | `/api/ai/file?taskId=&name=&mode=inline\|download` | 读取AI分析产出文件；**不做 Bearer 头校验**（iframe/下载链接等浏览器原生导航不带自定义头，和 `/api/pdf/download` 一致），靠不可猜测的 taskId + 该任务的文件名白名单做访问控制 |
+| POST | `/api/ai/login` | body `{skillId}`，后台 fire-and-forget 跑一次 `amz_login.py`（本机弹出有头浏览器，人工登录一次即可，最长等5分钟），按 `(skillId, username)` 去重防止重复点击弹多个窗口 |
+| POST | `/api/ai/cancel` | body `{id}`，终止一个 `pending`/`running` 的AI分析任务（不可恢复）；`pending` 直接改状态，`running` 调 `AiAnalysisWorker.cancel()` 终止子进程 |
 
 ### 同步机制（详见 `docs/operations.md` 第7节）
 客户端每 4s 轮询 `version`，编辑后 600ms 防抖 PUT 带 `baseVersion`；后端乐观锁，冲突时返回服务器最新版本，客户端整体覆盖（`ProductContext.tsx` 中 `versionRef`/`syncedVersionRef` 相关逻辑）。
@@ -173,6 +175,10 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 - **预算**：`AI_MAX_BUDGET_USD`（当前 `8`）是初始估值，未经真实多次运行校准，跑几次后应参考 `--output-format json` 返回的 `total_cost_usd` 调整。
 - **输出隔离**：调用时在 prompt 里显式让 skill 把产物存到 `report/<taskId>/` 而非 skill 自己 `SKILL.md` 里默认的 `report/` 根目录，避免同一 ASIN 反复分析互相覆盖。
 - **新增 skill**：`server.py` 的 `AI_SKILLS` 字典和 `AiAnalyze.tsx` 的 `AI_SKILLS` 数组各加一条同 `id` 的项即可，Sidebar 的"AI分析"分组、`app.tsx` 的视图路由/Tweaks下拉都是从这个数组派生的，不用逐处手改。
+- **登录态按 FBA2 用户名分区**：`amz_login.py`/`amz_alexa.py` 的 `DATA_DIR` 读环境变量 `COSMO_FBA_USER`（未设置时退化为 `default` 子目录），实际存储路径是 `skills/<Skill>/data/<username>/amz_state.json`。`AiAnalysisWorker` 起 `claude -p` 子进程、`/api/ai/login` 起 `amz_login.py` 子进程时，都把当前 FBA2 用户名注入这个环境变量——环境变量沿子进程继承链一路传到底层脚本，SKILL.md 里的 Bash 指令文字不用跟着改。`ai_analysis_tasks.username` 列记录任务归属，因为 `AiAnalysisWorker` 异步消费队列时原始 HTTP 请求早就结束了，只能从任务行里取。
+- **登录态自愈**：`POST /api/ai/run` 建任务前先用 `_check_login_state()`（逻辑照抄 `amz_alexa.py` 的 `check_state_validity()`）检查登录态，缺失/过期时不建任务、返回 `{code: "login_required"}`，前端展示专门的"去登录"状态块（调 `/api/ai/login`），而不是任由无人值守的 `claude -p` 子进程自己决定要不要交互登录（`build_prompt` 里也显式告诉 Claude 不要在这个场景下自己跑 `amz_login.py`，作为预检查之外的兜底）。
+- **终止**：`_run_job` 用 `subprocess.Popen`（而非 `subprocess.run`）保留进程句柄，存进 `self._procs`；`cancel(task_id)` 调 `proc.terminate()` 并记入 `self._cancelled`，`_run_job` 收尾时按这个集合区分「用户终止」和「正常失败」两种终态，不可恢复（没有暂停/继续——活跃的 Playwright 会话/网络连接没法被操作系统级暂停后干净恢复，做不到）。
+- **root 专属**：目前"AI分析"整个功能只对 `role: "root"` 的账号开放（`AuthManager._ensure_default_users()` 幂等补充一个默认 `root` 账号，密码见 `data/fba-users.json` 或找部署者，不写进代码仓库文档；不影响已有的 `admin`/`editor`）。所有 `/api/ai/*` 路由（`/api/ai/file` 除外——它靠不可猜测的 taskId 做访问控制，不能挂 Bearer 校验）在登录校验之后都加了 `role != "root"` 时返回 403 的强制校验，前端 Sidebar/app.tsx/TweaksPanel 里的隐藏只是体验层面，真正的门禁在后端。
 
 ## 前端架构
 

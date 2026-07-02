@@ -34,6 +34,7 @@ import datetime
 import time
 import random
 import re
+import subprocess
 from urllib.parse import urlparse, parse_qs, unquote
 
 import rank_fetcher
@@ -256,6 +257,7 @@ class DbState:
                     id           TEXT PRIMARY KEY,
                     skill_id     TEXT NOT NULL,
                     asin         TEXT NOT NULL,
+                    username     TEXT,
                     params       TEXT DEFAULT '{}',
                     status       TEXT DEFAULT 'pending',
                     error        TEXT,
@@ -266,6 +268,9 @@ class DbState:
                 );
             """)
             # 兼容旧版数据库：幂等追加缺失列
+            existing_ai_tasks = {row[1] for row in conn.execute("PRAGMA table_info(ai_analysis_tasks)")}
+            if "username" not in existing_ai_tasks:
+                conn.execute("ALTER TABLE ai_analysis_tasks ADD COLUMN username TEXT")
             existing_products = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
             if "variants" not in existing_products:
                 conn.execute("ALTER TABLE products ADD COLUMN variants TEXT DEFAULT '[]'")
@@ -807,15 +812,15 @@ class DbState:
 
     # ---- AI分析任务 ----
 
-    def create_ai_task(self, skill_id: str, asin: str, params: dict) -> str:
+    def create_ai_task(self, skill_id: str, asin: str, username: str, params: dict) -> str:
         tid = "ai" + secrets.token_hex(6)
         with self.lock:
             with self._conn() as conn:
                 conn.execute(
                     """INSERT INTO ai_analysis_tasks
-                       (id, skill_id, asin, params, status, created_at)
-                       VALUES (?,?,?,?,?,?)""",
-                    [tid, skill_id, asin, json.dumps(params, ensure_ascii=False),
+                       (id, skill_id, asin, username, params, status, created_at)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    [tid, skill_id, asin, username, json.dumps(params, ensure_ascii=False),
                      "pending", _now_iso()],
                 )
                 conn.commit()
@@ -940,18 +945,26 @@ class AuthManager:
         self._ensure_default_users()
 
     def _ensure_default_users(self):
-        if os.path.exists(self.users_path):
+        if not os.path.exists(self.users_path):
+            default = {
+                "users": [
+                    {"username": "admin",  "password": "fba2025",     "name": "管理员", "role": "admin"},
+                    {"username": "editor", "password": "fba2025",     "name": "编辑员", "role": "editor"},
+                    {"username": "root",   "password": "fba2026root", "name": "Root",  "role": "root"},
+                ]
+            }
+            with open(self.users_path, "w", encoding="utf-8") as f:
+                json.dump(default, f, ensure_ascii=False, indent=2)
+            print(f"[info] 已创建用户配置: {self.users_path}")
+            print("  默认账号: admin / fba2025  ← 请尽快修改密码")
             return
-        default = {
-            "users": [
-                {"username": "admin",  "password": "fba2025", "name": "管理员", "role": "admin"},
-                {"username": "editor", "password": "fba2025", "name": "编辑员", "role": "editor"},
-            ]
-        }
-        with open(self.users_path, "w", encoding="utf-8") as f:
-            json.dump(default, f, ensure_ascii=False, indent=2)
-        print(f"[info] 已创建用户配置: {self.users_path}")
-        print("  默认账号: admin / fba2025  ← 请尽快修改密码")
+        # 幂等补充 root 账号：AI分析模块暂时只对 root 开放，不动已有的 admin/editor
+        users = self._load_users()
+        if not any(u.get("username") == "root" for u in users):
+            users.append({"username": "root", "password": "fba2026root", "name": "Root", "role": "root"})
+            with open(self.users_path, "w", encoding="utf-8") as f:
+                json.dump({"users": users}, f, ensure_ascii=False, indent=2)
+            print(f"[info] 已补充 root 账号到 {self.users_path}")
 
     def _load_users(self):
         try:
@@ -1376,9 +1389,44 @@ AI_SKILLS = {
             f"Alexa 只问前 {int(params.get('alexaQuestions', 3) or 3)} 个问题。"
             f"完成后请把 Phase 3 的四个输出文件保存到当前技能目录下的 "
             f"report/{task_id}/ 子目录（而不是 report/ 根目录），文件命名规则不变。"
+            f"登录态已由调用方预先检查过，如果实际执行中发现登录态缺失或过期，"
+            f"不要自己尝试交互式登录（不要运行 amz_login.py），直接中止并说明原因即可。"
         ),
     },
 }
+
+# /api/ai/login 用：按 (skillId, username) 去重，防止重复点击弹出多个登录浏览器窗口
+_login_lock = threading.Lock()
+_login_in_progress: set = set()
+
+
+def _check_login_state(skill: dict, username: str) -> str:
+    """
+    检查某个 skill 在某个 FBA2 用户名下的 Amazon 登录态是否有效。
+    返回 'missing' / 'expired' / 'expiring_soon' / 'valid'，逻辑与
+    skills/CosmoDiagnose/amz_alexa.py 里的 check_state_validity() 保持一致。
+    """
+    state_file = os.path.join(skill["dir"], "data", username, "amz_state.json")
+    if not os.path.exists(state_file):
+        return "missing"
+    try:
+        with open(state_file) as f:
+            state = json.load(f)
+        cookies = state.get("cookies", [])
+        at_main = next((c for c in cookies if c["name"] == "at-main"), None)
+        if not at_main:
+            return "missing"
+        expires = at_main.get("expires", 0)
+        if expires <= 0:
+            return "valid"
+        remaining = expires - time.time()
+        if remaining < 0:
+            return "expired"
+        if remaining < 7 * 86400:
+            return "expiring_soon"
+        return "valid"
+    except Exception:
+        return "missing"
 
 
 class AiAnalysisWorker:
@@ -1393,6 +1441,8 @@ class AiAnalysisWorker:
         self._state = state
         self._executor = None
         self._active: dict = {}   # task_id -> Future
+        self._procs: dict = {}    # task_id -> Popen（仅运行中的任务才有）
+        self._cancelled: set = set()   # 已被用户请求终止、等待 _run_job 收尾确认的 task_id
         self._lock = threading.Lock()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="AiAnalysisWorker")
 
@@ -1427,8 +1477,19 @@ class AiAnalysisWorker:
             fut = self._executor.submit(self._run_job, task)
             self._active[tid] = fut
 
+    def cancel(self, task_id: str):
+        """终止一个正在跑的任务（不可恢复）。找不到对应进程也无妨——
+        _run_job 收尾时仍会看到 task_id 在 self._cancelled 里，按 cancelled 处理。"""
+        with self._lock:
+            self._cancelled.add(task_id)
+            proc = self._procs.get(task_id)
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
     def _run_job(self, task: dict):
-        import subprocess
         tid = task["id"]
         skill = AI_SKILLS.get(task["skill_id"])
         if not skill:
@@ -1440,28 +1501,51 @@ class AiAnalysisWorker:
 
         asin = task["asin"]
         params = task.get("params") or {}
+        username = task.get("username") or "default"
         prompt = skill["build_prompt"](asin, params, tid)
         skill_dir = skill["dir"]
         out_dir = os.path.join(skill_dir, "report", tid)
 
+        stdout, stderr, returncode = "", "", None
+        error_msg = None
+        proc = None
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 ["claude", "-p", prompt,
                  "--output-format", "json",
                  "--allowedTools", AI_ALLOWED_TOOLS,
                  "--max-budget-usd", AI_MAX_BUDGET_USD],
                 cwd=skill_dir,
-                capture_output=True, text=True, timeout=1800,
+                env={**os.environ, "COSMO_FBA_USER": username},
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
-        except subprocess.TimeoutExpired:
-            self._state.update_ai_task(
-                tid, status="failed", error="分析超时（超过30分钟）", completed_at=_now_iso(),
-            )
-            print(f"[ai-worker] task {tid} timeout")
-            return
+            with self._lock:
+                self._procs[tid] = proc
+            try:
+                stdout, stderr = proc.communicate(timeout=1800)
+                returncode = proc.returncode
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+                error_msg = "分析超时（超过30分钟）"
         except Exception as e:
-            self._state.update_ai_task(tid, status="failed", error=str(e), completed_at=_now_iso())
-            print(f"[ai-worker] task {tid} failed to launch: {e}")
+            error_msg = str(e)
+        finally:
+            with self._lock:
+                self._procs.pop(tid, None)
+                was_cancelled = tid in self._cancelled
+                self._cancelled.discard(tid)
+
+        if was_cancelled:
+            self._state.update_ai_task(
+                tid, status="cancelled", error="用户手动结束", completed_at=_now_iso(),
+            )
+            print(f"[ai-worker] task {tid} cancelled by user")
+            return
+
+        if error_msg:
+            self._state.update_ai_task(tid, status="failed", error=error_msg, completed_at=_now_iso())
+            print(f"[ai-worker] task {tid} failed: {error_msg}")
             return
 
         files = []
@@ -1473,19 +1557,19 @@ class AiAnalysisWorker:
 
         result_obj = None
         try:
-            result_obj = json.loads(proc.stdout)
+            result_obj = json.loads(stdout)
         except (json.JSONDecodeError, TypeError):
             pass
 
-        is_error = bool(result_obj.get("is_error")) if result_obj else (proc.returncode != 0)
+        is_error = bool(result_obj.get("is_error")) if result_obj else (returncode != 0)
         denials = (result_obj or {}).get("permission_denials") or []
 
         if is_error or not files:
-            err = (result_obj or {}).get("result") or (proc.stderr or "")[-2000:] or "分析未产出任何文件"
+            err = (result_obj or {}).get("result") or (stderr or "")[-2000:] or "分析未产出任何文件"
             self._state.update_ai_task(
                 tid, status="failed", error=err[:2000], files=files, completed_at=_now_iso(),
             )
-            print(f"[ai-worker] task {tid} failed, returncode={proc.returncode}")
+            print(f"[ai-worker] task {tid} failed, returncode={returncode}")
             return
 
         summary = ((result_obj or {}).get("result") or "")[:500]
@@ -1499,7 +1583,7 @@ class AiAnalysisWorker:
         print(f"[ai-worker] task {tid} done, {len(files)} files, cost=${cost:.4f}")
 
 
-def make_handler(state, auth):
+def make_handler(state, auth, ai_worker):
     class Handler(http.server.SimpleHTTPRequestHandler):
 
         def end_headers(self):
@@ -1609,8 +1693,12 @@ def make_handler(state, auth):
                 return
 
             if path == "/api/ai/tasks":
-                if not auth.verify(_extract_token(self)):
+                user = auth.verify(_extract_token(self))
+                if not user:
                     self._send_json(401, {"error": "请先登录"})
+                    return
+                if user.get("role") != "root":
+                    self._send_json(403, {"error": "无权限"})
                     return
                 q = parse_qs(urlparse(self.path).query)
                 skill_id = (q.get("skillId") or [None])[0]
@@ -1618,8 +1706,12 @@ def make_handler(state, auth):
                 return
 
             if path == "/api/ai/task":
-                if not auth.verify(_extract_token(self)):
+                user = auth.verify(_extract_token(self))
+                if not user:
                     self._send_json(401, {"error": "请先登录"})
+                    return
+                if user.get("role") != "root":
+                    self._send_json(403, {"error": "无权限"})
                     return
                 q = parse_qs(urlparse(self.path).query)
                 tid = (q.get("id") or [""])[0]
@@ -1805,8 +1897,12 @@ def make_handler(state, auth):
                 return
 
             if path == "/api/ai/run":
-                if not auth.verify(_extract_token(self)):
+                user = auth.verify(_extract_token(self))
+                if not user:
                     self._send_json(401, {"error": "请先登录"})
+                    return
+                if user.get("role") != "root":
+                    self._send_json(403, {"error": "无权限"})
                     return
                 payload = self._read_json()
                 if payload is None:
@@ -1819,10 +1915,84 @@ def make_handler(state, auth):
                 if not re.match(r"^[A-Z0-9]{10}$", asin):
                     self._send_json(400, {"error": "asin 格式不正确（应为10位字母数字）"})
                     return
+                login_state = _check_login_state(AI_SKILLS[skill_id], user["username"])
+                if login_state in ("missing", "expired"):
+                    self._send_json(400, {
+                        "error": "需要登录 Amazon 账号才能开始分析",
+                        "code": "login_required",
+                    })
+                    return
                 params = payload.get("params") or {}
-                tid = state.create_ai_task(skill_id, asin, params)
-                print(f"  [ai] 创建分析任务 {tid}：{skill_id} / {asin}")
+                tid = state.create_ai_task(skill_id, asin, user["username"], params)
+                print(f"  [ai] 创建分析任务 {tid}：{skill_id} / {asin} / {user['username']}")
                 self._send_json(200, {"taskId": tid})
+                return
+
+            if path == "/api/ai/login":
+                user = auth.verify(_extract_token(self))
+                if not user:
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                if user.get("role") != "root":
+                    self._send_json(403, {"error": "无权限"})
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                skill_id = (payload.get("skillId") or "").strip()
+                if skill_id not in AI_SKILLS:
+                    self._send_json(400, {"error": f"unsupported skillId: {skill_id}"})
+                    return
+                skill = AI_SKILLS[skill_id]
+                dedup_key = (skill_id, user["username"])
+                with _login_lock:
+                    if dedup_key in _login_in_progress:
+                        self._send_json(200, {"ok": True, "already": True})
+                        return
+                    _login_in_progress.add(dedup_key)
+
+                def _run_login():
+                    try:
+                        subprocess.run(
+                            ["python3", "amz_login.py"],
+                            cwd=skill["dir"],
+                            env={**os.environ, "COSMO_FBA_USER": user["username"]},
+                            timeout=330,
+                        )
+                    except Exception as e:
+                        print(f"[ai-login] {skill_id}/{user['username']} 登录脚本异常: {e}")
+                    finally:
+                        with _login_lock:
+                            _login_in_progress.discard(dedup_key)
+
+                threading.Thread(target=_run_login, daemon=True, name="AiLogin").start()
+                self._send_json(200, {"ok": True})
+                return
+
+            if path == "/api/ai/cancel":
+                user = auth.verify(_extract_token(self))
+                if not user:
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                if user.get("role") != "root":
+                    self._send_json(403, {"error": "无权限"})
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                tid = (payload.get("id") or "").strip()
+                task = state.get_ai_task(tid) if tid else None
+                if not task:
+                    self._send_json(404, {"error": "task not found"})
+                    return
+                if task["status"] == "pending":
+                    state.update_ai_task(tid, status="cancelled", error="用户手动结束", completed_at=_now_iso())
+                elif task["status"] == "running":
+                    ai_worker.cancel(tid)
+                else:
+                    self._send_json(400, {"error": f"任务当前状态为 {task['status']}，无法终止"})
+                    return
+                self._send_json(200, {"ok": True})
                 return
 
             if path == "/api/pdf/upload":
@@ -2018,8 +2188,12 @@ def make_handler(state, auth):
                 return
 
             if path == "/api/ai/tasks":
-                if not auth.verify(_extract_token(self)):
+                user = auth.verify(_extract_token(self))
+                if not user:
                     self._send_json(401, {"error": "请先登录"})
+                    return
+                if user.get("role") != "root":
+                    self._send_json(403, {"error": "无权限"})
                     return
                 q = parse_qs(urlparse(self.path).query)
                 tid = (q.get("id") or [""])[0]
@@ -2190,7 +2364,7 @@ def main():
     ai_worker = AiAnalysisWorker(db_state)
     ai_worker.start()
 
-    handler  = make_handler(db_state, auth_mgr)
+    handler  = make_handler(db_state, auth_mgr, ai_worker)
     server   = ThreadingServer((args.host, args.port), handler)
 
     ip        = get_lan_ip()

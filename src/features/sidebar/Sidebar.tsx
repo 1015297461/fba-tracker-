@@ -52,6 +52,7 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
 
   const ctx = useProducts();
   const syncMode = ctx?.syncMode;
+  const currentUser = ctx?.currentUser;
   const { label: syncLabel, cls: syncCls } = useSyncLabel();
   const modeText = syncMode === 'server' ? '局域网协作' : syncMode === 'local' ? '本地存储' : '检测中';
 
@@ -102,19 +103,21 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
         </div>
       </div>
 
-      <div className="sb-section">
-        <div className="sb-section-label">AI分析</div>
-        <div className="sb-view-tabs">
-          {AI_SKILLS.map(s => (
-            <button key={s.id} className="sb-view-btn"
-              data-active={view === 'aiAnalyze:' + s.id}
-              onClick={() => setView('aiAnalyze:' + s.id)}>
-              <span className="ic">{s.ic}</span>
-              <span>{s.label}</span>
-            </button>
-          ))}
+      {currentUser?.role === 'root' && (
+        <div className="sb-section">
+          <div className="sb-section-label">AI分析</div>
+          <div className="sb-view-tabs">
+            {AI_SKILLS.map(s => (
+              <button key={s.id} className="sb-view-btn"
+                data-active={view === 'aiAnalyze:' + s.id}
+                onClick={() => setView('aiAnalyze:' + s.id)}>
+                <span className="ic">{s.ic}</span>
+                <span>{s.label}</span>
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="sb-section">
         <div className="sb-section-label">状态筛选</div>
@@ -180,9 +183,10 @@ export function TopBar({ view, product, theme, onToggleTheme, onNewProduct }: {
   onNewProduct: () => void;
 }) {
   const titles: Record<string, string> = { list: '产品列表', progress: '进度总览', table: '数据表格', keywordRank: '关键词排名', productScrape: '产品采集', reviewFetch: '评论采集', pdfSplit: 'PDF拆分', myExports: '我的导出' };
-  const aiSkill = view.startsWith('aiAnalyze:') ? AI_SKILLS.find(s => 'aiAnalyze:' + s.id === view) : null;
-  const viewTitle = aiSkill ? `AI分析 · ${aiSkill.label}` : titles[view];
   const ctx = useProducts();
+  const isRoot = ctx?.currentUser?.role === 'root';
+  const aiSkill = isRoot && view.startsWith('aiAnalyze:') ? AI_SKILLS.find(s => 'aiAnalyze:' + s.id === view) : null;
+  const viewTitle = aiSkill ? `AI分析 · ${aiSkill.label}` : titles[view];
   const { label: syncLabel, cls: syncCls, icon: syncIcon } = useSyncLabel();
   const currentUser = ctx?.currentUser;
   const logout = ctx?.logout;
