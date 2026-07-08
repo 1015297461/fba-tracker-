@@ -95,11 +95,14 @@ graph TD
     D --> E
 
     F["b.shipments[]<br/>.filter(sh => !!sh.shipDate)"] --> G["validShipments<br/>有效出货记录"]
-    G -->|"无变体: sh.qty × b.unitPrice<br/>有变体: Σ si.qty × 匹配SKU单价"| H["actualShippedValue<br/>实际出货金额（不含extraCosts）"]
+    G -->|"无变体: sh.qty × b.unitPrice<br/>有变体: Σ si.qty × 匹配SKU单价"| H2["shippedSkuValue<br/>已出货SKU金额"]
+    H2 --> H["actualShippedValue<br/>= shippedSkuValue + extraSubtotal（有出货时整笔计入）"]
+    D --> H
 
-    H -->|"> 0"| I{"effectiveTotal<br/>结算基准"}
-    E -->|"= 0"| I
-    I -->|"有出货时"| J["= actualShippedValue"]
+    G -->|"length > 0 ?"| I{"effectiveTotal<br/>结算基准"}
+    H --> I
+    E --> I
+    I -->|"有出货时（validShipments 非空）"| J["= actualShippedValue"]
     I -->|"无出货时"| K["= skuTotal"]
 
     L["b.depositActual"] --> N["actualTotalPaid<br/>已付总金额"]
@@ -132,18 +135,24 @@ skuTotal = skuSubtotal + extraSubtotal          ← "订单金额"字段展示�
 ```
 validShipments = b.shipments.filter(sh => !!sh.shipDate)
 
-actualShippedValue（无变体）= Σ validShipments: sh.qty × b.unitPrice
-actualShippedValue（有变体）= Σ validShipments: Σ sh.items:
+shippedSkuValue（无变体）= Σ validShipments: sh.qty × b.unitPrice
+shippedSkuValue（有变体）= Σ validShipments: Σ sh.items:
                                 si.qty × b.items.find(variantId).unitPrice
 
-⚠️ actualShippedValue 故意不含 extraCosts
+actualShippedValue = validShipments.length > 0 ? shippedSkuValue + extraSubtotal
+                                                : 0
+
+✅ actualShippedValue 现在整笔计入 extraCosts（一旦有出货记录即计入全额，不按出货比例拆分）
 ```
 
 **第三层：结算基准切换（最关键的逻辑）**
 ```
-effectiveTotal = actualShippedValue > 0 ? actualShippedValue
-                                        : skuTotal
+effectiveTotal = validShipments.length > 0 ? actualShippedValue
+                                            : skuTotal
 ```
+判断条件从 `actualShippedValue > 0` 改成了 `validShipments.length > 0`：如果 extraCosts
+里有一笔较大的负数（违约赔付扣款），可能把 `actualShippedValue` 拉到 ≤ 0，用数值判断会被
+误判成"未出货"，改用 validShipments 是否存在来判断更稳妥。
 
 **第四层：付款核算**
 ```
@@ -221,8 +230,8 @@ sequenceDiagram
     S-->>U: 出货记录创建，但 validShipments 仍为空，所有计算不变
 
     U->>S: 填写实际出货日期（shipDate）
-    S-->>U: ⚡ validShipments 更新 → actualShippedValue 重算
-    Note over S: 若 actualShippedValue < skuTotal<br/>effectiveTotal 切换为 actualShippedValue
+    S-->>U: ⚡ validShipments 更新 → actualShippedValue 重算（= 已出货SKU金额 + extraSubtotal）
+    Note over S: 只要 validShipments 非空<br/>effectiveTotal 就切换为 actualShippedValue
 
     U->>S: 添加尾款支付记录（金额+日期）
     S-->>U: tailPaid 更新 → actualTotalPaid 重算 → 判断是否付清
@@ -234,10 +243,10 @@ sequenceDiagram
 flowchart TD
     A[批次创建] --> B{是否有 validShipments?}
     B -->|否 shipDate全为空| C["effectiveTotal = skuTotal<br/>按全额订单结算"]
-    B -->|是 至少一条有shipDate| D["effectiveTotal = actualShippedValue<br/>按实际出货金额结算"]
+    B -->|是 至少一条有shipDate| D["effectiveTotal = actualShippedValue<br/>= 已出货SKU金额 + extraSubtotal"]
     D --> E{actualShippedValue vs skuTotal}
-    E -->|相等 全量出货且无extraCosts| F["绿色显示，已全额结算"]
-    E -->|不等 部分出货或有extraCosts| G["橙色显示，差额待结算"]
+    E -->|相等 SKU全量出货| F["绿色显示，已全额结算"]
+    E -->|不等 部分出货| G["橙色显示，差额待结算"]
     C --> H{actualTotalPaid vs effectiveTotal}
     D --> H
     H -->|">="| I["✓ 已付清（绿色）"]
@@ -268,20 +277,25 @@ flowchart LR
 只有 shipDate 非空的出货记录才计入以下所有计算：
 - shippedQty（已出货数量）
 - actualShippedValue（实际出货金额）
-- effectiveTotal（当 > 0 时切换基准）
+- effectiveTotal（当 validShipments 非空时切换基准）
 
 预先创建的"计划中"出货记录（shipDate 为空）对任何数字均无影响。
 ```
 
-**不变量 2：actualShippedValue 不含 extraCosts**
+**不变量 2：actualShippedValue 有出货后整笔计入 extraCosts**
 ```
-actualShippedValue = Σ validShipments: 出货数量 × SKU单价
+validShipments.length > 0 时：
+  actualShippedValue = Σ validShipments: 出货数量 × SKU单价  +  extraSubtotal
 
-其他费用（代采配件/国内运费等）不随出货记录分摊，
-始终体现在 skuTotal 中，不进入 effectiveTotal 的出货分支。
+其他费用（代采配件/国内运费/违约赔付扣款等）不随出货记录按比例分摊，
+只要该批次出现过一条有效出货记录，就整笔计入 actualShippedValue（不管本次出了多少 SKU）。
 
-⚠️ 业务影响：如果工厂分批出货，effectiveTotal 会低于 skuTotal，
-   差额（其他费用部分）暂无对应的结算金额，需要注意是否符合实际付款协议。
+判断"是否已出货"用的是 validShipments.length > 0，而不是 actualShippedValue > 0——
+如果 extraCosts 里有一笔较大的负数（如违约赔付扣款），可能会把 actualShippedValue
+拉到 ≤ 0，用数值判断会被误判成"未出货"，改用 validShipments 的存在性更稳妥。
+
+（历史备注：此前的实现故意不含 extraCosts——一旦分批出货，effectiveTotal 会永久低于
+skuTotal，其他费用部分找不到对应的结算金额，2026-07 已改为整笔计入，见 §7.2。）
 ```
 
 **不变量 3：balancePayments 的兼容降级顺序**
@@ -355,11 +369,17 @@ effBps = balancePayments.length > 0
 
 **✅ 已实施：无定价保护（P5）**：付款 chip 加 `orderQty > 0` 条件。
 
-**已确认现状：`extraCosts` 的结算归属**
+**✅ 已实施（2026-07）：extraCosts 计入实际出货结算，且支持负数（原"方案 A"已推翻）**
 
-当前其他费用不计入 `actualShippedValue`，需与实际付款协议对齐：
-
-- **方案 A（已采用）**：其他费用全额在订单时确认，不随出货分摊（保持现状）
+此前 `actualShippedValue` 故意不含 `extraCosts`（"方案 A"：其他费用全额在订单时确认，
+不随出货分摊），但这导致一旦分批出货，`effectiveTotal` 会永久低于订单金额，其他费用
+部分（尤其是负数的违约赔付扣款）无法体现在"应结尾款"里，也让全量出货但带 extraCosts
+的批次永远显示"部分出货"的橙色状态。改为**方案 B**：只要批次出现过一条有效出货记录，
+`actualShippedValue = shippedSkuValue + extraSubtotal` 整笔计入，不按出货比例拆分；
+判断"是否已出货"也从 `actualShippedValue > 0` 改成 `validShipments.length > 0`，避免
+大额负数把数值判断带偏。同时「其他费用」的数量/单价输入框、"应结尾款"字段都放开了
+负数（原来的原生 `<input type="number">` 在用户刚敲下"-"时会因 `Number("-")===NaN`
+把输入框清空，新增的 `NumCell` 组件用本地字符串暂存+失焦提交解决）。
 
 ### 7.3 类型安全（✅ 已实施，P6）
 
@@ -371,7 +391,7 @@ effBps = balancePayments.length > 0
 
 | 维度 | 评分 | 说明 |
 |---|---|---|
-| 业务逻辑完整性 | ★★★★☆ | 核心流程完整，extraCosts 结算归属有歧义 |
+| 业务逻辑完整性 | ★★★★★ | 核心流程完整，extraCosts 结算归属已明确（方案B，见§7.2），并支持负数扣款场景 |
 | 代码可维护性 | ★★★★☆ | computeBatch 集中计算逻辑，类型保护核心路径，单函数仍较长但已分层 |
 | 类型安全 | ★★★★☆ | 生产批次/出货/付款核心路径已有强类型，stages 通用层仍为 any |
 | 用户体验 | ★★★★☆ | 信息密度高，空批次状态误报是主要问题 |

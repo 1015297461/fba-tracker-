@@ -431,6 +431,24 @@ interface BatchComputedResult {
   paidComplete: boolean;
 }
 
+// 受控数字输入框：本地暂存输入中的原始字符串，失焦时才转 Number 提交。
+// 直接把 onChange 里的 Number(e.target.value) 写回受控 value 会在用户刚输入
+// "-"（负号，还没跟数字）时得到 NaN，导致输入框被清空、永远打不出负数——
+// 「其他费用」需要支持负数（扣供应商违约赔付金额），所以在这里用本地状态过一道。
+function NumCell({ value, onCommit, step }: { value: any; onCommit: (v: number) => void; step?: string }) {
+  const [local, setLocal] = React.useState(String(value ?? 0));
+  React.useEffect(() => { setLocal(String(value ?? 0)); }, [value]);
+  return (
+    <input className="cell mono" type="number" step={step} value={local}
+      onChange={e => setLocal(e.target.value)}
+      onBlur={() => {
+        const n = Number(local);
+        onCommit(Number.isFinite(n) ? n : 0);
+      }}
+      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} />
+  );
+}
+
 function computeBatch(b: ProductionBatch, hasVariants: boolean): BatchComputedResult {
   const skuSubtotal = hasVariants && b.items.length > 0
     ? b.items.reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.unitPrice) || 0), 0)
@@ -448,14 +466,17 @@ function computeBatch(b: ProductionBatch, hasVariants: boolean): BatchComputedRe
     if (hasVariants) return sum + (sh.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0);
     return sum + (Number(sh.qty) || 0);
   }, 0);
-  const actualShippedValue = validShipments.reduce((sum, sh) => {
+  const shippedSkuValue = validShipments.reduce((sum, sh) => {
     if (hasVariants) return sum + (sh.items || []).reduce((s, si) => {
       const bi = b.items.find(x => x.variantId === si.variantId);
       return s + (Number(si.qty) || 0) * (Number(bi?.unitPrice) || 0);
     }, 0);
     return sum + (Number(sh.qty) || 0) * (Number(b.unitPrice) || 0);
   }, 0);
-  const effectiveTotal = actualShippedValue > 0 ? actualShippedValue : skuTotal;
+  // 其他费用（代采配件/运费/违约赔付扣款等）不挂在具体某次出货上，是整批次一次性的，
+  // 只要这批已经有出货记录就整笔计入实际出货结算，不按出货比例拆分。
+  const actualShippedValue = validShipments.length > 0 ? shippedSkuValue + extraSubtotal : 0;
+  const effectiveTotal = validShipments.length > 0 ? actualShippedValue : skuTotal;
   const pendingQty = orderQty - shippedQty;
   const effBps = getEffectiveBalancePayments(b);
   const tailPaid = effBps.reduce((s, bp) => s + (Number(bp.amount) || 0), 0);
@@ -690,10 +711,10 @@ function TabProd({ p }: { p: any }) {
                           <tr key={c.id}>
                             <td><input className="cell" value={c.name} placeholder="费用名称"
                               onChange={e => updateBatchExtra(p.id, b.id, c.id, { name:e.target.value })} /></td>
-                            <td className="num"><input className="cell mono" type="number" value={c.qty}
-                              onChange={e => updateBatchExtra(p.id, b.id, c.id, { qty:Number(e.target.value) })} /></td>
-                            <td className="num"><input className="cell mono" type="number" step="0.01" value={c.unitPrice}
-                              onChange={e => updateBatchExtra(p.id, b.id, c.id, { unitPrice:Number(e.target.value) })} /></td>
+                            <td className="num"><NumCell value={c.qty}
+                              onCommit={v => updateBatchExtra(p.id, b.id, c.id, { qty:v })} /></td>
+                            <td className="num"><NumCell value={c.unitPrice} step="0.01"
+                              onCommit={v => updateBatchExtra(p.id, b.id, c.id, { unitPrice:v })} /></td>
                             <td className="num">¥{((Number(c.qty)||0)*(Number(c.unitPrice)||0)).toFixed(2)}</td>
                             <td><button className="row-del" onClick={() => { if (confirm('确定删除该笔费用？')) removeBatchExtra(p.id, b.id, c.id); }}>✕</button></td>
                           </tr>
@@ -732,10 +753,10 @@ function TabProd({ p }: { p: any }) {
                       </span>
                       <span className="calc-field-value mono" style={{fontWeight:600,color:'var(--blue)'}}>¥{c.skuTotal.toFixed(2)}</span>
                     </div>
-                    {c.actualShippedValue > 0 ? (
+                    {c.validShipments.length > 0 ? (
                       <div className="calc-field">
                         <span className="calc-field-label">
-                          <FieldHint label="实际出货结算" placement="right" hint={`= Σ(各出货记录数量 × 对应SKU单价)，按已实际出货（已填出货日期）的记录计算 = ¥${c.actualShippedValue.toFixed(2)}`} />
+                          <FieldHint label="实际出货结算" placement="right" hint={`= Σ(各出货记录数量 × 对应SKU单价) + 其他费用小计(¥${c.extraSubtotal.toFixed(2)})，按已实际出货（已填出货日期）的记录计算 = ¥${c.actualShippedValue.toFixed(2)}`} />
                         </span>
                         <span className="calc-field-value mono" style={{fontWeight:600,color: c.actualShippedValue !== c.skuTotal ? 'var(--orange)' : 'var(--green)'}}>¥{c.actualShippedValue.toFixed(2)}</span>
                       </div>
@@ -759,9 +780,9 @@ function TabProd({ p }: { p: any }) {
                       onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { balancePct:Number(v) })} />
                     <div className="calc-field">
                       <span className="calc-field-label">
-                        <FieldHint label="应结尾款" placement="right" hint={`= 结算金额(¥${c.effectiveTotal.toFixed(2)}，${c.actualShippedValue > 0 ? '取实际出货结算' : '尚无出货记录，取订单金额'}) − 实际预付款(¥${(Number(b.depositActual)||0).toFixed(2)}) = ¥${Math.max(0, c.effectiveTotal - (Number(b.depositActual)||0)).toFixed(2)}`} />
+                        <FieldHint label="应结尾款" placement="right" hint={`= 结算金额(¥${c.effectiveTotal.toFixed(2)}，${c.validShipments.length > 0 ? '取实际出货结算' : '尚无出货记录，取订单金额'}) − 实际预付款(¥${(Number(b.depositActual)||0).toFixed(2)}) = ¥${(c.effectiveTotal - (Number(b.depositActual)||0)).toFixed(2)}（可为负数：其他费用里的违约赔付扣款等场景）`} />
                       </span>
-                      <span className="calc-field-value mono">¥{Math.max(0, c.effectiveTotal - (Number(b.depositActual)||0)).toFixed(2)}</span>
+                      <span className="calc-field-value mono">¥{(c.effectiveTotal - (Number(b.depositActual)||0)).toFixed(2)}</span>
                     </div>
                     <div className="calc-field">
                       <span className="calc-field-label">
