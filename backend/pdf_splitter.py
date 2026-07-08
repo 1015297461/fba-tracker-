@@ -20,11 +20,12 @@ import uuid
 import time
 from pathlib import Path
 
+from .utils import PROJECT_ROOT
+
 # ---------------------------------------------------------------------------
 # 临时目录
 # ---------------------------------------------------------------------------
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TMP_DIR  = os.path.join(_BASE_DIR, "data", "pdf_tmp")
+TMP_DIR  = os.path.join(PROJECT_ROOT, "data", "pdf_tmp")
 TMP_SRC  = os.path.join(TMP_DIR, "src")   # 上传的源 PDF
 TMP_OUT  = os.path.join(TMP_DIR, "out")   # 未指定自定义目录时的输出
 

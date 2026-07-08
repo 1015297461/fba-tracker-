@@ -5,7 +5,7 @@
     "build": "esbuild src/main.tsx --bundle --outfile=compiled/bundle.js --minify --jsx=automatic --platform=browser",
     "watch": "esbuild src/main.tsx --bundle --outfile=compiled/bundle.js --watch --jsx=automatic --platform=browser",
     "prestart": "esbuild src/main.tsx --bundle --outfile=compiled/bundle.js --minify --jsx=automatic --platform=browser",
-    "start": "python3 server.py",
+    "start": "python3 -m backend.app",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

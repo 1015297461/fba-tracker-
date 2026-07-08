@@ -8,12 +8,14 @@
 首次使用需要安装依赖并构建一次前端：
 ```bash
 npm install
+pip3 install -r requirements.txt
 npm run build      # esbuild 把 src/ 打包为 compiled/bundle.js
 ```
 
-之后启动服务器：
+之后从**仓库根目录**启动服务器（后端代码在 `backend/` 包里，用了包内相对导入，
+必须用 `-m` 方式启动，直接 `python3 backend/app.py` 会报 ImportError）：
 ```bash
-python3 server.py
+python3 -m backend.app
 ```
 （或者直接 `npm start`，会自动先构建再启动）
 
@@ -33,8 +35,8 @@ python3 server.py
 
 参数：
 - `--port 9000` 改端口（默认 8002）
-- `--db /path/fba.db` 自定义数据库路径（默认 ./data/fba-data.db）
-- `--users /path/u.json` 自定义用户配置（默认 ./data/fba-users.json）
+- `--db /path/fba.db` 自定义数据库路径（默认 `<仓库根>/data/fba-data.db`，与当前工作目录无关）
+- `--users /path/u.json` 自定义用户配置（默认 `<仓库根>/data/fba-users.json`）
 - `--host 127.0.0.1` 限制只本机访问（不开放给同事）
 
 ## 2. 登录
@@ -85,12 +87,12 @@ cp data/fba-data.db data/fba-data-$(date +%F).db
 
 **不适合**：两个人**同时改同一个字段** —— 后写的人会赢，先写的人改动会被回滚。如果你们经常会撞车，建议约定"谁负责哪几个 SKU"。
 
-## 8. 工具模块（关键词排名 / 产品采集）
-"产品采集"解析商品详情页依赖 `beautifulsoup4`（可选 `lxml` 加速）：
+## 8. 工具模块（关键词排名 / 产品采集 / PDF拆分）
+"产品采集"解析商品详情页依赖 `beautifulsoup4`（可选 `lxml` 加速），"PDF拆分"依赖 `pypdf`，均已列在 `requirements.txt`：
 ```bash
-pip3 install beautifulsoup4
+pip3 install -r requirements.txt
 ```
-未安装时不影响 FBA Tracker 其余功能，"产品采集"会把每个 ASIN 标记为采集失败并提示缺依赖。"关键词排名"基于正则解析，无需此依赖。
+未安装 `beautifulsoup4` 不影响 FBA Tracker 其余功能，"产品采集"会把每个 ASIN 标记为采集失败并提示缺依赖。"关键词排名"基于正则解析，无需此依赖。
 
 ## 9. 想退回单机模式？
-把 `server.py` 停掉，刷新页面，前端探测不到 `/api/products` 就会回到纯 localStorage 模式。
+把服务器（`python3 -m backend.app` 或 `npm start`）停掉，刷新页面，前端探测不到 `/api/products` 就会回到纯 localStorage 模式。

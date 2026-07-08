@@ -8,7 +8,7 @@ function authHeaders(): Record<string, string> {
 }
 
 // 以后加新 skill：这里加一条（Sidebar.tsx 会据此渲染"AI分析"分组下的按钮），
-// 后端 server.py 的 AI_SKILLS 字典也要加一条同 id 的对应项。
+// 后端 backend/workers/ai_analysis_worker.py 的 AI_SKILLS 字典也要加一条同 id 的对应项。
 export const AI_SKILLS = [
   { id: 'cosmo-diagnose', ic: '🩺', label: 'CosmoDiagnose', desc: 'Amazon Listing 诊断（COSMO）' },
 ];

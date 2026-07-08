@@ -7,7 +7,7 @@
   - 自然排名 organic_rank（剔除广告后的跨页全局序号）
   - 广告位 sponsored（出现在搜索结果中的赞助坑位）
 
-仅依赖 Python 标准库（urllib），与 server.py 保持零第三方依赖。
+仅依赖 Python 标准库（urllib），与 backend/app.py 保持零第三方依赖。
 
 注意：
   * 直连出口为本机住宅 IP，请控制频率（请求间随机间隔）。
