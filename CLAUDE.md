@@ -73,8 +73,13 @@ src/
   app.tsx                    # App 根组件：登录态(AuthGate)、AppShell(顶层视图路由/Tabs)
   context/ProductContext.tsx # ProductsProvider + useProducts：全局状态、与后端同步逻辑、
                               #   ~19 个 update*() 字段更新函数（updateStage/updateVariant/...）
+                              #   回收站相关：`trash` 状态（随 GET /api/products 响应一起刷新，无独立轮询）+
+                              #   restoreFromTrash/purgeFromTrash/emptyTrash（调完后端接口都用 refreshFromServer()
+                              #   整体拉取最新 products+trash 覆盖本地，不走增量 setProducts，避免和其他终端的未同步编辑冲突）
   components/index.tsx        # 通用 UI 组件：StatusChip/StatusSelect/EditField/StageCard/
-                              #   RecordCard/AddRecordButton/VariantSelector
+                              #   RecordCard/AddRecordButton/VariantSelector/FieldHint
+                              #   （FieldHint：字段标题 hover 显示计算过程说明的通用 tooltip，
+                              #    EditField 新增 hint? 透传给它；生产出货模块的计算字段大量使用）
   data/
     types.ts                 # 核心类型：Product / Variant / StageData / LogEntry / ProfitResult
     constants.ts              # STAGES(18个阶段)/TABS(7个分页)/STAGE_STATUSES/DEFAULT_FX 等常量
@@ -96,8 +101,11 @@ src/
       AiAnalyze.tsx             # 工具：AI分析（无人值守 shell 出去跑 `claude -p` 执行 Claude Code Skill；
                                 #   导出 AI_SKILLS 常量供 Sidebar.tsx / app.tsx 渲染"AI分析"分组按钮/视图路由/Tweaks下拉，
                                 #   新增 skill 只需在这个数组里加一条 + server.py 的 AI_SKILLS 字典加同 id 的一条）
-  exports/
-    MyExports.tsx             # 共用「我的导出」视图：展示所有后台导出任务进度和下载入口；useExportBadge() 供侧边栏徽标使用
+    exports/
+      MyExports.tsx           # 共用「我的导出」视图：展示所有后台导出任务进度和下载入口；useExportBadge() 供侧边栏徽标使用
+    trash/
+      Trash.tsx               # 回收站视图：列出被删除的产品，支持单个恢复/彻底删除 + 清空回收站；
+                              #   数据来自 ProductContext 的 trash 状态（GET /api/products 响应内嵌，非独立轮询）
 
 README.md                    # 项目入口：简介 + 快速开始 + 文档导航
 docs/
@@ -130,6 +138,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 |---|---|
 | `meta` | 全局 key-value（如当前 `version` 号） |
 | `products` | 产品主数据（JSON blob + version，乐观锁核心） |
+| `trash` | 回收站：产品被删除时的完整快照（`product_json`），`write()` 检测到某 id 从新列表中消失即挪进这张表而非真删 |
 | `audit_log` | 产品数据变更审计 |
 | `keyword_tasks` / `rank_snapshots` | 关键词排名：任务配置 + 历史快照 |
 | `scrape_tasks` / `scrape_products` | 产品采集：任务记录 + 落库的商品详情 |
@@ -141,8 +150,11 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/products` | 取产品数据 + 当前 version |
-| PUT | `/api/products` | 写入，带 `baseVersion`，version 不匹配返回 409 + 最新数据 |
+| GET | `/api/products` | 取产品数据 + 当前 version + `trash`（回收站列表） |
+| PUT | `/api/products` | 写入，带 `baseVersion`，version 不匹配返回 409 + 最新数据；请求体里消失的产品 id 会被移入回收站而非真删 |
+| POST | `/api/trash/restore` | body `{id}`，把回收站里的产品搬回 `products`；找不到该 id 返回 404 |
+| DELETE | `/api/trash?id=` | 从回收站彻底删除单个产品（不可恢复） |
+| DELETE | `/api/trash/empty` | 清空整个回收站（不可恢复） |
 | GET | `/api/me` | 当前登录用户 |
 | POST | `/api/login` / `/api/logout` | Token 登录/登出（`fba-users.json`） |
 | GET/POST/DELETE | `/api/rank/*` | 关键词排名：任务列表/历史/创建/删除/单关键词 |
@@ -201,7 +213,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 ## 暂时隐藏的功能（注释保留，可随时恢复）
 
 - **`Sidebar.tsx` `sb-stats` 区块**：进行中/本月完成/30天到期/已逾期四项数字统计已注释，对应 `computeStats` 调用及 import 同步注释。
-- **`ProgressView.tsx` KPI**：进度总览顶部卡片中的「本月完成」「30天到期」「已逾期」三项已注释，其余（总产品/进行中/已完成/已暂停）保留。
+- **`ProgressView.tsx` KPI**：进度总览顶部卡片中的「本月完成」「30天到期」「已逾期」三项已注释，其余（总产品/开发中/已上架/已暂停）保留。
 
 ## 改前端代码的注意事项
 

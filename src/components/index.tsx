@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { STAGE_STATUSES } from '../data/constants';
 import { useProducts } from '../context/ProductContext';
 import type { StageDefinition } from '../data/types';
@@ -25,7 +26,62 @@ export function StatusSelect({ value, onChange, size }: { value?: string; onChan
   );
 }
 
-export function EditField({ label, value, onChange, type, mono, placeholder, wide, multi, prefix, suffix, options }: {
+// 悬浮标题时显示计算过程说明（如"= 数量 × 单价 = ¥120.00"）
+// 用 portal 挂到 body 上、position:fixed 定位：避免被折叠卡片等祖先元素的 overflow:hidden 裁切，
+// 并在渲染后按视口边界收缩，防止在窄列/边缘时溢出屏幕。
+// 鼠标从标题移到弹窗上时不能立即关闭（要能选中/复制文字），仿照 .shs-tooltip-inner 的桥接思路，
+// 用短延时代替 CSS 的 padding-top 空隙桥接（弹窗是 portal 出去的，DOM 上不再是标题的子元素，CSS 那招用不了）。
+export function FieldHint({ label, hint, placement = 'bottom' }: { label: React.ReactNode; hint?: string; placement?: 'bottom' | 'right' }) {
+  const [open, setOpen] = React.useState(false);
+  const anchorRef = React.useRef<HTMLSpanElement>(null);
+  const popRef = React.useRef<HTMLSpanElement>(null);
+  const closeTimer = React.useRef<number | null>(null);
+  const [pos, setPos] = React.useState<{ top: number; left: number }>({ top: -9999, left: -9999 });
+
+  const clearCloseTimer = () => {
+    if (closeTimer.current != null) { window.clearTimeout(closeTimer.current); closeTimer.current = null; }
+  };
+  const handleEnter = () => { clearCloseTimer(); setOpen(true); };
+  const scheduleClose = () => { clearCloseTimer(); closeTimer.current = window.setTimeout(() => setOpen(false), 200); };
+  React.useEffect(() => () => clearCloseTimer(), []);
+
+  React.useLayoutEffect(() => {
+    if (!open || !anchorRef.current) return;
+    const a = anchorRef.current.getBoundingClientRect();
+    const popW = popRef.current?.offsetWidth || 0;
+    const popH = popRef.current?.offsetHeight || 0;
+    const margin = 8;
+    let top: number, left: number;
+    if (placement === 'right') {
+      left = a.right + 8;
+      if (left + popW + margin > window.innerWidth) left = a.left - popW - 8; // 右侧放不下时翻到左侧
+      top = a.top + a.height / 2 - popH / 2;
+      top = Math.max(margin, Math.min(top, window.innerHeight - popH - margin));
+    } else {
+      top = a.bottom + 6;
+      left = a.left + a.width / 2 - popW / 2;
+      left = Math.max(margin, Math.min(left, window.innerWidth - popW - margin));
+    }
+    setPos({ top, left });
+  }, [open, placement]);
+
+  if (!hint) return <>{label}</>;
+  return (
+    <span ref={anchorRef} className="field-hint"
+      onMouseEnter={handleEnter} onMouseLeave={scheduleClose}>
+      {label}
+      {open && createPortal(
+        <span ref={popRef} className="field-hint-pop" style={{ top: pos.top, left: pos.left }}
+          onMouseEnter={handleEnter} onMouseLeave={scheduleClose}>
+          <span className="field-hint-pop-inner">{hint}</span>
+        </span>,
+        document.body
+      )}
+    </span>
+  );
+}
+
+export function EditField({ label, value, onChange, type, mono, placeholder, wide, multi, prefix, suffix, options, hint, hintPlacement }: {
   label?: string;
   value?: any;
   onChange: (v: any) => void;
@@ -37,6 +93,8 @@ export function EditField({ label, value, onChange, type, mono, placeholder, wid
   prefix?: string;
   suffix?: string;
   options?: any[];
+  hint?: string;
+  hintPlacement?: 'bottom' | 'right';
 }) {
   const [local, setLocal] = React.useState(value ?? '');
   React.useEffect(() => { setLocal(value ?? ''); }, [value]);
@@ -47,7 +105,7 @@ export function EditField({ label, value, onChange, type, mono, placeholder, wid
   };
   return (
     <div className={"field" + (wide ? " field-wide" : "")}>
-      {label && <span className="lbl">{label}</span>}
+      {label && <span className="lbl"><FieldHint label={label} hint={hint} placement={hintPlacement} /></span>}
       <div className={"input-wrap" + (prefix ? ' has-prefix' : '') + (suffix ? ' has-suffix' : '')}>
         {prefix && <span className="prefix">{prefix}</span>}
         {options ? (

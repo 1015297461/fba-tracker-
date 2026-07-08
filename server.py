@@ -133,6 +133,15 @@ class DbState:
                     changed_at TEXT DEFAULT (datetime('now'))
                 );
 
+                CREATE TABLE IF NOT EXISTS trash (
+                    id           TEXT PRIMARY KEY,
+                    name         TEXT,
+                    sku          TEXT,
+                    product_json TEXT NOT NULL,
+                    deleted_by   TEXT,
+                    deleted_at   TEXT
+                );
+
                 CREATE TABLE IF NOT EXISTS keyword_tasks (
                     id             TEXT PRIMARY KEY,
                     asin           TEXT NOT NULL,
@@ -309,6 +318,101 @@ class DbState:
             "variants":     json.loads(row["variants"] or "[]"),
         }
 
+    # ---- 回收站 ----
+
+    def list_trash(self):
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, name, sku, product_json, deleted_by, deleted_at "
+                "FROM trash ORDER BY deleted_at DESC"
+            ).fetchall()
+            return [{
+                "id":        r["id"],
+                "name":      r["name"],
+                "sku":       r["sku"],
+                "deletedBy": r["deleted_by"],
+                "deletedAt": r["deleted_at"],
+                "product":   json.loads(r["product_json"] or "{}"),
+            } for r in rows]
+
+    def restore_from_trash(self, tid, user=None):
+        """把回收站里的产品移回 products；找不到返回 None，否则返回新 version。"""
+        with self.lock:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT product_json FROM trash WHERE id=?", [tid]
+                ).fetchone()
+                if not row:
+                    return None
+                prod = json.loads(row["product_json"] or "{}")
+                max_so = conn.execute("SELECT MAX(sort_order) FROM products").fetchone()[0] or 0
+                now = _now_iso()
+                conn.execute(
+                    """INSERT OR REPLACE INTO products
+                       (id, name, sku, category, status, lead, created_at,
+                        current_stage, progress, fx_rate, stages, logs, variants, sort_order, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    [
+                        prod.get("id"),
+                        prod.get("name"),
+                        prod.get("sku"),
+                        prod.get("category"),
+                        prod.get("status"),
+                        prod.get("lead"),
+                        prod.get("createdAt"),
+                        prod.get("currentStage"),
+                        prod.get("progress", 0),
+                        prod.get("fxRate", 7.20),
+                        json.dumps(prod.get("stages",   {}), ensure_ascii=False),
+                        json.dumps(prod.get("logs",     []), ensure_ascii=False),
+                        json.dumps(prod.get("variants", []), ensure_ascii=False),
+                        max_so + 1,
+                        now,
+                    ],
+                )
+                conn.execute("DELETE FROM trash WHERE id=?", [tid])
+                new_version = self._get_version(conn) + 1
+                conn.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", [str(new_version)])
+                conn.execute(
+                    "INSERT INTO audit_log (product_id, user_name, action, changed_at)"
+                    " VALUES (?,?,?,?)",
+                    ["__batch__", user or "anonymous", f"restore v{new_version}", now],
+                )
+                conn.commit()
+                return new_version
+
+    def purge_from_trash(self, tid, user=None):
+        """从回收站彻底删除单个产品，返回新 version。"""
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM trash WHERE id=?", [tid])
+                new_version = self._get_version(conn) + 1
+                conn.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", [str(new_version)])
+                now = _now_iso()
+                conn.execute(
+                    "INSERT INTO audit_log (product_id, user_name, action, changed_at)"
+                    " VALUES (?,?,?,?)",
+                    ["__batch__", user or "anonymous", f"purge v{new_version}", now],
+                )
+                conn.commit()
+                return new_version
+
+    def empty_trash(self, user=None):
+        """清空回收站，返回新 version。"""
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM trash")
+                new_version = self._get_version(conn) + 1
+                conn.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", [str(new_version)])
+                now = _now_iso()
+                conn.execute(
+                    "INSERT INTO audit_log (product_id, user_name, action, changed_at)"
+                    " VALUES (?,?,?,?)",
+                    ["__batch__", user or "anonymous", f"empty_trash v{new_version}", now],
+                )
+                conn.commit()
+                return new_version
+
     # ---- 公开接口 ----
 
     def snapshot(self):
@@ -320,6 +424,7 @@ class DbState:
             return {
                 "version":  version,
                 "products": [self._row_to_product(r) for r in rows],
+                "trash":    self.list_trash(),
             }
 
     def write(self, new_products, base_version, user=None):
@@ -365,12 +470,36 @@ class DbState:
                         ],
                     )
 
-                # 删除已不在列表中的产品
+                # 被删除的产品（不在新列表中）→ 移入回收站，而非真删
+                new_ids = {p.get("id") for p in new_products if p.get("id")}
+                existing_rows = conn.execute("SELECT * FROM products").fetchall()
+                existing_ids = {r["id"] for r in existing_rows}
+                removed_ids = existing_ids - new_ids
+                for rid in removed_ids:
+                    row = next((r for r in existing_rows if r["id"] == rid), None)
+                    if not row:
+                        continue
+                    snap = self._row_to_product(row)
+                    conn.execute(
+                        """INSERT OR IGNORE INTO trash (id, name, sku, product_json, deleted_by, deleted_at)
+                           VALUES (?,?,?,?,?,?)""",
+                        [
+                            snap["id"], snap["name"], snap["sku"],
+                            json.dumps(snap, ensure_ascii=False),
+                            user or "anonymous", now,
+                        ],
+                    )
+
+                # 删除已不在列表中的产品（已从回收站保留快照）
                 if new_products:
                     ids = [p.get("id") for p in new_products if p.get("id")]
                     placeholders = ",".join("?" for _ in ids)
                     conn.execute(
                         f"DELETE FROM products WHERE id NOT IN ({placeholders})", ids
+                    )
+                    # 若某 id 重新出现在 products（恢复走 products PUT 的场景），同步移出回收站
+                    conn.execute(
+                        f"DELETE FROM trash WHERE id IN ({placeholders})", ids
                     )
                 else:
                     conn.execute("DELETE FROM products")
@@ -1792,6 +1921,25 @@ def make_handler(state, auth, ai_worker):
                 self._send_json(200, {"ok": True})
                 return
 
+            if path == "/api/trash/restore":
+                user = auth.verify(_extract_token(self))
+                if not user:
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                tid = str(payload.get("id") or "").strip()
+                if not tid:
+                    self._send_json(400, {"error": "id required"})
+                    return
+                new_version = state.restore_from_trash(tid, user=user.get("username"))
+                if new_version is None:
+                    self._send_json(404, {"error": "回收站中未找到该产品"})
+                else:
+                    self._send_json(200, {"version": new_version})
+                return
+
             if path == "/api/rank/tasks":
                 if not auth.verify(_extract_token(self)):
                     self._send_json(401, {"error": "请先登录"})
@@ -2244,6 +2392,29 @@ def make_handler(state, auth, ai_worker):
                         break
                 state.delete_export_job(jid)
                 self._send_json(200, {"ok": True})
+                return
+
+            if path == "/api/trash/empty":
+                user = auth.verify(_extract_token(self))
+                if not user:
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                new_version = state.empty_trash(user=user.get("username"))
+                self._send_json(200, {"version": new_version})
+                return
+
+            if path == "/api/trash":
+                user = auth.verify(_extract_token(self))
+                if not user:
+                    self._send_json(401, {"error": "请先登录"})
+                    return
+                q = parse_qs(urlparse(self.path).query)
+                tid = (q.get("id") or [""])[0]
+                if not tid:
+                    self._send_json(400, {"error": "id required"})
+                    return
+                new_version = state.purge_from_trash(tid, user=user.get("username"))
+                self._send_json(200, {"version": new_version})
                 return
 
             self.send_error(404)

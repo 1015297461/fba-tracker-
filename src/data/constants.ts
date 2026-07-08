@@ -37,11 +37,12 @@ export const STAGE_STATUSES = [
 ];
 
 export const STATUS_LABELS: Record<string, { label: string; color: string }> = {
-  all:    { label: '全部',   color: '#6b6b6b' },
-  active: { label: '进行中', color: '#16a34a' },
-  hold:   { label: '已暂停', color: '#ea580c' },
-  done:   { label: '已完成', color: '#2563eb' },
-  cancel: { label: '已取消', color: '#9a9a96' },
+  all:     { label: '全部',   color: '#6b6b6b' },
+  active:  { label: '开发中', color: '#2563eb' },
+  pending: { label: '待上架', color: '#9a9a96' },
+  done:    { label: '已上架', color: '#16a34a' },
+  hold:    { label: '已暂停', color: '#9a9a96' },
+  cancel:  { label: '已下架', color: '#9a9a96' },
 };
 
 export const VARIANT_STAGE_KEYS = ['profit', 'bom', 'sampling', 'listing', 'promotion'];

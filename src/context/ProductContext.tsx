@@ -96,6 +96,7 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
     try { return JSON.parse(localStorage.getItem(AUTH_USER_KEY) || 'null'); }
     catch { return null; }
   });
+  const [trash, setTrash] = React.useState<any[]>([]);
 
   const SYNC_URL = '/api/products';
 
@@ -131,6 +132,7 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
         } else {
           versionRef.current = data?.version || 0;
         }
+        setTrash(Array.isArray(data?.trash) ? data.trash : []);
         setSyncMode('server');
         setSyncStatus('saved');
       } catch (e) {
@@ -203,6 +205,7 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
         }
         if (!res.ok) return;
         const data = await res.json();
+        setTrash(Array.isArray(data.trash) ? data.trash : []);
         if (data.version > versionRef.current && Array.isArray(data.products)) {
           versionRef.current = data.version;
           skipNextPutRef.current = true;
@@ -358,6 +361,67 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
 
   const removeProduct = React.useCallback((id: string) => {
     setProducts(prev => prev.filter(p => p.id !== id));
+  }, []);
+
+  // 回收站：删除产品在后端是软删除（写入 trash 表），这里恢复/彻底删除都需要问一次服务器要最新的
+  // products+trash 整体覆盖，而不是走本地 setProducts 增量更新 —— 避免和其他终端未同步的编辑冲突。
+  const refreshFromServer = React.useCallback(async () => {
+    try {
+      const res = await fetch(SYNC_URL, { headers: { ...getAuthHeaders() } });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (typeof data.version === 'number') {
+        versionRef.current = data.version;
+        syncedVersionRef.current = data.version;
+      }
+      if (Array.isArray(data.products)) {
+        skipNextPutRef.current = true;
+        setProducts(data.products);
+        lastSentRef.current = JSON.stringify(data.products);
+      }
+      setTrash(Array.isArray(data.trash) ? data.trash : []);
+    } catch (e) { console.warn('[FBA] refreshFromServer failed', e); }
+  }, []);
+
+  const restoreFromTrash = React.useCallback(async (id: string) => {
+    try {
+      const res = await fetch('/api/trash/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ id }),
+      });
+      if (!res.ok) { alert('恢复失败，请重试'); return; }
+      await refreshFromServer();
+    } catch (e) { alert('恢复失败，请检查网络'); }
+  }, [refreshFromServer]);
+
+  const purgeFromTrash = React.useCallback(async (id: string) => {
+    try {
+      const res = await fetch(`/api/trash?id=${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { ...getAuthHeaders() },
+      });
+      if (!res.ok) { alert('删除失败，请重试'); return; }
+      const data = await res.json().catch(() => null);
+      if (data && typeof data.version === 'number') {
+        versionRef.current = data.version;
+        syncedVersionRef.current = data.version;
+      }
+      setTrash(prev => prev.filter(t => t.id !== id));
+    } catch (e) { alert('删除失败，请检查网络'); }
+  }, []);
+
+  const emptyTrash = React.useCallback(async () => {
+    try {
+      const res = await fetch('/api/trash/empty', { method: 'DELETE', headers: { ...getAuthHeaders() } });
+      if (!res.ok) { alert('清空失败，请重试'); return; }
+      const data = await res.json().catch(() => null);
+      if (data && typeof data.version === 'number') {
+        versionRef.current = data.version;
+        syncedVersionRef.current = data.version;
+      }
+      setTrash([]);
+    } catch (e) { alert('清空失败，请检查网络'); }
   }, []);
 
   const duplicateProduct = React.useCallback((id: string) => {
@@ -830,6 +894,7 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
     updateSubShipment, addSubShipment, removeSubShipment, addLog, updateLog, removeLog,
     savedAt, resetToDefaults, exportJSON, importJSON, exportProduct,
     createProduct, removeProduct, duplicateProduct, reorderProducts,
+    trash, restoreFromTrash, purgeFromTrash, emptyTrash,
     syncMode, syncStatus, syncVersion: versionRef.current,
     needLogin, currentUser, login, logout,
     addVariant, updateVariant, updateVariantStage, removeVariant,
@@ -845,6 +910,7 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
     updateSubShipment, addSubShipment, removeSubShipment, addLog, updateLog, removeLog,
     savedAt, resetToDefaults, exportJSON, importJSON, exportProduct,
     createProduct, removeProduct, duplicateProduct, reorderProducts,
+    trash, restoreFromTrash, purgeFromTrash, emptyTrash,
     syncMode, syncStatus, needLogin, currentUser, login, logout,
     addVariant, updateVariant, updateVariantStage, removeVariant,
     addVariantRecord, updateVariantRecord, removeVariantRecord,

@@ -14,8 +14,8 @@ function ProgressKPIs({ products }: { products: Product[] }) {
 
   const kpis = [
     { l: '总产品', v: total, c: '' },
-    { l: '进行中', v: active, c: 'green' },
-    { l: '已完成', v: done, c: '' },
+    { l: '开发中', v: active, c: 'green' },
+    { l: '已上架', v: done, c: '' },
     { l: '已暂停', v: hold, c: 'orange' },
     // { l: '本月完成', v: monthDone, c: '' },
     // { l: '30天到期', v: due30, c: '' },

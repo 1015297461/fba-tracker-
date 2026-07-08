@@ -44,8 +44,9 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
   const counts: Record<string, number> = {
     all: products.length,
     active: products.filter(p => p.status === 'active').length,
-    hold: products.filter(p => p.status === 'hold').length,
+    pending: products.filter(p => p.status === 'pending').length,
     done: products.filter(p => p.status === 'done').length,
+    hold: products.filter(p => p.status === 'hold').length,
     cancel: products.filter(p => p.status === 'cancel').length,
   };
   // const { monthDone, overdue, due30 } = computeStats(products);
@@ -53,6 +54,7 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
   const ctx = useProducts();
   const syncMode = ctx?.syncMode;
   const currentUser = ctx?.currentUser;
+  const trashCount = ctx?.trash?.length || 0;
   const { label: syncLabel, cls: syncCls } = useSyncLabel();
   const modeText = syncMode === 'server' ? '局域网协作' : syncMode === 'local' ? '本地存储' : '检测中';
 
@@ -122,7 +124,7 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
       <div className="sb-section">
         <div className="sb-section-label">状态筛选</div>
         <div className="sb-filter">
-          {['all', 'active', 'hold', 'done', 'cancel'].map(k => (
+          {['all', 'active', 'pending', 'done', 'hold', 'cancel'].map(k => (
             <button key={k} className="sb-filter-btn"
               data-active={filter === k}
               onClick={() => setFilter(k)}>
@@ -169,6 +171,17 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
             <span className="sb-exports-badge">{exportBadge}</span>
           )}
         </button>
+        <button
+          className="sb-exports-btn"
+          data-active={view === 'trash'}
+          onClick={() => setView('trash')}
+        >
+          <span className="ic">🗑️</span>
+          <span>回收站</span>
+          {trashCount > 0 && (
+            <span className="sb-exports-badge">{trashCount}</span>
+          )}
+        </button>
       </div>
 
     </aside>
@@ -182,7 +195,7 @@ export function TopBar({ view, product, theme, onToggleTheme, onNewProduct }: {
   onToggleTheme: () => void;
   onNewProduct: () => void;
 }) {
-  const titles: Record<string, string> = { list: '产品列表', progress: '进度总览', table: '数据表格', keywordRank: '关键词排名', productScrape: '产品采集', reviewFetch: '评论采集', pdfSplit: 'PDF拆分', myExports: '我的导出' };
+  const titles: Record<string, string> = { list: '产品列表', progress: '进度总览', table: '数据表格', keywordRank: '关键词排名', productScrape: '产品采集', reviewFetch: '评论采集', pdfSplit: 'PDF拆分', myExports: '我的导出', trash: '回收站' };
   const ctx = useProducts();
   const isRoot = ctx?.currentUser?.role === 'root';
   const aiSkill = isRoot && view.startsWith('aiAnalyze:') ? AI_SKILLS.find(s => 'aiAnalyze:' + s.id === view) : null;

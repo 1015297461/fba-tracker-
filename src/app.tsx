@@ -12,6 +12,7 @@ import { ReviewFetch } from './features/tools/ReviewFetch';
 import { PdfSplit } from './features/tools/PdfSplit';
 import { AiAnalyze, AI_SKILLS } from './features/tools/AiAnalyze';
 import { MyExports } from './features/exports/MyExports';
+import { Trash } from './features/trash/Trash';
 import { PRODUCTS } from './data/products';
 
 function LoginScreen({ onLogin }: { onLogin: (u: string, p: string) => Promise<boolean> }) {
@@ -137,6 +138,7 @@ function AppShell() {
         {view === 'pdfSplit' && <PdfSplit />}
         {isRoot && view.startsWith('aiAnalyze:') && <AiAnalyze skillId={view.slice('aiAnalyze:'.length)} />}
         {view === 'myExports' && <MyExports />}
+        {view === 'trash' && <Trash />}
       </div>
       <TweaksPanel title="Tweaks">
         <TweakSection label="主题" />

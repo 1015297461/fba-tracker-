@@ -106,7 +106,7 @@ export interface Product {
   name: string;
   sku: string;
   category: string;
-  status: 'active' | 'done' | 'hold' | 'cancel';
+  status: 'active' | 'pending' | 'done' | 'hold' | 'cancel';
   lead: string;
   createdAt: string;
   currentStage: string;
@@ -115,6 +115,15 @@ export interface Product {
   stages: Record<string, any>;
   variants?: Variant[];
   logs: LogEntry[];
+}
+
+export interface TrashItem {
+  id: string;
+  name: string;
+  sku: string;
+  deletedBy: string;
+  deletedAt: string;
+  product: Product;
 }
 
 export interface ProfitResult {

@@ -1,7 +1,7 @@
 import React from 'react';
 import { STAGES, TABS, STAGE_STATUSES } from '../../data/constants';
 import { useProducts, _variantInUse } from '../../context/ProductContext';
-import { StatusSelect, EditField, StageCard, RecordCard, AddRecordButton, VariantSelector } from '../../components';
+import { StatusSelect, EditField, StageCard, RecordCard, AddRecordButton, VariantSelector, FieldHint } from '../../components';
 import { TabEval } from '../list-view';
 import { uid } from '../../data/products';
 import type { ProductionBatch, Shipment, BalancePayment } from '../../data/types';
@@ -527,7 +527,9 @@ function TabProd({ p }: { p: any }) {
       </span>
       {totalOrderAmount > 0 && (
         <span className="shs-item">
-          <span className="shs-lbl">总订单金额</span>
+          <span className="shs-lbl">
+            <FieldHint label="总订单金额" hint={`= 各批次订单金额之和（订单金额 = SKU小计 + 其他费用小计）= ¥${totalOrderAmount.toFixed(2)}`} />
+          </span>
           <span className="shs-val mono">¥{totalOrderAmount.toFixed(2)}</span>
         </span>
       )}
@@ -542,19 +544,29 @@ function TabProd({ p }: { p: any }) {
             const c = computeBatch(b, hasVariants);
             const pendingClass = c.pendingQty < 0 ? 'rmc-warn' : c.pendingQty === 0 && c.orderQty > 0 ? 'rmc-done' : 'rmc-pending';
             const paidClass = c.paidComplete ? 'rmc-done' : c.actualTotalPaid > 0 ? 'rmc-pending' : 'rmc-warn';
+            const depositActualVal = Number(b.depositActual) || 0;
+            const tailPaidVal = c.actualTotalPaid - depositActualVal;
             const batchMeta = (
               <>
-                {c.orderQty > 0 && <span className="record-meta-chip"><span className="rmc-lbl">下单</span><span className="rmc-val">{c.orderQty} pcs</span></span>}
-                {c.shippedQty > 0 && <span className="record-meta-chip"><span className="rmc-lbl">已出</span><span className="rmc-val">{c.shippedQty} pcs</span></span>}
+                {c.orderQty > 0 && <span className="record-meta-chip"><span className="rmc-lbl">
+                  <FieldHint label="下单" hint={hasVariants ? `= 各 SKU 下单数量之和 = ${c.orderQty} pcs` : `= 数量 = ${c.orderQty} pcs`} />
+                </span><span className="rmc-val">{c.orderQty} pcs</span></span>}
+                {c.shippedQty > 0 && <span className="record-meta-chip"><span className="rmc-lbl">
+                  <FieldHint label="已出" hint={`= 各出货记录（已填实际出货日期）数量之和 = ${c.shippedQty} pcs`} />
+                </span><span className="rmc-val">{c.shippedQty} pcs</span></span>}
                 {c.orderQty > 0 && <span className={"record-meta-chip " + pendingClass}>
-                  <span className="rmc-lbl">待出</span>
+                  <span className="rmc-lbl">
+                    <FieldHint label="待出" hint={`= 下单数量(${c.orderQty}) − 已出数量(${c.shippedQty}) = ${c.pendingQty} pcs`} />
+                  </span>
                   <span className="rmc-val">{c.pendingQty > 0 ? c.pendingQty + ' pcs' : c.pendingQty < 0 ? '超出' + Math.abs(c.pendingQty) : '✓'}</span>
                 </span>}
                 {c.effectiveTotal > 0 && c.orderQty > 0 && <span className={"record-meta-chip " + paidClass}>
                   <span className="rmc-val">{c.paidComplete ? '已付清' : c.actualTotalPaid > 0 ? '未付清 ¥' + (c.effectiveTotal - c.actualTotalPaid).toFixed(2) : '未付款'}</span>
                 </span>}
                 {c.actualTotalPaid > 0 && (
-                  <span className="record-meta-chip"><span className="rmc-lbl">已付</span><span className="rmc-val mono">¥{c.actualTotalPaid.toFixed(2)}</span></span>
+                  <span className="record-meta-chip"><span className="rmc-lbl">
+                    <FieldHint label="已付" hint={`= 实际预付款(¥${depositActualVal.toFixed(2)}) + 尾款支付记录合计(¥${tailPaidVal.toFixed(2)}) = ¥${c.actualTotalPaid.toFixed(2)}`} />
+                  </span><span className="rmc-val mono">¥{c.actualTotalPaid.toFixed(2)}</span></span>
                 )}
                 {b.orderDate && <span className="record-meta-chip"><span className="rmc-lbl">下单日</span><span className="rmc-val">{b.orderDate}</span></span>}
               </>
@@ -595,7 +607,9 @@ function TabProd({ p }: { p: any }) {
                       onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { unitPrice:v })} />
                     <div />
                     <div className="calc-field">
-                      <span className="calc-field-label">SKU 小计</span>
+                      <span className="calc-field-label">
+                        <FieldHint label="SKU 小计" hint={`= 数量(${Number(b.qty)||0}) × 单价(¥${(Number(b.unitPrice)||0).toFixed(2)}) = ¥${c.skuSubtotal.toFixed(2)}`} />
+                      </span>
                       <span className="calc-field-value mono">¥{c.skuSubtotal.toFixed(2)}</span>
                     </div>
                   </div>
@@ -612,7 +626,7 @@ function TabProd({ p }: { p: any }) {
                           const totalRcvd = b.items.reduce((ts, it) => ts + c.validShipments.reduce((s, sh) => s + ((sh.items || []).find(si => si.variantId === it.variantId)?.qty || 0), 0), 0);
                           return totalRcvd > 0 ? <>&nbsp;·&nbsp;已到 <strong>{totalRcvd} pcs</strong></> : null;
                         })()}
-                        &nbsp;·&nbsp;SKU 小计 <strong>¥{c.skuSubtotal.toFixed(2)}</strong>
+                        &nbsp;·&nbsp;<FieldHint label="SKU 小计" hint={`= 各 SKU 行 (数量 × 单价) 之和 = ¥${c.skuSubtotal.toFixed(2)}`} /> <strong>¥{c.skuSubtotal.toFixed(2)}</strong>
                       </span>
                       <button className="btn btn-sm btn-add" onClick={e => { e.stopPropagation(); const v0 = variants[0]; addBatchItem(p.id, b.id, { variantId:v0?.id||'', variantName:v0?.name||v0?.sku||'SKU', qty:0, unitPrice:0 }); }}>+ 添加 SKU</button>
                     </div>
@@ -653,7 +667,7 @@ function TabProd({ p }: { p: any }) {
                     <span className="sku-items-title">其他费用</span>
                     <span className="sku-items-sum mono">
                       {(b.extraCosts || []).length > 0
-                        ? <>小计 <strong>¥{c.extraSubtotal.toFixed(2)}</strong></>
+                        ? <><FieldHint label="小计" hint={`= 各费用行 (数量 × 单价) 之和 = ¥${c.extraSubtotal.toFixed(2)}`} /> <strong>¥{c.extraSubtotal.toFixed(2)}</strong></>
                         : '代采配件 / 运费 / 其他'}
                     </span>
                     <button className="btn btn-sm btn-add" onClick={() =>
@@ -713,20 +727,27 @@ function TabProd({ p }: { p: any }) {
                   {!isCollapsed(payKey) && <>
                   <div className="fieldgrid cols-4">
                     <div className="calc-field">
-                      <span className="calc-field-label">订单金额</span>
+                      <span className="calc-field-label">
+                        <FieldHint label="订单金额" placement="right" hint={`= SKU 小计(¥${c.skuSubtotal.toFixed(2)}) + 其他费用小计(¥${c.extraSubtotal.toFixed(2)}) = ¥${c.skuTotal.toFixed(2)}`} />
+                      </span>
                       <span className="calc-field-value mono" style={{fontWeight:600,color:'var(--blue)'}}>¥{c.skuTotal.toFixed(2)}</span>
                     </div>
                     {c.actualShippedValue > 0 ? (
                       <div className="calc-field">
-                        <span className="calc-field-label">实际出货结算</span>
+                        <span className="calc-field-label">
+                          <FieldHint label="实际出货结算" placement="right" hint={`= Σ(各出货记录数量 × 对应SKU单价)，按已实际出货（已填出货日期）的记录计算 = ¥${c.actualShippedValue.toFixed(2)}`} />
+                        </span>
                         <span className="calc-field-value mono" style={{fontWeight:600,color: c.actualShippedValue !== c.skuTotal ? 'var(--orange)' : 'var(--green)'}}>¥{c.actualShippedValue.toFixed(2)}</span>
                       </div>
                     ) : <div />}
                     <div /><div />
                     <EditField label="预付款比例" type="number" mono suffix="%" value={b.depositPct}
+                      hint="手动填写，用于计算「理论预付款」= 订单金额 × 该比例" hintPlacement="right"
                       onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositPct:v })} />
                     <div className="calc-field">
-                      <span className="calc-field-label">理论预付款</span>
+                      <span className="calc-field-label">
+                        <FieldHint label="理论预付款" placement="right" hint={`= 订单金额(¥${c.skuTotal.toFixed(2)}) × 预付款比例(${c.depositPct}%) = ¥${c.theorDeposit.toFixed(2)}`} />
+                      </span>
                       <span className="calc-field-value mono">¥{c.theorDeposit.toFixed(2)}</span>
                     </div>
                     <EditField label="实际预付款 (¥)" type="number" mono prefix="¥" value={b.depositActual||0}
@@ -734,13 +755,18 @@ function TabProd({ p }: { p: any }) {
                     <EditField label="预付款日期" type="date" mono value={b.depositDate||''}
                       onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositDate:v })} />
                     <EditField label="尾款比例" type="number" mono suffix="%" value={c.balancePct}
+                      hint={`= 100% − 预付款比例(${c.depositPct}%) = ${c.balancePct}%（可手动覆盖）`} hintPlacement="right"
                       onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { balancePct:Number(v) })} />
                     <div className="calc-field">
-                      <span className="calc-field-label">应结尾款</span>
+                      <span className="calc-field-label">
+                        <FieldHint label="应结尾款" placement="right" hint={`= 结算金额(¥${c.effectiveTotal.toFixed(2)}，${c.actualShippedValue > 0 ? '取实际出货结算' : '尚无出货记录，取订单金额'}) − 实际预付款(¥${(Number(b.depositActual)||0).toFixed(2)}) = ¥${Math.max(0, c.effectiveTotal - (Number(b.depositActual)||0)).toFixed(2)}`} />
+                      </span>
                       <span className="calc-field-value mono">¥{Math.max(0, c.effectiveTotal - (Number(b.depositActual)||0)).toFixed(2)}</span>
                     </div>
                     <div className="calc-field">
-                      <span className="calc-field-label">已付总金额</span>
+                      <span className="calc-field-label">
+                        <FieldHint label="已付总金额" placement="right" hint={`= 实际预付款(¥${(Number(b.depositActual)||0).toFixed(2)}) + 尾款支付记录合计(¥${(c.actualTotalPaid - (Number(b.depositActual)||0)).toFixed(2)}) = ¥${c.actualTotalPaid.toFixed(2)}`} />
+                      </span>
                       <span className="calc-field-value mono" style={c.actualTotalPaid >= c.effectiveTotal ? {color:'var(--green)',fontWeight:600} : {color:'var(--orange)',fontWeight:600}}>¥{c.actualTotalPaid.toFixed(2)}</span>
                     </div>
                     <div />
@@ -1327,10 +1353,11 @@ export function Detail({ p }: { p: any }) {
               <select className="status-edit"
                 value={p.status}
                 onChange={e => update(p.id, (prev: any) => ({ ...prev, status: e.target.value }))}>
-                <option value="active">进行中</option>
+                <option value="active">开发中</option>
+                <option value="pending">待上架</option>
+                <option value="done">已上架</option>
                 <option value="hold">已暂停</option>
-                <option value="done">已完成</option>
-                <option value="cancel">已取消</option>
+                <option value="cancel">已下架</option>
               </select>
             </div>
             <div className="detail-meta">
