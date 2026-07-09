@@ -98,6 +98,7 @@ class DbState:
                 CREATE TABLE IF NOT EXISTS scrape_tasks (
                     id           TEXT PRIMARY KEY,
                     marketplace  TEXT NOT NULL,
+                    name         TEXT,
                     total        INTEGER DEFAULT 0,
                     success      INTEGER DEFAULT 0,
                     failed       INTEGER DEFAULT 0,
@@ -218,6 +219,10 @@ class DbState:
             existing_tasks = {row[1] for row in conn.execute("PRAGMA table_info(keyword_tasks)")}
             if "keyword_notes" not in existing_tasks:
                 conn.execute("ALTER TABLE keyword_tasks ADD COLUMN keyword_notes TEXT DEFAULT '{}'")
+
+            existing_scrape = {row[1] for row in conn.execute("PRAGMA table_info(scrape_tasks)")}
+            if "name" not in existing_scrape:
+                conn.execute("ALTER TABLE scrape_tasks ADD COLUMN name TEXT")
 
     # ---- 内部辅助 ----
 
@@ -561,6 +566,7 @@ class DbState:
         return {
             "id":          row["id"],
             "marketplace": row["marketplace"],
+            "name":        row["name"],
             "total":       row["total"],
             "success":     row["success"],
             "failed":      row["failed"],
@@ -589,6 +595,12 @@ class DbState:
                     "UPDATE scrape_tasks SET success=success+?, failed=failed+?, status='completed' WHERE id=?",
                     [success_delta, failed_delta, task_id],
                 )
+                conn.commit()
+
+    def update_scrape_task_name(self, task_id, name):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("UPDATE scrape_tasks SET name=? WHERE id=?", [name, task_id])
                 conn.commit()
 
     def list_scrape_tasks(self, limit=100):

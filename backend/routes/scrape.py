@@ -89,6 +89,22 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         self._send_json(200, {"ok": True})
     DELETE["/api/scrape/tasks"] = delete_task
 
+    def put_task_name(self):
+        if not auth.verify(_extract_token(self)):
+            self._send_json(401, {"error": "请先登录"})
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        task_id = payload.get("id")
+        name = payload.get("name")
+        if not task_id:
+            self._send_json(400, {"error": "id required"})
+            return
+        state.update_scrape_task_name(task_id, name or "")
+        self._send_json(200, {"ok": True})
+    PUT["/api/scrape/tasks"] = put_task_name
+
     def delete_reset_session(self):
         if not auth.verify(_extract_token(self)):
             self._send_json(401, {"error": "请先登录"})

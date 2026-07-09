@@ -93,7 +93,7 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
 requirements.txt              # Python 依赖声明（beautifulsoup4/pypdf/openpyxl/Pillow）
 
 index.html                   # 唯一 HTML 入口，引用 styles.css + compiled/bundle.js
-styles.css                   # 全局样式（2714 行，按模块分区注释，如 PRODUCT SCRAPE / PDF SPLIT 区块）
+styles.css                   # 全局样式（2721 行，按模块分区注释，如 PRODUCT SCRAPE / PDF SPLIT 区块）
 
 src/
   main.tsx                   # ReactDOM.createRoot 挂载 <App/>
@@ -185,7 +185,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | GET | `/api/me` | 当前登录用户 |
 | POST | `/api/login` / `/api/logout` | Token 登录/登出（`fba-users.json`） |
 | GET/POST/DELETE | `/api/rank/*` | 关键词排名：任务列表/历史/创建/删除/单关键词 |
-| GET/POST/DELETE | `/api/scrape/*` | 产品采集：任务列表/结果/运行/删除/重置会话 |
+| GET/POST/PUT/DELETE | `/api/scrape/*` | 产品采集：任务列表/结果/运行/重命名/删除/重置会话 |
 | POST | `/api/exports/create` | 创建后台导出任务，body `{type,label,fileName,params}`，立即返回 `{jobId}` |
 | GET | `/api/exports/list` | 列出所有导出记录（最近 100 条） |
 | DELETE | `/api/exports?id=` | 删除导出记录及临时文件 |
@@ -232,7 +232,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 
 - `src/features/detail/index.tsx`（1413 行，11 个组件；`TabProd` 前有 `getEffectiveBalancePayments(b)` 辅助函数；跨批次汇总通过 `titleExtra` 注入 StageCard 标题行）
 - `src/context/ProductContext.tsx`（867 行，~19 个 update 函数）
-- `styles.css`（2714 行，按模块分区，新模块追加在文件末尾对应分区注释下）
+- `styles.css`（2721 行，按模块分区，新模块追加在文件末尾对应分区注释下）
 - `backend/product_fetcher.py`（1368 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
   限流参数（均可用环境变量覆盖，当前默认值）：
   `SCRAPER_CONCURRENCY=3`（并发 worker 数）、`SCRAPER_MIN_INTERVAL_MS=700`（请求最小间隔 ms）、

@@ -336,7 +336,7 @@ interface ScrapedProduct {
   status: string; errorMessage: string | null; scrapedAt?: string;
 }
 interface ScrapeTask {
-  id: string; marketplace: string; total: number; success: number; failed: number;
+  id: string; marketplace: string; name: string | null; total: number; success: number; failed: number;
   withReviews: boolean; status: string; createdAt: string;
 }
 
@@ -365,6 +365,13 @@ async function apiRunScrape(asins: string[], marketplace: string, withReviews: b
 }
 async function apiDeleteTask(id: string): Promise<void> {
   await fetch('/api/scrape/tasks?id=' + encodeURIComponent(id), { method: 'DELETE', headers: authHeaders() });
+}
+async function apiUpdateTaskName(id: string, name: string): Promise<void> {
+  const r = await fetch('/api/scrape/tasks', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ id, name }),
+  });
+  if (!r.ok) throw new Error('重命名失败');
 }
 
 async function apiResetSession(marketplace: string): Promise<void> {
@@ -495,6 +502,10 @@ export function ProductScrape() {
   const [searchQuery, setSearchQuery] = React.useState('');
   const [selectedAsins, setSelectedAsins] = React.useState<Set<string>>(new Set());
   const [hoverPreview, setHoverPreview] = React.useState<{ src: string; top: number; left: number } | null>(null);
+  const [sortKey, setSortKey] = React.useState<'price' | 'rating' | 'mainRank' | 'subRank' | null>(null);
+  const [sortAsc, setSortAsc] = React.useState(true);
+  const [editingTaskId, setEditingTaskId] = React.useState<string | null>(null);
+  const [editingName, setEditingName] = React.useState('');
   const [exportQueued, setExportQueued] = React.useState(false);
 
   function showThumbPreview(e: React.MouseEvent<HTMLImageElement>, src: string) {
@@ -595,7 +606,7 @@ export function ProductScrape() {
 
   function clearResults() {
     setProducts([]); setAsinInput(''); setActiveTaskId(null); setErr('');
-    setPage(1); setSearchQuery(''); setSelectedAsins(new Set());
+    setPage(1); setSearchQuery(''); setSelectedAsins(new Set()); setSortKey(null);
   }
 
   async function viewTask(t: ScrapeTask) {
@@ -611,6 +622,19 @@ export function ProductScrape() {
     if (activeTaskId === t.id) { setProducts([]); setActiveTaskId(null); setSelectedAsins(new Set()); }
   }
 
+  function startRename(t: ScrapeTask) {
+    setEditingTaskId(t.id);
+    setEditingName(t.name || `${mkInfo(t.marketplace).flag} ${mkInfo(t.marketplace).name} · ${fmtDateTime(t.createdAt)}`);
+  }
+
+  async function commitRename() {
+    if (!editingTaskId) return;
+    const name = editingName.trim();
+    await apiUpdateTaskName(editingTaskId, name);
+    setTasks(ts => ts.map(t => t.id === editingTaskId ? { ...t, name: name || null } : t));
+    setEditingTaskId(null);
+  }
+
   const successCount = products.filter(p => p.status === 'success').length;
   const failedCount  = products.filter(p => p.status === 'failed').length;
   const progressPct  = progress.total > 0 ? Math.round((progress.completed / progress.total) * 100) : 0;
@@ -621,10 +645,38 @@ export function ProductScrape() {
     return products.filter(p => p.asin.includes(q));
   }, [products, searchQuery]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredProducts.length / pageSize));
+  const parsePrice = (s: string | undefined): number => {
+    if (!s) return Infinity;
+    const n = parseFloat(s.replace(/[^0-9.]/g, ''));
+    return isNaN(n) ? Infinity : n;
+  };
+  const parseRating = (s: string | undefined): number => {
+    if (!s) return -1;
+    const n = parseFloat(s.replace(/ out of.*/i, ''));
+    return isNaN(n) ? -1 : n;
+  };
+
+  const sortedProducts = React.useMemo(() => {
+    if (!sortKey) return filteredProducts;
+    return [...filteredProducts].sort((a, b) => {
+      let va: number, vb: number;
+      if (sortKey === 'price') {
+        va = parsePrice(a.price); vb = parsePrice(b.price);
+      } else if (sortKey === 'rating') {
+        va = parseRating(a.rating); vb = parseRating(b.rating);
+      } else if (sortKey === 'mainRank') {
+        va = a.bestSellerRank.mainRank ?? Infinity; vb = b.bestSellerRank.mainRank ?? Infinity;
+      } else {
+        va = a.bestSellerRank.subRank ?? Infinity; vb = b.bestSellerRank.subRank ?? Infinity;
+      }
+      return sortAsc ? va - vb : vb - va;
+    });
+  }, [filteredProducts, sortKey, sortAsc]);
+
+  const totalPages = Math.max(1, Math.ceil(sortedProducts.length / pageSize));
   React.useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages]);
   React.useEffect(() => { setPage(1); }, [searchQuery, pageSize]);
-  const pagedProducts = filteredProducts.slice((page - 1) * pageSize, page * pageSize);
+  const pagedProducts = sortedProducts.slice((page - 1) * pageSize, page * pageSize);
 
   // ---- 多选辅助 ----
   const pagedAsins = pagedProducts.map(p => p.asin);
@@ -707,9 +759,23 @@ export function ProductScrape() {
           {!tasks.length && !loadErr && <div className="ps-empty">暂无历史任务</div>}
           {tasks.map(t => (
             <div key={t.id} className="ps-task" data-active={t.id === activeTaskId}>
-              <button className="ps-task-main" onClick={() => viewTask(t)}>
+              <button className="ps-task-main" onClick={() => { if (editingTaskId !== t.id) viewTask(t); }}>
                 <div className="ps-task-top">
-                  <span>{mkInfo(t.marketplace).flag} {mkInfo(t.marketplace).name}</span>
+                  {editingTaskId === t.id ? (
+                    <input
+                      className="ps-task-rename-input"
+                      value={editingName}
+                      onChange={e => setEditingName(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditingTaskId(null); }}
+                      onBlur={commitRename}
+                      onClick={e => e.stopPropagation()}
+                      autoFocus
+                    />
+                  ) : (
+                    <span className="ps-task-name">
+                      {t.name || `${mkInfo(t.marketplace).flag} ${mkInfo(t.marketplace).name} · ${fmtDateTime(t.createdAt)}`}
+                    </span>
+                  )}
                   <span className="ps-task-time">{fmtDateTime(t.createdAt)}</span>
                 </div>
                 <div className="ps-task-sub">
@@ -719,7 +785,10 @@ export function ProductScrape() {
                   {t.withReviews && <span>含评论</span>}
                 </div>
               </button>
-              <button className="btn btn-sm ps-del" onClick={() => removeTask(t)}>删除</button>
+              <div className="ps-task-actions">
+                <button className="btn btn-sm" onClick={() => startRename(t)} title="重命名">✎</button>
+                <button className="btn btn-sm ps-del" onClick={() => removeTask(t)}>删除</button>
+              </div>
             </div>
           ))}
         </div>
@@ -811,11 +880,19 @@ export function ProductScrape() {
                   <th className="ps-col-asin">ASIN</th>
                   <th className="ps-col-title">标题</th>
                   <th>品牌</th>
-                  <th>价格</th>
-                  <th>评分</th>
+                  <th className="ps-sortable" onClick={() => { if (sortKey === 'price') setSortAsc(v => !v); else { setSortKey('price'); setSortAsc(true); } }} data-active={sortKey === 'price'}>
+                    价格{sortKey === 'price' && <span className="ps-sort-arrow">{sortAsc ? '↑' : '↓'}</span>}
+                  </th>
+                  <th className="ps-sortable" onClick={() => { if (sortKey === 'rating') setSortAsc(v => !v); else { setSortKey('rating'); setSortAsc(false); } }} data-active={sortKey === 'rating'}>
+                    评分{sortKey === 'rating' && <span className="ps-sort-arrow">{sortAsc ? '↑' : '↓'}</span>}
+                  </th>
                   <th className="ps-col-cat">分类路径</th>
-                  <th>大类排名</th>
-                  <th>小类排名</th>
+                  <th className="ps-sortable" onClick={() => { if (sortKey === 'mainRank') setSortAsc(v => !v); else { setSortKey('mainRank'); setSortAsc(true); } }} data-active={sortKey === 'mainRank'}>
+                    大类排名{sortKey === 'mainRank' && <span className="ps-sort-arrow">{sortAsc ? '↑' : '↓'}</span>}
+                  </th>
+                  <th className="ps-sortable" onClick={() => { if (sortKey === 'subRank') setSortAsc(v => !v); else { setSortKey('subRank'); setSortAsc(true); } }} data-active={sortKey === 'subRank'}>
+                    小类排名{sortKey === 'subRank' && <span className="ps-sort-arrow">{sortAsc ? '↑' : '↓'}</span>}
+                  </th>
                   <th>状态</th>
                   <th className="ps-col-ops">操作</th>
                 </tr>
