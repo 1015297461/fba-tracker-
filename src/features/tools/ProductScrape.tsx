@@ -77,10 +77,12 @@ function ProductDetailDialog({ product, open, onClose }: ProductDetailProps) {
         <div className="modal-backdrop" onClick={onClose}>
           <div className="modal ps-detail-modal" onClick={e => e.stopPropagation()}>
             <div className="ps-detail-header">
-              <div className="ps-detail-title">
-                {product.title || "未获取标题"}
+              <div className="ps-detail-header-info">
+                <div className="ps-detail-title">
+                  {product.title || "未获取标题"}
+                </div>
+                <div className="ps-detail-meta">ASIN: {product.asin}</div>
               </div>
-              <div className="ps-detail-meta">ASIN: {product.asin}</div>
               <a href={productUrl(product.asin, product.marketplace)} target="_blank" rel="noopener noreferrer" className="btn btn-sm">
                 查看
               </a>
@@ -831,6 +833,8 @@ export function ProductScrape() {
                     <td className="ps-col-img">
                       {p.mainImage
                         ? <img className="ps-thumb" src={p.mainImage} alt=""
+                            style={{ cursor: 'pointer' }}
+                            onClick={() => { setSelectedProduct(p); setDetailOpen(true); }}
                             onMouseEnter={e => showThumbPreview(e, p.mainImage!)}
                             onMouseLeave={() => setHoverPreview(null)} />
                         : <div className="ps-thumb ps-thumb-empty" />}

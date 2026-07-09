@@ -15,6 +15,47 @@ const MARKETPLACES = [
 ];
 const SCHEDULE_SLOTS = [0, 6, 12, 18];
 
+// 趋势图两条线的颜色：复用全局 --blue/--orange token（而非各写各的十六进制），
+// 已用 dataviz 色板校验器在浅色/深色两个 surface 下验证过对比度和色盲安全性。
+const COLOR_ORGANIC = 'var(--blue)';
+const COLOR_SPONSORED = 'var(--orange)';
+
+// 单调三次样条（Fritsch–Carlson 方法）：把一串点连成平滑曲线，但曲线在每个数据点上
+// 严格过点、且相邻两点之间绝不会“过冲”到局部最大/最小值之外——比直接三次/Catmull-Rom
+// 样条更保守，但对排名这种“差一名都算数”的数据更诚实，不会画出实际没出现过的极值。
+function monotonePath(pts: { x: number; y: number }[]): string {
+  const n = pts.length;
+  if (n < 2) return '';
+  if (n === 2) return `M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)} L${pts[1].x.toFixed(1)},${pts[1].y.toFixed(1)}`;
+
+  const dx: number[] = [], slope: number[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    dx[i] = pts[i + 1].x - pts[i].x;
+    slope[i] = (pts[i + 1].y - pts[i].y) / dx[i];
+  }
+  const m: number[] = new Array(n);
+  m[0] = slope[0];
+  m[n - 1] = slope[n - 2];
+  for (let i = 1; i < n - 1; i++) {
+    m[i] = slope[i - 1] * slope[i] <= 0 ? 0 : (slope[i - 1] + slope[i]) / 2;
+  }
+  // 限制切线斜率，避免相邻两点间曲线鼓出到数据范围之外
+  for (let i = 0; i < n - 1; i++) {
+    if (slope[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
+    const a = m[i] / slope[i], b = m[i + 1] / slope[i];
+    const h = Math.hypot(a, b);
+    if (h > 3) { const t = 3 / h; m[i] = t * a * slope[i]; m[i + 1] = t * b * slope[i]; }
+  }
+
+  let d = `M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`;
+  for (let i = 0; i < n - 1; i++) {
+    const cp1x = pts[i].x + dx[i] / 3, cp1y = pts[i].y + m[i] * dx[i] / 3;
+    const cp2x = pts[i + 1].x - dx[i] / 3, cp2y = pts[i + 1].y - m[i + 1] * dx[i] / 3;
+    d += ` C${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${pts[i + 1].x.toFixed(1)},${pts[i + 1].y.toFixed(1)}`;
+  }
+  return d;
+}
+
 interface RankTask {
   id: string; asin: string; marketplace: string; name: string;
   keywords: string[]; keywordNotes: Record<string, string>;
@@ -120,17 +161,12 @@ function Sparkline({ snaps }: { snaps: Snapshot[] }) {
   const toX = (i: number) => PAD + (n > 1 ? i / (n - 1) : 0.5) * (W - PAD * 2);
   const toY = (v: number) => PAD + ((v - minV) / (maxV - minV)) * (H - PAD * 2);
 
+  // 同主图表：跳过 null 直接连到下一个有值的点，不在缺口处断线；用平滑曲线代替折线
   function lines(pts: (number | null)[], color: string) {
-    const segs: string[] = []; let seg: string[] = [];
-    for (let i = 0; i < pts.length; i++) {
-      if (pts[i] == null) { if (seg.length > 1) segs.push(seg.join(' ')); seg = []; }
-      else {
-        const x = toX(i).toFixed(1), y = toY(pts[i]!).toFixed(1);
-        seg.push(`${seg.length ? 'L' : 'M'}${x},${y}`);
-      }
-    }
-    if (seg.length > 1) segs.push(seg.join(' '));
-    return segs.map((d, i) => <path key={i} d={d} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />);
+    const validIdx = pts.map((v, i) => (v == null ? -1 : i)).filter(i => i >= 0);
+    if (validIdx.length < 2) return null;
+    const d = monotonePath(validIdx.map(i => ({ x: toX(i), y: toY(pts[i]!) })));
+    return <path d={d} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />;
   }
 
   // 始终渲染散点，确保孤立数据点可见
@@ -142,10 +178,10 @@ function Sparkline({ snaps }: { snaps: Snapshot[] }) {
 
   return (
     <svg width={W} height={H} style={{ display: 'block' }}>
-      {lines(organic, '#2563eb')}
-      {lines(sponsored, '#f97316')}
-      {dots(organic, '#2563eb')}
-      {dots(sponsored, '#f97316')}
+      {lines(organic, COLOR_ORGANIC)}
+      {lines(sponsored, COLOR_SPONSORED)}
+      {dots(organic, COLOR_ORGANIC)}
+      {dots(sponsored, COLOR_SPONSORED)}
     </svg>
   );
 }
@@ -231,19 +267,15 @@ function LineChart({ snaps, showOrganic, showSponsored }: {
     : PAD.left + ((t - tMin) / tRange) * cW;
   const toY = (v: number) => PAD.top + ((v - yMin) / (yMax - yMin)) * cH;
 
+  // 跳过 null（当天没抓到排名）直接连到下一个有值的点，而不是在缺口处断线——
+  // 排名本来就是按 0/6/12/18 档位定时抓取，某一档没抓到（比如那次掉出前3页）
+  // 是常态，断线会把"这几天到底涨了跌了"这条最基本的趋势线切得七零八落。
+  // 用单调三次样条画平滑曲线代替直线折线，视觉上更顺滑，同时严格过点、不过冲。
   function buildPaths(pts: (number | null)[], color: string) {
-    const segs: string[] = []; let seg: string[] = [];
-    for (let i = 0; i < pts.length; i++) {
-      if (pts[i] == null) { if (seg.length > 1) segs.push(seg.join(' ')); seg = []; }
-      else {
-        const x = toX(times[i]).toFixed(1), y = toY(pts[i]!).toFixed(1);
-        seg.push(`${seg.length ? 'L' : 'M'}${x},${y}`);
-      }
-    }
-    if (seg.length > 1) segs.push(seg.join(' '));
-    return segs.map((d, i) => (
-      <path key={i} d={d} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" />
-    ));
+    const validIdx = pts.map((v, i) => (v == null ? -1 : i)).filter(i => i >= 0);
+    if (validIdx.length < 2) return null;
+    const d = monotonePath(validIdx.map(i => ({ x: toX(times[i]), y: toY(pts[i]!) })));
+    return <path d={d} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />;
   }
 
   // Y labels
@@ -313,18 +345,18 @@ function LineChart({ snaps, showOrganic, showSponsored }: {
         <line x1={PAD.left} y1={H - PAD.bottom} x2={W - PAD.right} y2={H - PAD.bottom}
           stroke="var(--border)" strokeWidth="1" />
         {/* organic line + dots */}
-        {showOrganic && buildPaths(organic, '#2563eb')}
+        {showOrganic && buildPaths(organic, COLOR_ORGANIC)}
         {showOrganic && snaps.map((s, i) => s.organicRank != null && (
-          <circle key={i} cx={toX(times[i])} cy={toY(s.organicRank)} r="3"
-            fill="#2563eb" stroke="white" strokeWidth="1" />
+          <circle key={i} cx={toX(times[i])} cy={toY(s.organicRank)} r="4"
+            fill={COLOR_ORGANIC} stroke="var(--card-bg)" strokeWidth="2" />
         ))}
         {/* sponsored line + dots */}
-        {showSponsored && buildPaths(sponsored, '#f97316')}
+        {showSponsored && buildPaths(sponsored, COLOR_SPONSORED)}
         {showSponsored && snaps.map((s, i) => {
           const v = s.sponsored?.length ? s.sponsored[0].slot : null;
           return v != null ? (
-            <circle key={i} cx={toX(times[i])} cy={toY(v)} r="3"
-              fill="#f97316" stroke="white" strokeWidth="1" />
+            <circle key={i} cx={toX(times[i])} cy={toY(v)} r="4"
+              fill={COLOR_SPONSORED} stroke="var(--card-bg)" strokeWidth="2" />
           ) : null;
         })}
         {/* crosshair */}
@@ -342,17 +374,21 @@ function LineChart({ snaps, showOrganic, showSponsored }: {
         <div className="kr-chart-tooltip" style={{ left: tipLeft, top: Math.max(8, hov.cy - 60) }}>
           <div className="kr-tip-time">{fmtDateFull(hov.snap.capturedAt)}</div>
           {showOrganic && (
-            <div className="kr-tip-row" style={{ color: '#2563eb' }}>
-              <span className="kr-tip-dot" style={{ background: '#2563eb' }} />
-              自然排名: {hov.snap.organicRank ?? '—'}
-              {hov.snap.organicRank != null && hov.snap.organicPage
-                ? ` (第${hov.snap.organicPage}页第${hov.snap.organicRank}名)` : ''}
+            <div className="kr-tip-row">
+              <span className="kr-tip-dot" style={{ background: COLOR_ORGANIC }} />
+              <span className="kr-tip-label">自然排名</span>
+              <span className="kr-tip-val">
+                {hov.snap.organicRank ?? '—'}
+                {hov.snap.organicRank != null && hov.snap.organicPage
+                  ? ` (第${hov.snap.organicPage}页第${hov.snap.organicRank}名)` : ''}
+              </span>
             </div>
           )}
           {showSponsored && (
-            <div className="kr-tip-row" style={{ color: '#f97316' }}>
-              <span className="kr-tip-dot" style={{ background: '#f97316' }} />
-              广告排名: {sp ?? '—'}
+            <div className="kr-tip-row">
+              <span className="kr-tip-dot" style={{ background: COLOR_SPONSORED }} />
+              <span className="kr-tip-label">广告排名</span>
+              <span className="kr-tip-val">{sp ?? '—'}</span>
             </div>
           )}
         </div>
@@ -411,11 +447,11 @@ function TrendModal({ task, initialKw, snapshots, onClose }: {
 
         {/* Legend toggles */}
         <div className="kr-legend-row">
-          <button className="kr-legend-btn" data-active={showOrg} onClick={() => setShowOrg(v => !v)}>
-            <span className="kr-leg-dot" style={{ background: '#2563eb' }} />自然排名
+          <button className="kr-legend-btn organic" data-active={showOrg} onClick={() => setShowOrg(v => !v)}>
+            <span className="kr-leg-dot" style={{ background: COLOR_ORGANIC }} />自然排名
           </button>
-          <button className="kr-legend-btn" data-active={showSp} onClick={() => setShowSp(v => !v)}>
-            <span className="kr-leg-dot" style={{ background: '#f97316' }} />广告排名
+          <button className="kr-legend-btn sponsored" data-active={showSp} onClick={() => setShowSp(v => !v)}>
+            <span className="kr-leg-dot" style={{ background: COLOR_SPONSORED }} />广告排名
           </button>
         </div>
 
