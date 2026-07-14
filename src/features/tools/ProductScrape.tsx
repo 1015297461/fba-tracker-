@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 
 const AUTH_TOKEN_KEY = 'fba-auth-v1';
 function authHeaders(): Record<string, string> {
@@ -255,51 +255,121 @@ interface LightboxProps {
   initialIndex: number;
   onClose: () => void;
 }
+
+const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 5];
+
 function Lightbox({ images, initialIndex, onClose }: LightboxProps) {
   const [current, setCurrent] = useState(initialIndex);
+  const [zoom, setZoom] = useState(1);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef({ active: false, sx: 0, sy: 0, sl: 0, st: 0 });
 
-  const prev = useCallback(() => setCurrent(i => (i - 1 + images.length) % images.length), [images.length]);
-  const next = useCallback(() => setCurrent(i => (i + 1) % images.length), [images.length]);
+  const prev = useCallback(() => { setCurrent(i => (i - 1 + images.length) % images.length); setZoom(1); }, [images.length]);
+  const next = useCallback(() => { setCurrent(i => (i + 1) % images.length); setZoom(1); }, [images.length]);
 
+  const zoomIn = useCallback(() => setZoom(z => {
+    const s = ZOOM_STEPS.find(v => v > z + 0.01);
+    return s ?? Math.min(z * 1.5, 5);
+  }), []);
+
+  const zoomOut = useCallback(() => setZoom(z => {
+    const s = [...ZOOM_STEPS].reverse().find(v => v < z - 0.01);
+    return s ?? Math.max(z / 1.5, 0.25);
+  }), []);
+
+  const resetZoom = useCallback(() => setZoom(1), []);
+
+  /* keyboard */
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") { e.stopPropagation(); onClose(); }
       if (e.key === "ArrowLeft") prev();
       if (e.key === "ArrowRight") next();
+      if (e.key === "+" || e.key === "=") { e.preventDefault(); zoomIn(); }
+      if (e.key === "-") { e.preventDefault(); zoomOut(); }
+      if (e.key === "0") resetZoom();
     };
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
-  }, [onClose, prev, next]);
+  }, [onClose, prev, next, zoomIn, zoomOut, resetZoom]);
+
+  /* mouse-wheel zoom */
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      if (e.deltaY < 0) zoomIn(); else zoomOut();
+    };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, [zoomIn, zoomOut]);
+
+  /* drag-to-pan */
+  const onDragStart = useCallback((e: React.MouseEvent) => {
+    if (zoom <= 1) return;
+    const el = wrapRef.current;
+    if (!el) return;
+    dragRef.current = { active: true, sx: e.clientX, sy: e.clientY, sl: el.scrollLeft, st: el.scrollTop };
+  }, [zoom]);
+
+  const onDragMove = useCallback((e: React.MouseEvent) => {
+    const d = dragRef.current;
+    if (!d.active) return;
+    const el = wrapRef.current;
+    if (!el) return;
+    el.scrollLeft = d.sl - (e.clientX - d.sx);
+    el.scrollTop = d.st - (e.clientY - d.sy);
+  }, []);
+
+  const onDragEnd = useCallback(() => { dragRef.current.active = false; }, []);
+
+  const isZoomed = zoom > 1;
+  const pct = Math.round(zoom * 100);
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal ps-lightbox" onClick={e => e.stopPropagation()}>
         <button className="modal-close" onClick={onClose}>✕</button>
         <div className="ps-lightbox-counter">{current + 1} / {images.length}</div>
+
+        {/* zoom toolbar */}
+        <div className="ps-lightbox-zoom">
+          <button onClick={e => { e.stopPropagation(); zoomOut(); }} title="缩小 (−)">−</button>
+          <span className="ps-lightbox-zoom-pct">{pct}%</span>
+          <button onClick={e => { e.stopPropagation(); zoomIn(); }} title="放大 (+)">+</button>
+          <button onClick={e => { e.stopPropagation(); resetZoom(); }} title="适应窗口 (0)">⟳</button>
+        </div>
+
         {images.length > 1 && (
-          <button className="ps-lightbox-btn ps-lightbox-prev" onClick={e => { e.stopPropagation(); prev(); }}>
-            ◀
-          </button>
+          <button className="ps-lightbox-btn ps-lightbox-prev" onClick={e => { e.stopPropagation(); prev(); }}>◀</button>
         )}
-        <div className="ps-lightbox-img-wrap" onClick={e => e.stopPropagation()}>
+        <div
+          ref={wrapRef}
+          className={`ps-lightbox-img-wrap${isZoomed ? ' ps-lightbox-zoomed' : ''}`}
+          onClick={e => e.stopPropagation()}
+          onMouseDown={onDragStart}
+          onMouseMove={onDragMove}
+          onMouseUp={onDragEnd}
+          onMouseLeave={onDragEnd}
+        >
           <img
             key={current}
             src={images[current]}
             alt={`Image ${current + 1}`}
-            className="ps-lightbox-img"
+            className={`ps-lightbox-img${!isZoomed ? ' ps-lightbox-fit' : ''}`}
             draggable={false}
+            style={{ width: `${pct}%` }}
           />
         </div>
         {images.length > 1 && (
           <>
-            <button className="ps-lightbox-btn ps-lightbox-next" onClick={e => { e.stopPropagation(); next(); }}>
-              ▶
-            </button>
+            <button className="ps-lightbox-btn ps-lightbox-next" onClick={e => { e.stopPropagation(); next(); }}>▶</button>
             <div className="ps-lightbox-thumbs" onClick={e => e.stopPropagation()}>
               {images.map((img, i) => (
                 <button
                   key={i}
-                  onClick={() => setCurrent(i)}
+                  onClick={() => { setCurrent(i); setZoom(1); }}
                   className={`ps-thumb ${i === current ? 'ps-thumb-active' : ''}`}
                 >
                   <img src={img} alt={`Thumb ${i + 1}`} />
