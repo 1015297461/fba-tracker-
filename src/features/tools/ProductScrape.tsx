@@ -572,7 +572,7 @@ export function ProductScrape() {
   const [searchQuery, setSearchQuery] = React.useState('');
   const [selectedAsins, setSelectedAsins] = React.useState<Set<string>>(new Set());
   const [hoverPreview, setHoverPreview] = React.useState<{ src: string; top: number; left: number } | null>(null);
-  const [sortKey, setSortKey] = React.useState<'price' | 'rating' | 'mainRank' | 'subRank' | null>(null);
+  const [sortKey, setSortKey] = React.useState<'asin' | 'price' | 'rating' | 'mainRank' | 'subRank' | null>(null);
   const [sortAsc, setSortAsc] = React.useState(true);
   const [editingTaskId, setEditingTaskId] = React.useState<string | null>(null);
   const [editingName, setEditingName] = React.useState('');
@@ -729,6 +729,10 @@ export function ProductScrape() {
   const sortedProducts = React.useMemo(() => {
     if (!sortKey) return filteredProducts;
     return [...filteredProducts].sort((a, b) => {
+      if (sortKey === 'asin') {
+        const cmp = a.asin.localeCompare(b.asin);
+        return sortAsc ? cmp : -cmp;
+      }
       let va: number, vb: number;
       if (sortKey === 'price') {
         va = parsePrice(a.price); vb = parsePrice(b.price);
@@ -947,7 +951,9 @@ export function ProductScrape() {
                     />
                   </th>
                   <th className="ps-col-img">图片</th>
-                  <th className="ps-col-asin">ASIN</th>
+                  <th className="ps-col-asin ps-sortable" onClick={() => { if (sortKey === 'asin') setSortAsc(v => !v); else { setSortKey('asin'); setSortAsc(true); } }} data-active={sortKey === 'asin'}>
+                    ASIN{sortKey === 'asin' && <span className="ps-sort-arrow">{sortAsc ? '↑' : '↓'}</span>}
+                  </th>
                   <th className="ps-col-title">标题</th>
                   <th>品牌</th>
                   <th className="ps-sortable" onClick={() => { if (sortKey === 'price') setSortAsc(v => !v); else { setSortKey('price'); setSortAsc(true); } }} data-active={sortKey === 'price'}>

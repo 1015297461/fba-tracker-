@@ -122,7 +122,7 @@ src/
     tweaks/TweaksPanel.tsx     # 右侧"Tweaks"调试面板（主题/布局微调，开发用）
     tools/
       KeywordRank.tsx           # 工具：关键词排名监控
-      ProductScrape.tsx         # 工具：产品采集（含详情预览弹窗 + 图片 Lightbox + ASIN搜索过滤 + 多选导出 + 每页50/100/150条分页跳转）
+      ProductScrape.tsx         # 工具：产品采集（含详情预览弹窗 + 图片 Lightbox + ASIN搜索过滤 + 列头排序 + 多选导出 + 每页50/100/150条分页跳转）
       ReviewFetch.tsx           # 工具：评论采集（多ASIN批量抓取，按评分/排序/是否验证购买过滤）
       PdfSplit.tsx              # 工具：批量 PDF 拆分（每文件独立配置拆分方式，拆分结果通过浏览器下载）
       AiAnalyze.tsx             # 工具：AI分析（无人值守 shell 出去跑 `claude -p` 执行 Claude Code Skill；
