@@ -885,13 +885,22 @@ function TabProd({ p }: { p: any }) {
                               return (v ? (v.name || v.colorOrSize || v.sku) : (si.variantName || 'SKU')) + (si.qty ? ' ×' + si.qty : '');
                             }).join(' / ')
                           : '';
+                        const settlementHint = hasVariants
+                          ? (sh.items||[]).filter((si: any) => (Number(si.qty)||0) > 0).map((si: any) => {
+                              const bi = (b.items||[]).find((x: any) => x.variantId === si.variantId);
+                              const lineTotal = (Number(si.qty)||0) * (Number(bi?.unitPrice)||0);
+                              return `${si.qty||0} × ¥${(Number(bi?.unitPrice)||0).toFixed(2)} = ¥${lineTotal.toFixed(2)}`;
+                            }).join(' + ') + (shSettlement > 0 ? ` = ¥${shSettlement.toFixed(2)}` : '')
+                          : `${shQty} × ¥${(Number(b.unitPrice)||0).toFixed(2)} = ¥${shSettlement.toFixed(2)}`;
+                        const balanceDue = shSettlement * (c.balancePct / 100);
+                        const balanceHint = `= 结算金额(¥${shSettlement.toFixed(2)}) × ${c.balancePct}% = ¥${balanceDue.toFixed(2)}`;
                         return (
                           <div key={sh.id} className="batch-ship-entry">
                             <div className="batch-ship-entry-hdr" style={{cursor:'pointer'}} onClick={() => toggleSection(b.id+'|sh|'+sh.id)}>
                               <button className="sec-toggle" onClick={e => { e.stopPropagation(); toggleSection(b.id+'|sh|'+sh.id); }}>{isCollapsed(b.id+'|sh|'+sh.id) ? '▸' : '▾'}</button>
                               <span className="batch-ship-no">#{shIdx + 1}</span>
                               <span className="batch-ship-info">
-                                {(sh.shipDate || sh.expectedShip) || '日期未填'}{shVariantNames ? ' · ' + shVariantNames : ''} · {shQty} pcs{shSettlement > 0 ? <>&nbsp;·&nbsp;结算 <strong>¥{shSettlement.toFixed(2)}</strong></> : ''} · {sh.method || '—'}{sh.carrier ? ' · ' + sh.carrier : ''}
+                                {(sh.shipDate || sh.expectedShip) || '日期未填'}{shVariantNames ? ' · ' + shVariantNames : ''} · {shQty} pcs{shSettlement > 0 ? <>&nbsp;·&nbsp;<FieldHint label={<span>结算 <strong>¥{shSettlement.toFixed(2)}</strong></span>} placement="bottom" hint={settlementHint} /></> : ''}{shSettlement > 0 ? <>&nbsp;·&nbsp;<FieldHint label={<span>应付尾款 <strong>¥{balanceDue.toFixed(2)}</strong></span>} placement="bottom" hint={balanceHint} /></> : ''} · {sh.method || '—'}{sh.carrier ? ' · ' + sh.carrier : ''}
                               </span>
                               <StatusSelect value={sh.status} size="sm"
                                 onChange={v => updateBatchShipment(p.id, b.id, sh.id, { status: v })} />

@@ -162,6 +162,9 @@ export function TableView({ onSelectProduct, filter }: { onSelectProduct: (id: s
 
   const visibleCols = COL_DEFS.filter(c => colVis[c.k] !== false);
 
+  const summaryQty = rows.reduce((s, p) => s + calcOrderQty(p), 0);
+  const summaryTotal = rows.reduce((s, p) => s + calcOrderTotal(p), 0);
+
   function SortTh({ k, label, num, sticky }: { k: string; label: string; num?: boolean; sticky?: boolean }) {
     const isS = sortKey === k;
     return (
@@ -409,6 +412,16 @@ export function TableView({ onSelectProduct, filter }: { onSelectProduct: (id: s
                 );
               })}
             </tbody>
+            <tfoot>
+              <tr>
+                {visibleCols.map(c => {
+                  if (c.k === 'name') return <td key={c.k} className="sticky">汇总（{rows.length} 个产品）</td>;
+                  if (c.k === 'orderQty') return <td key={c.k} className="num">{summaryQty} pcs</td>;
+                  if (c.k === 'orderTotal') return <td key={c.k} className="num">¥{summaryTotal.toFixed(0)}</td>;
+                  return <td key={c.k}></td>;
+                })}
+              </tr>
+            </tfoot>
           </table>
         </div>
       </div>

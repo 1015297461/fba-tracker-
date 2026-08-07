@@ -200,11 +200,25 @@ skuQtyMap（有变体时）= { variantId → { name, qty: Σ across batches } }
 
 「生产批次」「付款条款」区块内所有**只读计算字段**（订单金额/实际出货结算/理论预付款/应结尾款/已付总金额/SKU小计/其他费用小计，以及批次头部的下单/已出/待出/已付 meta chip、跨批次汇总的总订单金额）的标题，鼠标悬浮时会弹出浮层显示该字段的具体计算公式和代入的实际数字（如「= 订单金额(¥1250.00) × 预付款比例(30%) = ¥375.00」）。「尾款比例」「预付款比例」两个可编辑字段也带简要说明其对计算链的影响。
 
+**出货明细标题（batch-ship-info）** 上的「结算金额」与「应付尾款」也带悬浮提示：结算金额提示逐条展开各 SKU 的「数量 × 单价 = 小计」求和过程；应付尾款提示「= 结算金额(¥xxx) × 尾款比例(%) = ¥xxx」，即每次出货的应付尾款 = 本次结算金额 × 该批次的尾款比例（默认 70%）。
+
 实现：`src/components/index.tsx` 的 `FieldHint({label, hint, placement})` 组件，`EditField` 新增 `hint?: string` / `hintPlacement?: 'bottom'|'right'` 透传。hint 文案在 `TabProd`（`src/features/detail/index.tsx`）渲染时用 `computeBatch()` 返回的中间值现算拼出，非静态文案。「付款条款」区块内的字段（订单金额/实际出货结算/理论预付款/应结尾款/已付总金额/预付款比例/尾款比例）用 `placement="right"`，弹窗显示在字段右侧、垂直居中对齐，避免遮住正下方的输入框；其余场景（批次头部 meta chip、SKU小计等）保持默认的 `'bottom'`。
 
 ⚠️ 弹窗**不能**用 `position:absolute` 挂在标题旁边——`.record-card`（生产批次卡片）有 `overflow:hidden`（用来裁出圆角），会把 absolute 弹窗裁掉一截；折叠状态下的批次头部 meta chip 尤其明显。改用 `createPortal` 把弹窗挂到 `document.body`，`position:fixed` + `getBoundingClientRect()` 现算坐标（`useLayoutEffect` 里做，避免闪烁），`right` 模式下右侧空间不够会自动翻到标题左侧；水平/垂直都按视口边界收缩防止溢出屏幕。弹窗内容强制 `white-space: nowrap` 单行展示，不走自动换行。
 
 ⚠️ 鼠标从标题移到弹窗上不能立即关闭（用户需要能选中/复制公式文字）——弹窗是 `createPortal` 挂到 `body` 的，DOM 上已经不是标题的子元素，`.shs-tooltip` 那种"父元素 hover 状态包住子元素"的纯 CSS 桥接技巧在这里失效。改用 JS 定时器桥接：标题和弹窗各自的 `onMouseLeave` 都是 `setTimeout(200ms)` 延迟关闭而非立即关闭，`onMouseEnter`（无论进的是标题还是弹窗）都清掉这个定时器；弹窗 CSS 去掉了 `pointer-events: none`，加上 `user-select: text`，鼠标移入后可以正常选中文字复制。
+
+### 3.6 数据表格汇总行（生产出货聚合）
+
+「数据表格」视图（TableView）底部有一行**汇总行**，专门针对生产出货数据做聚合展示：
+
+- **下单数量总量** = Σ 所有产品 `calcOrderQty(p)`（各批次下单数量，变体按 SKU 明细求和）
+- **订单金额总量** = Σ 所有产品 `calcOrderTotal(p)`（各批次 SKU 小计 + 其他费用小计）
+- 汇总范围 = 当前筛选/排序后的 `rows`（即表格当前展示的所有产品），随筛选状态实时变化
+- 首列显示「汇总（N 个产品）」，两列数值右对齐加粗，其余列留空
+- 纯视觉汇总，**不纳入 Excel 导出**
+
+实现：`src/features/table/TableView.tsx` 在 `rows` 排序后计算 `summaryQty`/`summaryTotal`，在 `</tbody>` 后插入 `<tfoot>` 汇总行；样式在 `styles.css` 的 `.dtable tfoot td`。
 
 ---
 
