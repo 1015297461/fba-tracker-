@@ -33,6 +33,27 @@ function calcOrderQty(p: Product): number {
   }, 0);
 }
 
+// 已付总额 = Σ(实际预付款 + 尾款支付记录合计)，口径与 detail/index.tsx 的 computeBatch.actualTotalPaid 一致：
+// 尾款优先 balancePayments[]，为空时兜底旧字段 balanceAmt。
+function calcPaidTotal(p: Product): number {
+  return (p.stages.production?.batches || []).reduce((sum: number, b: any) => {
+    const deposit = Number(b.depositActual) || 0;
+    const bps = b.balancePayments || [];
+    let tail = 0;
+    if (bps.length > 0) {
+      tail = bps.reduce((s: number, bp: any) => s + (Number(bp.amount) || 0), 0);
+    } else if ((Number(b.balanceAmt) || 0) > 0) {
+      tail = Number(b.balanceAmt) || 0;
+    }
+    return sum + deposit + tail;
+  }, 0);
+}
+
+// 待付总额 = 订单总额 - 已付总额（可能为负：已付超过订单总额时）。
+function calcPendingTotal(p: Product): number {
+  return calcOrderTotal(p) - calcPaidTotal(p);
+}
+
 function marginClass(m: number | null): string {
   if (m == null) return '';
   if (m >= 20) return 'margin-good';
@@ -63,6 +84,8 @@ const COL_DEFS = [
   { k:'expectedShip', label:'预计出货',    group:'生产出货' },
   { k:'orderQty',     label:'下单数量',    group:'生产出货',    num:true },
   { k:'orderTotal',   label:'订单总额(¥)', group:'生产出货',    num:true },
+  { k:'paidTotal',    label:'已付总额(¥)',  group:'生产出货',    num:true },
+  { k:'pendingTotal', label:'待付总额(¥)',  group:'生产出货',    num:true },
   { k:'launchDate',   label:'上架日期',    group:'上架' },
 ];
 const GROUP_ORDER = ['产品信息','立项评估','竞品','利润测算','供应商/打样','生产出货','上架'];
@@ -108,6 +131,8 @@ function getColVal(p: Product, k: string): any {
     case 'expectedShip': return lastExpectedShip(p) || p.stages.shipment?.endDate;
     case 'orderQty': return calcOrderQty(p) || null;
     case 'orderTotal': return calcOrderTotal(p) || null;
+    case 'paidTotal': return calcPaidTotal(p) || null;
+    case 'pendingTotal': return calcPendingTotal(p) || null;
     case 'launchDate': return p.stages.listing?.launchDate || p.stages.listing?.endDate;
     default: return null;
   }
@@ -117,7 +142,7 @@ function getColLabel(k: string): string {
   const labels: Record<string, string> = {
     createdAt:'立项日期', name:'产品名称', progress:'进度',
     margin:'净利率', targetPrice:'目标售价', orderQty:'下单数量', orderTotal:'订单总额',
-    expectedShip:'预计出货', launchDate:'上架日期',
+    paidTotal:'已付总额', pendingTotal:'待付总额', expectedShip:'预计出货', launchDate:'上架日期',
   };
   return labels[k] || k;
 }
@@ -130,6 +155,7 @@ export function TableView({ onSelectProduct, filter }: { onSelectProduct: (id: s
 
   const [sortKey, setSortKey] = React.useState('createdAt');
   const [sortDir, setSortDir] = React.useState('desc');
+  const [search, setSearch] = React.useState('');
   const [expandedRows, setExpandedRows] = React.useState<Set<string>>(new Set());
   const [colVis, setColVis] = React.useState(loadColVis);
   const [showColPanel, setShowColPanel] = React.useState(false);
@@ -148,7 +174,15 @@ export function TableView({ onSelectProduct, filter }: { onSelectProduct: (id: s
     });
   };
 
-  const rows = [...products].sort((a: Product, b: Product) => {
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? products.filter((p: Product) =>
+        (p.name || '').toLowerCase().includes(q) ||
+        (p.sku || '').toLowerCase().includes(q) ||
+        (STATUS_LABELS[p.status]?.label || p.status).toLowerCase().includes(q))
+    : products;
+
+  const rows = [...filtered].sort((a: Product, b: Product) => {
     const av = getColVal(a, sortKey);
     const bv = getColVal(b, sortKey);
     const cmp = (av == null) ? 1 : (bv == null) ? -1 : (av < bv ? -1 : av > bv ? 1 : 0);
@@ -164,6 +198,8 @@ export function TableView({ onSelectProduct, filter }: { onSelectProduct: (id: s
 
   const summaryQty = rows.reduce((s, p) => s + calcOrderQty(p), 0);
   const summaryTotal = rows.reduce((s, p) => s + calcOrderTotal(p), 0);
+  const summaryPaid = rows.reduce((s, p) => s + calcPaidTotal(p), 0);
+  const summaryPending = rows.reduce((s, p) => s + calcPendingTotal(p), 0);
 
   function SortTh({ k, label, num, sticky }: { k: string; label: string; num?: boolean; sticky?: boolean }) {
     const isS = sortKey === k;
@@ -202,6 +238,8 @@ export function TableView({ onSelectProduct, filter }: { onSelectProduct: (id: s
             case 'expectedShip': return lastExpectedShip(p) || p.stages.shipment?.endDate || '';
             case 'orderQty': return calcOrderQty(p) || '';
             case 'orderTotal': return +calcOrderTotal(p).toFixed(2) || '';
+            case 'paidTotal': return +calcPaidTotal(p).toFixed(2) || '';
+            case 'pendingTotal': return +calcPendingTotal(p).toFixed(2) || '';
             case 'launchDate': return p.stages.listing?.launchDate || p.stages.listing?.endDate || '';
             default: return getColVal(p, c.k) ?? '';
           }
@@ -276,7 +314,15 @@ export function TableView({ onSelectProduct, filter }: { onSelectProduct: (id: s
       case 'orderQty': return <td key="orderQty" className="num">{calcOrderQty(p)||'—'}</td>;
       case 'orderTotal': {
         const ot = calcOrderTotal(p);
-        return <td key="orderTotal" className="num" style={{borderRight:'1px solid var(--border)'}}>{ot?`¥${ot.toFixed(0)}`:'—'}</td>;
+        return <td key="orderTotal" className="num">{ot?`¥${ot.toFixed(0)}`:'—'}</td>;
+      }
+      case 'paidTotal': {
+        const pt = calcPaidTotal(p);
+        return <td key="paidTotal" className="num">{pt?`¥${pt.toFixed(0)}`:'—'}</td>;
+      }
+      case 'pendingTotal': {
+        const pnd = calcPendingTotal(p);
+        return <td key="pendingTotal" className="num" style={{borderRight:'1px solid var(--border)'}}>{pnd?`¥${pnd.toFixed(0)}`:'—'}</td>;
       }
       case 'launchDate': return <td key="launchDate" className="num" style={{textAlign:'left'}}>{p.stages.listing?.launchDate||p.stages.listing?.endDate||'—'}</td>;
       default: return <td key={k}>—</td>;
@@ -318,7 +364,9 @@ export function TableView({ onSelectProduct, filter }: { onSelectProduct: (id: s
       case 'sampleRounds': return <td key="sampleRounds" className="num" style={{borderRight:'1px solid var(--border)'}}>{(v.stages?.sampling?.rounds||[]).length||'—'}</td>;
       case 'expectedShip': return <td key="expectedShip">—</td>;
       case 'orderQty': return <td key="orderQty">—</td>;
-      case 'orderTotal': return <td key="orderTotal" style={{borderRight:'1px solid var(--border)'}}>—</td>;
+      case 'orderTotal': return <td key="orderTotal">—</td>;
+      case 'paidTotal': return <td key="paidTotal">—</td>;
+      case 'pendingTotal': return <td key="pendingTotal" style={{borderRight:'1px solid var(--border)'}}>—</td>;
       case 'launchDate': return <td key="launchDate" className="num" style={{textAlign:'left'}}>{v.stages?.listing?.launchDate||'—'}</td>;
       default: return <td key={k}>—</td>;
     }
@@ -330,6 +378,12 @@ export function TableView({ onSelectProduct, filter }: { onSelectProduct: (id: s
         <div className="dtable-toolbar">
           <span style={{fontWeight:600}}>{visibleCols.length} 列对比</span>
           <span className="count">· {rows.length} 个产品 · 按{getColLabel(sortKey)}{sortDir==='asc'?' 升序':' 降序'}</span>
+          <input
+            className="dtable-search"
+            placeholder="搜索 产品名称 / SKU / 状态"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
           <span style={{marginLeft:'auto', display:'flex', gap:6, position:'relative'}}>
             <button className="btn btn-sm" onClick={() => setShowColPanel(v => !v)}>
               列设置 {showColPanel ? '▲' : '▼'}
@@ -418,6 +472,8 @@ export function TableView({ onSelectProduct, filter }: { onSelectProduct: (id: s
                   if (c.k === 'name') return <td key={c.k} className="sticky">汇总（{rows.length} 个产品）</td>;
                   if (c.k === 'orderQty') return <td key={c.k} className="num">{summaryQty} pcs</td>;
                   if (c.k === 'orderTotal') return <td key={c.k} className="num">¥{summaryTotal.toFixed(0)}</td>;
+                  if (c.k === 'paidTotal') return <td key={c.k} className="num">¥{summaryPaid.toFixed(0)}</td>;
+                  if (c.k === 'pendingTotal') return <td key={c.k} className="num">¥{summaryPending.toFixed(0)}</td>;
                   return <td key={c.k}></td>;
                 })}
               </tr>

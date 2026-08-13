@@ -1266,6 +1266,19 @@ select.meta-edit { cursor: pointer; }
   background: var(--bg-2);
 }
 .dtable-toolbar .count { color: var(--ink-3); }
+.dtable-search {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink-1);
+  font-size: 13px;
+  width: 200px;
+  outline: none;
+}
+.dtable-search:focus { border-color: var(--accent); }
+.dtable-search::placeholder { color: var(--ink-3); }
 .dtable-scroll {
   overflow-x: auto;
   max-width: 100%;
