@@ -200,6 +200,41 @@ class DbState:
                     created_at   TEXT,
                     completed_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS sif_tasks (
+                    id             TEXT PRIMARY KEY,
+                    name           TEXT NOT NULL,
+                    direction      TEXT DEFAULT '',
+                    mode           TEXT DEFAULT 'root',
+                    roots          TEXT DEFAULT '[]',
+                    keywords       TEXT DEFAULT '[]',
+                    asins          TEXT DEFAULT '[]',
+                    country        TEXT DEFAULT 'US',
+                    top_n          INTEGER DEFAULT 8,
+                    quota_limit    INTEGER DEFAULT 30,
+                    schedule_time  TEXT,
+                    enabled        INTEGER DEFAULT 1,
+                    last_run_at    TEXT,
+                    last_status    TEXT DEFAULT 'idle',
+                    last_error     TEXT,
+                    created_at     TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS sif_snapshots (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id        TEXT NOT NULL,
+                    run_date       TEXT NOT NULL,
+                    captured_at    TEXT NOT NULL,
+                    keyword        TEXT NOT NULL,
+                    search_volume  REAL,
+                    rank           INTEGER,
+                    cpc            REAL,
+                    entry_signal   TEXT,
+                    demand         TEXT,
+                    detail         TEXT,
+                    UNIQUE(task_id, run_date, keyword)
+                );
+                CREATE INDEX IF NOT EXISTS idx_sif_snap_task ON sif_snapshots(task_id, run_date);
             """)
             # 兼容旧版数据库：幂等追加缺失列
             existing_ai_tasks = {row[1] for row in conn.execute("PRAGMA table_info(ai_analysis_tasks)")}
@@ -941,6 +976,172 @@ class DbState:
             with self._conn() as conn:
                 conn.execute("DELETE FROM ai_analysis_tasks WHERE id=?", [tid])
                 conn.commit()
+
+    # ---- SIF 关键词监测：任务与快照 ----
+
+    def create_sif_task(self, t: dict) -> str:
+        import secrets
+        tid = "sif" + secrets.token_hex(6)
+        now = _now_iso()
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO sif_tasks
+                       (id, name, direction, mode, roots, keywords, asins, country,
+                        top_n, quota_limit, schedule_time, enabled, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    [tid,
+                     (t.get("name") or "未命名任务").strip() or "未命名任务",
+                     t.get("direction") or "",
+                     t.get("mode") or "root",
+                     json.dumps(t.get("roots") or [], ensure_ascii=False),
+                     json.dumps(t.get("keywords") or [], ensure_ascii=False),
+                     json.dumps(t.get("asins") or [], ensure_ascii=False),
+                     (t.get("country") or "US").upper(),
+                     int(t.get("topN") or 8),
+                     int(t.get("quotaLimit") or 30),
+                     t.get("scheduleTime") or None,
+                     1 if t.get("enabled", True) else 0,
+                     now])
+                conn.commit()
+        return tid
+
+    def _row_to_sif_task(self, row):
+        return {
+            "id":            row["id"],
+            "name":          row["name"],
+            "direction":     row["direction"] or "",
+            "mode":          row["mode"] or "root",
+            "roots":         json.loads(row["roots"]     or "[]"),
+            "keywords":      json.loads(row["keywords"]  or "[]"),
+            "asins":         json.loads(row["asins"]     or "[]"),
+            "country":       row["country"] or "US",
+            "topN":          row["top_n"] or 8,
+            "quotaLimit":    row["quota_limit"] or 30,
+            "scheduleTime":  row["schedule_time"],
+            "enabled":       bool(row["enabled"]),
+            "lastRunAt":     row["last_run_at"],
+            "lastStatus":    row["last_status"] or "idle",
+            "lastError":     row["last_error"],
+            "createdAt":     row["created_at"],
+        }
+
+    def list_sif_tasks(self):
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM sif_tasks ORDER BY created_at DESC"
+            ).fetchall()
+        return [self._row_to_sif_task(r) for r in rows]
+
+    def get_sif_task(self, tid: str):
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM sif_tasks WHERE id=?", [tid]).fetchone()
+        return self._row_to_sif_task(row) if row else None
+
+    def update_sif_task(self, tid: str, t: dict):
+        allowed = {
+            "name": "name", "direction": "direction", "mode": "mode",
+            "country": "country", "schedule_time": "scheduleTime",
+            "enabled": "enabled", "top_n": "topN", "quota_limit": "quotaLimit",
+        }
+        sets = []
+        vals = []
+        for col, key in allowed.items():
+            if key not in t:
+                continue
+            v = t[key]
+            if col in ("roots", "keywords", "asins"):
+                v = json.dumps(v or [], ensure_ascii=False)
+            elif col == "enabled":
+                v = 1 if v else 0
+            elif col in ("top_n", "quota_limit"):
+                v = int(v or 0)
+            elif col == "country":
+                v = (v or "US").upper()
+            elif col == "schedule_time":
+                v = v or None
+            sets.append(f"{col}=?")
+            vals.append(v)
+        if not sets:
+            return
+        vals.append(tid)
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    f"UPDATE sif_tasks SET {', '.join(sets)} WHERE id=?", vals
+                )
+                conn.commit()
+
+    def set_sif_task_status(self, tid: str, status: str, error: str = None, run_at: str = None):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE sif_tasks SET last_status=?, last_error=?, last_run_at=? WHERE id=?",
+                    [status, error, run_at, tid],
+                )
+                conn.commit()
+
+    def delete_sif_task(self, tid: str):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM sif_tasks WHERE id=?", [tid])
+                conn.execute("DELETE FROM sif_snapshots WHERE task_id=?", [tid])
+                conn.commit()
+
+    def save_sif_snapshots(self, task_id: str, run_date: str, captured_at: str, items: list):
+        with self.lock:
+            with self._conn() as conn:
+                conn.executemany(
+                    """INSERT OR REPLACE INTO sif_snapshots
+                       (task_id, run_date, captured_at, keyword, search_volume, rank,
+                        cpc, entry_signal, demand, detail)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    [
+                        (task_id, run_date, captured_at, it.get("keyword", ""),
+                         it.get("search_volume"), it.get("rank"),
+                         it.get("cpc"), it.get("entry_signal"),
+                         json.dumps(it.get("demand", {}), ensure_ascii=False),
+                         json.dumps(it.get("detail", {}), ensure_ascii=False))
+                        for it in items
+                    ],
+                )
+                conn.commit()
+
+    def list_sif_run_dates(self, task_id: str) -> list:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT run_date FROM sif_snapshots WHERE task_id=? "
+                "ORDER BY run_date DESC", [task_id]
+            ).fetchall()
+        return [r["run_date"] for r in rows]
+
+    def list_sif_snapshots(self, task_id: str, run_date: str = None) -> list:
+        with self._conn() as conn:
+            if run_date:
+                rows = conn.execute(
+                    "SELECT * FROM sif_snapshots WHERE task_id=? AND run_date=? "
+                    "ORDER BY search_volume DESC", [task_id, run_date]
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM sif_snapshots WHERE task_id=? "
+                    "ORDER BY run_date DESC, search_volume DESC", [task_id]
+                ).fetchall()
+        out = []
+        for r in rows:
+            out.append({
+                "id":           r["id"],
+                "runDate":      r["run_date"],
+                "capturedAt":   r["captured_at"],
+                "keyword":      r["keyword"],
+                "searchVolume": r["search_volume"],
+                "rank":         r["rank"],
+                "cpc":          r["cpc"],
+                "entrySignal":  r["entry_signal"],
+                "demand":       json.loads(r["demand"] or "{}"),
+                "detail":       json.loads(r["detail"] or "{}"),
+            })
+        return out
 
     def import_from_json(self, json_path):
         """首次启动时从旧版 fba-data.json 一键迁移"""

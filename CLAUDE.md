@@ -82,11 +82,14 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
     rank.py                     # /api/rank/*，含 run_rank_task()/start_scheduler()
     scrape.py                   # /api/scrape/*，含 run_scrape_task()
     review.py                   # /api/review/*，含 run_review_task()
+    sif_keywords.py              # /api/sif/*，含每日定时调度器 start_scheduler()（SIF 关键词监测）
     exports.py                  # /api/exports/*（新版后台导出任务）
     pdf.py                      # /api/pdf/*
     ai_analysis.py               # /api/ai/*
   rank_fetcher.py              # 关键词排名抓取器（正则解析，无 bs4 依赖）
   product_fetcher.py           # 产品详情抓取器（bs4 解析 + 反爬：会话池/令牌桶/CAPTCHA/Dog-page检测）
+  sif_fetcher.py               # SIF 关键词抓取器（HTTP JSON-RPC 直连 mcp.sif.com，零第三方依赖；
+                              #   密钥读环境变量 SIF_MCP_KEY 或 data/sif-config.json，见"SIF关键词监测模块"一节）
   pdf_splitter.py              # PDF 拆分工具后端逻辑（依赖 pypdf，见 requirements.txt；
                               #   TMP_DIR 锚定在 PROJECT_ROOT/data/pdf_tmp，不是 backend/ 自己的目录）
 
@@ -128,6 +131,8 @@ src/
       AiAnalyze.tsx             # 工具：AI分析（无人值守 shell 出去跑 `claude -p` 执行 Claude Code Skill；
                                 #   导出 AI_SKILLS 常量供 Sidebar.tsx / app.tsx 渲染"AI分析"分组按钮/视图路由/Tweaks下拉，
                                 #   新增 skill 只需在这个数组里加一条 + backend/workers/ai_analysis_worker.py 的 AI_SKILLS 字典加同 id 的一条）
+      SifKeyword.tsx            # 工具：SIF关键词监测（每日定时从 SIF MCP 抓取关键词机会/需求画像/历史趋势，
+                                #   方向预设：降温冷却/升温保暖/礼物；详见"SIF关键词监测模块"一节）
     exports/
       MyExports.tsx           # 共用「我的导出」视图：展示所有后台导出任务进度和下载入口；useExportBadge() 供侧边栏徽标使用
     trash/
@@ -172,6 +177,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | `review_tasks` / `review_results` | 评论采集：任务记录 + 评论池（按 asin+review_id 去重） |
 | `export_jobs` | 后台导出任务（`ExportWorker` 消费，最多2并发） |
 | `ai_analysis_tasks` | AI分析任务（`AiAnalysisWorker` 消费，强制串行1并发；`files` 字段是产出文件名列表 JSON；`status` 除 pending/running/done/failed 外还有 `cancelled`；`username` 记录发起人，登录态按用户名分区要用） |
+| `sif_tasks` / `sif_snapshots` | SIF 关键词监测：任务配置（方向/模式/词根/关键词/每日时刻/配额）+ 每次运行的关键词快照（按 run_date+keyword 去重） |
 
 ### API 路由
 
@@ -200,8 +206,14 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | GET | `/api/ai/file?taskId=&name=&mode=inline\|download` | 读取AI分析产出文件；**不做 Bearer 头校验**（iframe/下载链接等浏览器原生导航不带自定义头，和 `/api/pdf/download` 一致），靠不可猜测的 taskId + 该任务的文件名白名单做访问控制 |
 | POST | `/api/ai/login` | body `{skillId}`，后台 fire-and-forget 跑一次 `amz_login.py`（本机弹出有头浏览器，人工登录一次即可，最长等5分钟），按 `(skillId, username)` 去重防止重复点击弹多个窗口 |
 | POST | `/api/ai/cancel` | body `{id}`，终止一个 `pending`/`running` 的AI分析任务（不可恢复）；`pending` 直接改状态，`running` 调 `AiAnalysisWorker.cancel()` 终止子进程 |
+| GET/POST/PUT/DELETE | `/api/sif/tasks` | SIF 关键词监测：任务列表/创建/更新/删除（删除连带清快照） |
+| POST | `/api/sif/run` | body `{id}`，立即运行一次任务（后台线程，不阻塞；运行中/定时中同一任务去重） |
+| GET | `/api/sif/snapshots?taskId=&date=` | 任务快照（缺省只返回最近一次运行；`date=YYYY-MM-DD` 可查历史） |
+| GET | `/api/sif/runs?taskId=` | 该任务的历史运行日期列表 |
+| POST | `/api/sif/preview` | body `{root,country,topN}` 试查词根机会词（不落库，前端"试查"按钮用） |
+| GET | `/api/sif/history?keywords=&country=` | 按需查关键词历史趋势（≤5 词，详情弹窗趋势图用） |
 
-路由对应的源文件：`/api/login`/`/api/logout`/`/api/me` → `routes/auth_routes.py`；`/api/products`/`/api/trash/*` → `routes/products.py`；`/api/rank/*` → `routes/rank.py`；`/api/scrape/*` → `routes/scrape.py`；`/api/review/*` → `routes/review.py`；`/api/exports/*` → `routes/exports.py`；`/api/pdf/*` → `routes/pdf.py`；`/api/ai/*` → `routes/ai_analysis.py`。
+路由对应的源文件：`/api/login`/`/api/logout`/`/api/me` → `routes/auth_routes.py`；`/api/products`/`/api/trash/*` → `routes/products.py`；`/api/rank/*` → `routes/rank.py`；`/api/scrape/*` → `routes/scrape.py`；`/api/review/*` → `routes/review.py`；`/api/exports/*` → `routes/exports.py`；`/api/pdf/*` → `routes/pdf.py`；`/api/ai/*` → `routes/ai_analysis.py`；`/api/sif/*` → `routes/sif_keywords.py`。
 
 ### 同步机制（详见 `docs/operations.md` 第7节）
 客户端每 4s 轮询 `version`，编辑后 600ms 防抖 PUT 带 `baseVersion`；后端乐观锁，冲突时返回服务器最新版本，客户端整体覆盖（`ProductContext.tsx` 中 `versionRef`/`syncedVersionRef` 相关逻辑）。
@@ -220,24 +232,35 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 - **终止**：`_run_job` 用 `subprocess.Popen`（而非 `subprocess.run`）保留进程句柄，存进 `self._procs`；`cancel(task_id)` 调 `proc.terminate()` 并记入 `self._cancelled`，`_run_job` 收尾时按这个集合区分「用户终止」和「正常失败」两种终态，不可恢复（没有暂停/继续——活跃的 Playwright 会话/网络连接没法被操作系统级暂停后干净恢复，做不到）。
 - **root 专属**：目前"AI分析"整个功能只对 `role: "root"` 的账号开放（`AuthManager._ensure_default_users()` 幂等补充一个默认 `root` 账号，密码见 `data/fba-users.json` 或找部署者，不写进代码仓库文档；不影响已有的 `admin`/`editor`）。所有 `/api/ai/*` 路由（`/api/ai/file` 除外——它靠不可猜测的 taskId 做访问控制，不能挂 Bearer 校验）在登录校验之后都加了 `role != "root"` 时返回 403 的强制校验，前端 Sidebar/app.tsx/TweaksPanel 里的隐藏只是体验层面，真正的门禁在后端。
 
+### SIF关键词监测模块（`backend/sif_fetcher.py` 抓取器 + `backend/routes/sif_keywords.py` 路由/调度器 + `SifKeyword.tsx` 前端视图）
+
+SIF 关键词监测是一个"数据直连型"工具模块：通过 **HTTP JSON-RPC 直连 SIF 的 MCP 端点**（`https://mcp.sif.com/mcp`，Streamable HTTP 传输，`tools/call` 方法），**不经过 Claude Code / LLM**，抓取的关键词机会/需求画像/历史趋势全部是 SIF 预生成的结构化 JSON（含 `_formatted` LLM 展示块，忽略即可）。数据每日刷新（`data_notice` 字段声明 "refreshes daily, 1-day delay"），因此"每日定时抓取"有实际价值。
+
+- **端点与密钥**：环境变量 `SIF_MCP_URL`/`SIF_MCP_KEY` 优先，兜底读 `data/sif-config.json`（`{"url": "...", "key": "..."}`，data/ 已 gitignore 不入库）。`_load_config()` 带 30s 缓存；`is_configured()` 供路由提前返回 400 提示。**密钥绝不硬编码进代码**。
+- **核心工具（P1 已接入 3 个）**：`market_screen_keyword_opportunities`（按词根筛机会词，返回搜索量/点击份额/CVR/CPC/`entry_signal` 入场信号/竞品 ASIN）、`market_get_keyword_demand`（批量词需求画像：需求类型+广告打法建议/同比/季节位置/峰值月/距峰值周数/时机提示）、`market_get_keyword_history`（历史趋势：dates/volumes/ranks/点击份额，6 年周度）。P0 实测还有 `market_get_asin_aba_footprint`/`market_get_asin_keyword_signals`（ASIN 维度）/`market_get_keyword_competition`（竞品深挖，返回 100 个竞品较重）等 34 个工具，P2 可按需接入。
+- **任务模型**：`sif_tasks`（name/direction/mode/roots|keywords/country/topN/quotaLimit/scheduleTime/enabled + last_run_at/status/error）。`mode='root'` 按词根逐个调 screen 再合并候选词；`mode='keywords'` 直接用指定词。候选词按搜索量降序截断到 `quotaLimit`（默认 30，防止配额失控），批量 demand（每批 ≤10 词），再给搜索量前 5 的词补一次 weekly history 供趋势图。
+- **每日定时调度**：`start_scheduler()` 守护线程每分钟检查，命中「enabled + scheduleTime(HH:MM) 已到 + 今天还没跑过」的任务就在后台线程执行（`_launch()`，同任务用 `_running` 集合去重，手动"立即运行"与定时共用同一条路径）。**启动时把残留 `running` 状态的任务标记为 `error`**（崩溃恢复，参考导出/AI worker 的同类问题）。
+- **前端方向预设**：`SifKeyword.tsx` 的 `DIRECTION_PRESETS` 定义了三大方向（🧊 降温冷却 / 🔥 升温保暖 / 🎁 礼物），一键填充词根；任务表单内嵌"试查词根"（`POST /api/sif/preview`，不落库）辅助评估。详情弹窗点查趋势走 `GET /api/sif/history`（≤5 词，按需付费）。
+- **配额与成本提示**：SIF 是付费数据服务，每次 `tools/call` 都消耗配额。设计上：定时任务按词根×topN + 配额截断；试查/趋势为人工按需触发；不在定时链路里跑竞争度等重工具。真实配额计费方式尚未向 SIF 确认，跑一段时间后如发现成本问题，优先调小 topN/quotaLimit 或降低任务频率。
+
 ## 前端架构
 
 - **状态管理**：单一 `ProductContext`（无 Redux/Zustand），`useProducts()` 暴露数据 + 一组 `update*()` 函数，每个对应 `Product`/`Variant`/`Stage` 等不同粒度的字段更新，最终都落到 `products` 数组并触发同步。
-- **视图路由**：无 react-router，`app.tsx` 的 `AppShell` 用 `view` 状态字符串切换（`'list' | 'progress' | 'table' | 'keywordRank' | 'productScrape' | 'reviewFetch' | 'pdfSplit'`），Sidebar/TopBar 负责切换按钮和标题映射。新增视图需同时更新 `app.tsx`（渲染分支）、`Sidebar.tsx`（工具列表 + titles 映射）。
+- **视图路由**：无 react-router，`app.tsx` 的 `AppShell` 用 `view` 状态字符串切换（`'list' | 'progress' | 'table' | 'keywordRank' | 'productScrape' | 'reviewFetch' | 'pdfSplit' | 'sifKeyword' | 'myExports' | 'trash'`），Sidebar/TopBar 负责切换按钮和标题映射。新增视图需同时更新 `app.tsx`（渲染分支）、`Sidebar.tsx`（工具列表 + titles 映射）。
   "AI分析"是个例外：`view` 用 `'aiAnalyze:' + skillId` 动态拼出来的 key（而非固定字符串），因为它是一个按 skill 分组、未来会有多个入口的分组，`app.tsx` 用 `view.startsWith('aiAnalyze:')` 判断+ `.slice()` 取出 skillId 传给 `<AiAnalyze skillId=.../>`，Sidebar 的按钮和 TopBar 的标题也是从 `AiAnalyze.tsx` 导出的 `AI_SKILLS` 数组动态渲染，不是写死的按钮列表。
 - **数据模型核心**：`Product.stages: Record<stageKey, StageData>`，`stageKey` 取自 `STAGES`（18个阶段，每个归属 `TABS` 中某个 tab，各阶段业务含义见 `docs/business-overview.md` 第1节），`Product.variants: Variant[]` 为 SKU 变体，变体也有自己的 `stages` 子集（`VARIANT_STAGE_KEYS`）。
-- **"工具模块"模式**（关键词排名 / 产品采集 共享）：左侧输入+历史任务列表，右侧结果表格+操作；后端各有一个 `backend/xxx_fetcher.py` 抓取器 + `backend/routes/xxx.py` 里的 `/api/xxx/*` 路由 + `run_xxx_task()`。新增同类工具时可参照 `ProductScrape.tsx` + `backend/product_fetcher.py` + `docs/plans/product-scrape-integration-plan.md`。
+- **"工具模块"模式**（关键词排名 / 产品采集 / SIF关键词 共享）：左侧输入+历史任务列表，右侧结果表格+操作；后端各有一个 `backend/xxx_fetcher.py` 抓取器 + `backend/routes/xxx.py` 里的 `/api/xxx/*` 路由 + `run_xxx_task()`（SIF 模块还有每日定时调度器）。新增同类工具时可参照 `ProductScrape.tsx` + `backend/product_fetcher.py` + `docs/plans/product-scrape-integration-plan.md`。
 
 ## 已知的体量较大的文件（非 bug，但改动前建议先用 grep/大纲定位再改）
 
 - `src/features/detail/index.tsx`（1413 行，11 个组件；`TabProd` 前有 `getEffectiveBalancePayments(b)` 辅助函数；跨批次汇总通过 `titleExtra` 注入 StageCard 标题行）
-- `src/context/ProductContext.tsx`（867 行，~19 个 update 函数）
-- `styles.css`（2759 行，按模块分区，新模块追加在文件末尾对应分区注释下）
+- `src/context/ProductContext.tsx`（927 行，~19 个 update 函数）
+- `styles.css`（2857 行，按模块分区，新模块追加在文件末尾对应分区注释下）
 - `backend/product_fetcher.py`（1368 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
   限流参数（均可用环境变量覆盖，当前默认值）：
   `SCRAPER_CONCURRENCY=3`（并发 worker 数）、`SCRAPER_MIN_INTERVAL_MS=700`（请求最小间隔 ms）、
   `SCRAPER_REFILL_MS=1500`（令牌桶补充间隔 ms）、`SCRAPER_BUCKET_CAPACITY=8`（令牌桶容量）
-- `backend/db.py`（979 行，`DbState` 单个类，按表分区，用 `# ----` 分区注释定位到某张表的方法组）
+- `backend/db.py`（1192 行，`DbState` 单个类，按表分区，用 `# ----` 分区注释定位到某张表的方法组）
 
 ## 暂时隐藏的功能（注释保留，可随时恢复）
 

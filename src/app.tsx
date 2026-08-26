@@ -10,6 +10,7 @@ import { KeywordRank } from './features/tools/KeywordRank';
 import { ProductScrape } from './features/tools/ProductScrape';
 import { ReviewFetch } from './features/tools/ReviewFetch';
 import { PdfSplit } from './features/tools/PdfSplit';
+import { SifKeyword } from './features/tools/SifKeyword';
 import { AiAnalyze, AI_SKILLS } from './features/tools/AiAnalyze';
 import { MyExports } from './features/exports/MyExports';
 import { Trash } from './features/trash/Trash';
@@ -136,6 +137,7 @@ function AppShell() {
         {view === 'productScrape' && <ProductScrape />}
         {view === 'reviewFetch' && <ReviewFetch />}
         {view === 'pdfSplit' && <PdfSplit />}
+        {view === 'sifKeyword' && <SifKeyword />}
         {isRoot && view.startsWith('aiAnalyze:') && <AiAnalyze skillId={view.slice('aiAnalyze:'.length)} />}
         {view === 'myExports' && <MyExports />}
         {view === 'trash' && <Trash />}

@@ -36,7 +36,7 @@ from .auth import AuthManager
 from .workers.export_worker import ExportWorker
 from .workers.ai_analysis_worker import AiAnalysisWorker
 from . import pdf_splitter
-from .routes import auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis
+from .routes import auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis, sif_keywords
 
 
 def get_lan_ip():
@@ -69,7 +69,7 @@ def get_lan_ip():
 
 
 ROUTE_MODULES = (
-    auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis,
+    auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis, sif_keywords,
 )
 
 
@@ -239,6 +239,7 @@ def main():
     print("  Ctrl+C 停止服务")
     print(bar)
     rank.start_scheduler(db_state)
+    sif_keywords.start_scheduler(db_state)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

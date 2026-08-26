@@ -94,6 +94,7 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
             { k: 'productScrape', ic: '🛒', label: '产品采集' },
             { k: 'reviewFetch', ic: '💬', label: '评论采集' },
             { k: 'pdfSplit', ic: '✂️', label: 'PDF拆分' },
+            { k: 'sifKeyword', ic: '🔑', label: 'SIF关键词' },
           ].map(v => (
             <button key={v.k} className="sb-view-btn"
               data-active={view === v.k}
@@ -195,7 +196,7 @@ export function TopBar({ view, product, theme, onToggleTheme, onNewProduct }: {
   onToggleTheme: () => void;
   onNewProduct: () => void;
 }) {
-  const titles: Record<string, string> = { list: '产品列表', progress: '进度总览', table: '数据表格', keywordRank: '关键词排名', productScrape: '产品采集', reviewFetch: '评论采集', pdfSplit: 'PDF拆分', myExports: '我的导出', trash: '回收站' };
+  const titles: Record<string, string> = { list: '产品列表', progress: '进度总览', table: '数据表格', keywordRank: '关键词排名', productScrape: '产品采集', reviewFetch: '评论采集', pdfSplit: 'PDF拆分', sifKeyword: 'SIF关键词监测', myExports: '我的导出', trash: '回收站' };
   const ctx = useProducts();
   const isRoot = ctx?.currentUser?.role === 'root';
   const aiSkill = isRoot && view.startsWith('aiAnalyze:') ? AI_SKILLS.find(s => 'aiAnalyze:' + s.id === view) : null;
