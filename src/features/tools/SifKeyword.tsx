@@ -153,26 +153,64 @@ function fmtNum(v: number | null | undefined): string {
   return Number(v).toLocaleString();
 }
 
-// ---- 趋势迷你图（SVG） ----
+// ---- 趋势图（SVG，悬停显示具体数值） ----
 
-function TrendChart({ points }: { points: { date: string; value: number }[] }) {
+interface TrendPoint { date: string; value: number; rank?: number | null }
+
+function TrendChart({ points }: { points: TrendPoint[] }) {
+  const [hov, setHov] = React.useState<{ idx: number; pct: number } | null>(null);
   if (points.length < 2) return <span className="sif-chart-empty">数据不足</span>;
-  const W = 260, H = 56, PAD = 4;
+  const W = 820, H = 190, PL = 52, PR = 12, PT = 16, PB = 28;
+  const n = points.length;
   const vals = points.map(p => p.value);
   const min = Math.min(...vals), max = Math.max(...vals);
-  const span = max - min || 1;
-  const x = (i: number) => PAD + (i / (points.length - 1)) * (W - PAD * 2);
-  const y = (v: number) => H - PAD - ((v - min) / span) * (H - PAD * 2);
-  const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ');
+  const span = (max - min) || 1;
+  const innerW = W - PL - PR, innerH = H - PT - PB;
+  const x = (i: number) => PL + (i / (n - 1)) * innerW;
+  const y = (v: number) => PT + innerH - ((v - min) / span) * innerH;
+  const line = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ');
+  const ticks = [0, 1, 2, 3, 4].map(k => min + (span * k) / 4);
+  const labelIdx = Array.from({ length: 6 }, (_, k) => Math.round((k * (n - 1)) / 5));
+  const hp = hov !== null ? points[hov.idx] : null;
+
+  const onMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const idx = Math.round((px / rect.width) * (n - 1));
+    setHov({ idx: Math.max(0, Math.min(n - 1, idx)), pct: (px / rect.width) * 100 });
+  };
+
   return (
-    <svg width={W} height={H} className="sif-chart" viewBox={`0 0 ${W} ${H}`}>
-      <path d={d} fill="none" stroke="var(--accent)" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
-      {points.map((p, i) => i % Math.max(1, Math.floor(points.length / 6)) === 0 && (
-        <text key={i} x={x(i)} y={H - 2} fontSize="8" fill="var(--muted)" textAnchor="middle">
-          {p.date.slice(5)}
-        </text>
-      ))}
-    </svg>
+    <div className="sif-chart-wrap" onMouseMove={onMove} onMouseLeave={() => setHov(null)}>
+      <svg className="sif-chart" viewBox={`0 0 ${W} ${H}`} width="100%">
+        {ticks.map((tv, k) => (
+          <g key={k}>
+            <line x1={PL} x2={W - PR} y1={y(tv)} y2={y(tv)} stroke="var(--border)" strokeDasharray="3 3" strokeWidth="0.6" />
+            <text x={PL - 6} y={y(tv) + 3.5} fontSize="10" fill="var(--ink-4)" textAnchor="end">
+              {tv >= 10000 ? (tv / 10000).toFixed(1) + 'w' : Math.round(tv).toLocaleString()}
+            </text>
+          </g>
+        ))}
+        {labelIdx.map(i => (
+          <text key={i} x={x(i)} y={H - 8} fontSize="10" fill="var(--ink-4)" textAnchor="middle">{points[i].date.slice(5)}</text>
+        ))}
+        <path d={line} fill="none" stroke="var(--accent)" strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" />
+        {hp && hov && (
+          <g>
+            <line x1={x(hov.idx)} x2={x(hov.idx)} y1={PT} y2={PT + innerH} stroke="var(--accent)" strokeWidth="1" strokeDasharray="2 2" />
+            <circle cx={x(hov.idx)} cy={y(hp.value)} r="4" fill="var(--accent)" stroke="#fff" strokeWidth="1.2" />
+          </g>
+        )}
+      </svg>
+      {hp && hov && (
+        <div className="sif-chart-tip"
+          style={{ left: `${Math.min(Math.max(hov.pct, 8), 88)}%`, top: `${Math.min(Math.max((y(hp.value) / H) * 100, 12), 66)}%` }}>
+          <div className="sif-tip-date">{hp.date}</div>
+          <div className="sif-tip-val">搜索量 {hp.value.toLocaleString()}</div>
+          {hp.rank != null && <div className="sif-tip-val">ABA 排名 #{hp.rank.toLocaleString()}</div>}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -353,9 +391,11 @@ export function SifKeyword() {
       const h = await apiHistory([snap.keyword]);
       const s = (h.series || {})[snap.keyword];
       if (s && s.dates && s.volumes) {
-        const pts = s.dates.slice(-20).map((d: string, i: number) => ({
-          date: d,
-          value: s.volumes[s.volumes.length - 20 + i],
+        const off = Math.max(0, s.volumes.length - 52);
+        const pts = s.dates.slice(off).map((dd: string, i: number) => ({
+          date: dd,
+          value: s.volumes[off + i],
+          rank: s.ranks ? (s.ranks[off + i] ?? null) : null,
         })).filter((p: any) => p.value !== null && p.value !== undefined);
         setTrend(pts);
       }
@@ -363,6 +403,12 @@ export function SifKeyword() {
   }
 
   const d = detail?.demand || {};
+  // 数据窗口（SIF data_notice，如 "Data updated through 2026-08-26 ..."）
+  const dataUntil = (() => {
+    const notice = snapshots[0]?.detail?.data_notice || '';
+    const m = /through\s+(\d{4}-\d{2}-\d{2})/.exec(notice);
+    return m ? m[1] : null;
+  })();
 
   return (
     <div className="sif-wrap">
@@ -421,6 +467,7 @@ export function SifKeyword() {
                   {DIR_LABEL[selected.direction] || selected.direction || '自定义'} · {selected.country} ·
                   词根: {selected.roots.join(' / ') || selected.keywords.join(' / ')} · 每日 {selected.scheduleTime || '手动'} ·
                   配额 {selected.quotaLimit} 词
+                  {dataUntil ? ` · 数据截至 ${dataUntil}` : ''}
                   {selected.lastError && <span className="sif-last-err"> · {selected.lastError}</span>}
                 </div>
               </div>
@@ -626,7 +673,7 @@ export function SifKeyword() {
 
               {trend && trend.length >= 2 && (
                 <div className="sif-trend-block">
-                  <div className="sif-trend-title">近 20 周搜索量趋势（周度）</div>
+                  <div className="sif-trend-title">近 {trend.length} 周搜索量趋势（周度 · 鼠标悬停查看数值与排名）</div>
                   <TrendChart points={trend} />
                 </div>
               )}

@@ -55,12 +55,12 @@ JSON（含供 LLM 展示的 `_formatted` 块，程序忽略即可），抓取链
             │         （词根间 MIN_INTERVAL=0.3s 节流；每个词根一次 SIF 调用）
             ├─ ② 合并去重 → 按搜索量降序 → 截断到 quota_limit
             ├─ ③ 画像：keyword_demand 分批（每批 ≤10 词）→ demand_map
-            ├─ ④ 趋势：搜索量前 5 词 → keyword_history(weekly) → series
+            ├─ ④ 趋势：全部候选词按 10 词/批 → keyword_history(weekly) → series（填充 ABA 排名）
             ├─ ⑤ 组装 items → state.save_sif_snapshots(按 run_date+keyword 覆盖)
             └─ ⑥ 回写 last_status=done/error + last_run_at
 ```
 
-每次运行的 SIF 调用量估算：`词根数 × 1（screen） + ⌈候选词数/10⌉（demand） + 1（history）`，
+每次运行的 SIF 调用量估算：`词根数 × 1（screen） + ⌈候选词数/10⌉（demand） + ⌈候选词数/10⌉（history）`，
 候选词数 ≤ quota_limit。**SIF 是付费服务，调小 topN/quotaLimit 是控制成本的主要手段。**
 
 ## 4. API

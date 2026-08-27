@@ -257,7 +257,8 @@ def keyword_history(keywords: list, country: str = "US", granularity: str = "wee
 # ---------------------------------------------------------------------------
 
 MIN_INTERVAL = 0.3   # 两次 SIF 调用之间的最小间隔（秒），避免触发限流
-MAX_DEMAND_BATCH = 10  # keyword_demand 单次批量上限
+MAX_DEMAND_BATCH = 10  # keyword_demand 单次批量上限（实测 30 词只回 10，按 10 分批）
+HISTORY_BATCH = 10   # keyword_history 单次批量上限（实测 30 词只回 10，按 10 分批）
 
 
 def _throttle(prev: list):
@@ -326,31 +327,31 @@ def run_task(task: dict, progress_cb=None) -> dict:
             print(f"  [sif] demand 批量失败: {e}")
     stats["enriched"] = len(demand_map)
 
-    # ---- 3) 头部词补历史趋势（最多 5 个，供趋势图） ----
-    top_kws = [f["keyword"] for f in ordered[:5] if f["keyword"] in demand_map]
-    if top_kws:
+    # ---- 3) 全部候选词补历史趋势（每批 ≤10 词；填充 ABA 排名 + 趋势图数据） ----
+    hist_series = {}
+    hist_notice = ""
+    for i in range(0, len(ordered), HISTORY_BATCH):
+        batch = [f["keyword"] for f in ordered[i:i + HISTORY_BATCH]]
         _throttle(throttle)
         try:
-            h = keyword_history(top_kws, country, "weekly")
+            h = keyword_history(batch, country, "weekly")
             stats["history_calls"] += 1
+            hist_series.update(h["series"])
+            if h.get("notice"):
+                hist_notice = h["notice"]
         except SifError as e:
-            h = {"series": {}}
             stats["errors"] += 1
-            print(f"  [sif] history 失败: {e}")
-    else:
-        h = {"series": {}}
+            print(f"  [sif] history 批量失败: {e}")
 
     # ---- 4) 组装快照行 ----
     items = []
     for f in ordered:
         kw = f["keyword"]
         d = demand_map.get(kw, {})
-        s = h["series"].get(kw, {})
+        s = hist_series.get(kw, {})
         rank = None
         if s.get("ranks"):
             rank = s["ranks"][-1]
-        elif d.get("search_volume") is None:
-            rank = None
         items.append({
             "keyword": kw,
             "search_volume": d.get("search_volume") if d.get("search_volume") is not None
@@ -365,6 +366,7 @@ def run_task(task: dict, progress_cb=None) -> dict:
                 "history": {"dates": s.get("dates", [])[:60],
                             "volumes": s.get("volumes", [])[:60],
                             "ranks": s.get("ranks", [])[:60]},
+                "data_notice": hist_notice,
             },
         })
     return {"items": items, "stats": stats}

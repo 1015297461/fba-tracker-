@@ -238,7 +238,7 @@ SIF 关键词监测是一个"数据直连型"工具模块：通过 **HTTP JSON-R
 
 - **端点与密钥**：环境变量 `SIF_MCP_URL`/`SIF_MCP_KEY` 优先，兜底读 `data/sif-config.json`（`{"url": "...", "key": "..."}`，data/ 已 gitignore 不入库）。`_load_config()` 带 30s 缓存；`is_configured()` 供路由提前返回 400 提示。**密钥绝不硬编码进代码**。
 - **核心工具（P1 已接入 3 个）**：`market_screen_keyword_opportunities`（按词根筛机会词，返回搜索量/点击份额/CVR/CPC/`entry_signal` 入场信号/竞品 ASIN）、`market_get_keyword_demand`（批量词需求画像：需求类型+广告打法建议/同比/季节位置/峰值月/距峰值周数/时机提示）、`market_get_keyword_history`（历史趋势：dates/volumes/ranks/点击份额，6 年周度）。P0 实测还有 `market_get_asin_aba_footprint`/`market_get_asin_keyword_signals`（ASIN 维度）/`market_get_keyword_competition`（竞品深挖，返回 100 个竞品较重）等 34 个工具，P2 可按需接入。
-- **任务模型**：`sif_tasks`（name/direction/mode/roots|keywords/country/topN/quotaLimit/scheduleTime/enabled + last_run_at/status/error）。`mode='root'` 按词根逐个调 screen 再合并候选词；`mode='keywords'` 直接用指定词。候选词按搜索量降序截断到 `quotaLimit`（默认 30，防止配额失控），批量 demand（每批 ≤10 词），再给搜索量前 5 的词补一次 weekly history 供趋势图。
+- **任务模型**：`sif_tasks`（name/direction/mode/roots|keywords/country/topN/quotaLimit/scheduleTime/enabled + last_run_at/status/error）。`mode='root'` 按词根逐个调 screen 再合并候选词；`mode='keywords'` 直接用指定词。候选词按搜索量降序截断到 `quotaLimit`（默认 30，防止配额失控），批量 demand（每批 ≤10 词），全部候选词按 10 词/批补 weekly history（填充 ABA 排名 + 趋势图数据，实测该工具单次最多返回 10 词）。
 - **每日定时调度**：`start_scheduler()` 守护线程每分钟检查，命中「enabled + scheduleTime(HH:MM) 已到 + 今天还没跑过」的任务就在后台线程执行（`_launch()`，同任务用 `_running` 集合去重，手动"立即运行"与定时共用同一条路径）。**启动时把残留 `running` 状态的任务标记为 `error`**（崩溃恢复，参考导出/AI worker 的同类问题）。
 - **前端方向预设**：`SifKeyword.tsx` 的 `DIRECTION_PRESETS` 定义了三大方向（🧊 降温冷却 / 🔥 升温保暖 / 🎁 礼物），一键填充词根；任务表单内嵌"试查词根"（`POST /api/sif/preview`，不落库）辅助评估。详情弹窗点查趋势走 `GET /api/sif/history`（≤5 词，按需付费）。
 - **配额与成本提示**：SIF 是付费数据服务，每次 `tools/call` 都消耗配额。设计上：定时任务按词根×topN + 配额截断；试查/趋势为人工按需触发；不在定时链路里跑竞争度等重工具。真实配额计费方式尚未向 SIF 确认，跑一段时间后如发现成本问题，优先调小 topN/quotaLimit 或降低任务频率。
@@ -255,7 +255,7 @@ SIF 关键词监测是一个"数据直连型"工具模块：通过 **HTTP JSON-R
 
 - `src/features/detail/index.tsx`（1413 行，11 个组件；`TabProd` 前有 `getEffectiveBalancePayments(b)` 辅助函数；跨批次汇总通过 `titleExtra` 注入 StageCard 标题行）
 - `src/context/ProductContext.tsx`（927 行，~19 个 update 函数）
-- `styles.css`（2857 行，按模块分区，新模块追加在文件末尾对应分区注释下）
+- `styles.css`（2862 行，按模块分区，新模块追加在文件末尾对应分区注释下）
 - `backend/product_fetcher.py`（1368 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
   限流参数（均可用环境变量覆盖，当前默认值）：
   `SCRAPER_CONCURRENCY=3`（并发 worker 数）、`SCRAPER_MIN_INTERVAL_MS=700`（请求最小间隔 ms）、
