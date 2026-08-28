@@ -201,19 +201,21 @@ export function RecordCard({ index, title, status, onStatusChange, onRemove, isF
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = React.useState(defaultOpen);
+  const toggle = () => setOpen(o => !o);
   return (
     <div className={"record-card" + (isFinal ? ' final' : '')}>
-      <div className="record-hdr">
+      {/* 点击标题栏（空白区域/编号/标题）即可折叠展开；交互控件各自 stopPropagation 防止误触 */}
+      <div className="record-hdr" onClick={toggle}>
         <div className="record-num" style={{ background: color, color:'#fff' }}>#{index}</div>
-        <button className="record-collapse" onClick={() => setOpen(o => !o)} title={open ? '折叠' : '展开'}>
+        <button className="record-collapse" onClick={e => { e.stopPropagation(); toggle(); }} title={open ? '折叠' : '展开'}>
           {open ? '▾' : '▸'}
         </button>
         <span className="record-title">{title}</span>
         {dates && <span className="record-dates">{dates}</span>}
-        {meta && <span className="record-meta">{meta}</span>}
-        <StatusSelect value={status} size="sm" onChange={onStatusChange} />
+        {meta && <span className="record-meta" onClick={e => e.stopPropagation()}>{meta}</span>}
+        <span onClick={e => e.stopPropagation()}><StatusSelect value={status} size="sm" onChange={onStatusChange} /></span>
         {isFinal && <span className="record-final-badge">最终版</span>}
-        <button className="record-remove" onClick={onRemove} title="删除">✕</button>
+        <button className="record-remove" onClick={e => { e.stopPropagation(); onRemove(); }} title="删除">✕</button>
       </div>
       {open && <div className="record-body">{children}</div>}
     </div>

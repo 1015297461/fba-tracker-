@@ -584,6 +584,7 @@ input, textarea, select { font-family: inherit; font-size: 13px; }
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-2);
+  cursor: pointer;   /* 点击标题栏空白区域可折叠/展开 */
 }
 .record-num {
   width: 30px; height: 22px;
