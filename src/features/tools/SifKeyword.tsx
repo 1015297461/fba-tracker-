@@ -21,6 +21,7 @@ interface SifTask {
   topN: number;
   quotaLimit: number;
   scheduleTime: string | null;
+  scheduleWeekday: number;
   enabled: boolean;
   lastRunAt: string | null;
   lastStatus: string;
@@ -59,6 +60,15 @@ const DIRECTION_PRESETS = [
 
 const DIR_ICON: Record<string, string> = Object.fromEntries(DIRECTION_PRESETS.map(d => [d.key, d.icon]));
 const DIR_LABEL: Record<string, string> = Object.fromEntries(DIRECTION_PRESETS.map(d => [d.key, d.label]));
+
+// 周几（ISO：1=周一 .. 7=周日）
+const WEEKDAYS = [
+  { v: 1, label: '周一' }, { v: 2, label: '周二' }, { v: 3, label: '周三' },
+  { v: 4, label: '周四' }, { v: 5, label: '周五' }, { v: 6, label: '周六' }, { v: 7, label: '周日' },
+];
+function weekdayLabel(v: number): string {
+  return (WEEKDAYS.find(w => w.v === v) || { label: `周${v}` }).label;
+}
 
 // ---- API ----
 
@@ -103,8 +113,11 @@ async function apiRunTask(id: string): Promise<void> {
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'run failed');
 }
 
-async function apiSnapshots(taskId: string): Promise<{ runDate: string | null; snapshots: SnapshotRow[] }> {
-  const r = await fetch('/api/sif/snapshots?taskId=' + encodeURIComponent(taskId), { headers: authHeaders() });
+async function apiSnapshots(taskId: string, date?: string): Promise<{ runDate: string | null; snapshots: SnapshotRow[] }> {
+  const q = date
+    ? '?taskId=' + encodeURIComponent(taskId) + '&date=' + encodeURIComponent(date)
+    : '?taskId=' + encodeURIComponent(taskId);
+  const r = await fetch('/api/sif/snapshots' + q, { headers: authHeaders() });
   if (!r.ok) return { runDate: null, snapshots: [] };
   return r.json();
 }
@@ -238,6 +251,7 @@ export function SifKeyword() {
   const [fTopN, setFTopN] = useState(8);
   const [fQuota, setFQuota] = useState(30);
   const [fSchedule, setFSchedule] = useState('08:00');
+  const [fWeekday, setFWeekday] = useState(1);
   const [fEnabled, setFEnabled] = useState(true);
   const [previewRoot, setPreviewRoot] = useState('');
   const [previewItems, setPreviewItems] = useState<PreviewItem[] | null>(null);
@@ -283,6 +297,7 @@ export function SifKeyword() {
       setFTopN(task.topN);
       setFQuota(task.quotaLimit);
       setFSchedule(task.scheduleTime || '08:00');
+      setFWeekday(task.scheduleWeekday || 1);
       setFEnabled(task.enabled);
     } else {
       setEditing(null);
@@ -294,6 +309,7 @@ export function SifKeyword() {
       setFTopN(8);
       setFQuota(30);
       setFSchedule('08:00');
+      setFWeekday(1);
       setFEnabled(true);
     }
     setPreviewItems(null);
@@ -316,6 +332,7 @@ export function SifKeyword() {
       topN: fTopN,
       quotaLimit: fQuota,
       scheduleTime: fSchedule || null,
+      scheduleWeekday: fWeekday,
       enabled: fEnabled,
     };
     if (fMode === 'root') {
@@ -432,7 +449,7 @@ export function SifKeyword() {
               </div>
               <div className="sif-task-meta">
                 {DIR_LABEL[t.direction] || t.direction || '自定义'} · {t.mode === 'root' ? `词根×${t.roots.length}` : `关键词×${t.keywords.length}`}
-                {t.scheduleTime ? ` · 每日 ${t.scheduleTime}` : ' · 仅手动'}
+                {t.scheduleTime ? ` · 每周${weekdayLabel(t.scheduleWeekday)} ${t.scheduleTime}` : ' · 仅手动'}
               </div>
               <div className="sif-task-foot">
                 <span className="sif-task-time">最近: {fmtTime(t.lastRunAt)}</span>
@@ -454,7 +471,7 @@ export function SifKeyword() {
           <div className="sif-main-empty">
             <div className="sif-main-empty-ic">🔑</div>
             <p>选择左侧任务查看关键词数据，或新建任务开始监测。</p>
-            <p className="sif-main-empty-sub">数据源：SIF MCP（每日刷新，延迟 1 天）· 每日定时自动抓取</p>
+            <p className="sif-main-empty-sub">数据源：SIF MCP（ABA 数据周更，每日刷新窗口）· 每周定时自动抓取</p>
           </div>
         )}
 
@@ -465,7 +482,8 @@ export function SifKeyword() {
                 <div className="sif-detail-title">{DIR_ICON[selected.direction] || '📌'} {selected.name}</div>
                 <div className="sif-detail-sub">
                   {DIR_LABEL[selected.direction] || selected.direction || '自定义'} · {selected.country} ·
-                  词根: {selected.roots.join(' / ') || selected.keywords.join(' / ')} · 每日 {selected.scheduleTime || '手动'} ·
+                  词根: {selected.roots.join(' / ') || selected.keywords.join(' / ')} ·
+                  每周{weekdayLabel(selected.scheduleWeekday)} {selected.scheduleTime || '（仅手动）'} ·
                   配额 {selected.quotaLimit} 词
                   {dataUntil ? ` · 数据截至 ${dataUntil}` : ''}
                   {selected.lastError && <span className="sif-last-err"> · {selected.lastError}</span>}
@@ -479,18 +497,20 @@ export function SifKeyword() {
               </div>
             </div>
 
-            {runs.length > 1 && (
+            {runs.length > 0 && (
               <div className="sif-runs-bar">
-                <span>历史运行: </span>
-                {runs.slice(0, 14).map(d => (
-                  <button key={d} className={`btn btn-xs ${runDate === d ? 'sif-run-active' : ''}`}
-                    onClick={async () => {
-                      const snap = await apiSnapshots(selectedId!);
-                      setSnapshots(snap.snapshots);
-                      setRunDate(d);
-                      setRuns(await apiRuns(selectedId!));
-                    }}>{d.slice(5)}</button>
-                ))}
+                <span>历史运行</span>
+                <select className="sif-runs-select" value={runDate || ''}
+                  onChange={async e => {
+                    const d = e.target.value;
+                    const snap = await apiSnapshots(selectedId!, d);
+                    setSnapshots(snap.snapshots);
+                    setRunDate(d);
+                  }}>
+                  {runs.map(d => (
+                    <option key={d} value={d}>{d}{d === runs[0] ? ' · 最新' : ''}</option>
+                  ))}
+                </select>
               </div>
             )}
 
@@ -626,12 +646,18 @@ export function SifKeyword() {
                   onChange={e => setFQuota(Number(e.target.value) || 30)} />
               </label>
               <label className="sif-field">
-                <span>每日定时时刻</span>
+                <span>每周定时 · 周几</span>
+                <select className="sif-runs-select" value={fWeekday} onChange={e => setFWeekday(Number(e.target.value))}>
+                  {WEEKDAYS.map(w => <option key={w.v} value={w.v}>{w.label}</option>)}
+                </select>
+              </label>
+              <label className="sif-field">
+                <span>每周定时 · 时刻</span>
                 <input type="time" value={fSchedule} onChange={e => setFSchedule(e.target.value)} />
               </label>
               <label className="sif-field sif-check">
                 <input type="checkbox" checked={fEnabled} onChange={e => setFEnabled(e.target.checked)} />
-                <span>启用每日定时</span>
+                <span>启用每周定时（ABA 数据周更，建议每周一 08:00 抓一次）</span>
               </label>
             </div>
 

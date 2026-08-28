@@ -18,6 +18,7 @@ SIF 关键词监测：路由 + 每日定时调度
 今天未跑过」的任务就在后台线程执行（同一任务去重，防止重复触发）。
 """
 
+import datetime
 import threading
 import time
 from urllib.parse import urlparse, parse_qs
@@ -85,19 +86,24 @@ def start_scheduler(state):
             try:
                 now_hm = time.strftime("%H:%M")
                 today = time.strftime("%Y-%m-%d")
+                today_wd = datetime.date.today().isoweekday()  # 1=周一 .. 7=周日
                 for t in state.list_sif_tasks():
                     if not t.get("enabled"):
                         continue
                     sch = (t.get("scheduleTime") or "").strip()
                     if not sch or ":" not in sch:
                         continue
+                    # 周几匹配（默认周一），非匹配日跳过
+                    wd = int(t.get("scheduleWeekday") or 1)
+                    if wd != today_wd:
+                        continue
                     # 已跑过今天的不重复执行
                     last_run = t.get("lastRunAt") or ""
                     if last_run[:10] == today:
                         continue
-                    # 到达或已过每日时刻则触发（后台线程执行，避免阻塞调度循环）
+                    # 到达或已过定时时刻则触发（后台线程执行，避免阻塞调度循环）
                     if now_hm >= sch:
-                        print(f"  [sif] 定时触发 {t['name']} @ {now_hm} (计划 {sch})")
+                        print(f"  [sif] 定时触发 {t['name']} @ 周{today_wd} {now_hm} (计划 {sch})")
                         _launch(state, t)
             except Exception as e:
                 print(f"  [sif] 调度循环异常: {e}")
@@ -105,7 +111,7 @@ def start_scheduler(state):
 
     th = threading.Thread(target=loop, daemon=True, name="SifScheduler")
     th.start()
-    print("[sif] 关键词监测调度线程已启动（每分钟检查每日定时档位）")
+    print("[sif] 关键词监测调度线程已启动（每分钟检查：每周指定周几+时刻，一天最多跑一次）")
 
 
 def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):

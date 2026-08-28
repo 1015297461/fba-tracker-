@@ -8,7 +8,7 @@
 ## 1. 模块职责
 
 SIF 关键词监测是一个"数据直连型"工具模块：通过 HTTP JSON-RPC 直连 SIF 的 MCP 端点
-（`https://mcp.sif.com/mcp`，Streamable HTTP 传输），按**每日定时**或**手动触发**批量抓取
+（`https://mcp.sif.com/mcp`，Streamable HTTP 传输），按**每周定时（周几+时刻）**或**手动触发**批量抓取
 关键词数据（机会词 / 需求画像 / 历史趋势），落库后在 FBA2 前端表格与趋势图展示。
 
 与 AI 分析模块的关键区别：**本模块不经过 Claude Code / LLM**。SIF 返回的是预生成的结构化
@@ -27,7 +27,7 @@ JSON（含供 LLM 展示的 `_formatted` 块，程序忽略即可），抓取链
 | `country` | 站点（默认 US） |
 | `top_n` | 每个词根取机会词数量（默认 8） |
 | `quota_limit` | 本次最多画像词数（默认 30，防配额失控） |
-| `schedule_time` | 每日定时时刻 `HH:MM`；为空 = 仅手动触发 |
+| `schedule_time` / `schedule_weekday` | 每周定时：时刻 `HH:MM` + 周几（ISO 1=周一..7=周日，默认1）；为空 = 仅手动触发 |
 | `enabled` | 是否启用定时 |
 | `last_run_at` / `last_status` / `last_error` | 最近运行时间 / `idle|running|done|error` / 错误信息 |
 

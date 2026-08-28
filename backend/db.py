@@ -213,6 +213,7 @@ class DbState:
                     top_n          INTEGER DEFAULT 8,
                     quota_limit    INTEGER DEFAULT 30,
                     schedule_time  TEXT,
+                    schedule_weekday INTEGER DEFAULT 1,
                     enabled        INTEGER DEFAULT 1,
                     last_run_at    TEXT,
                     last_status    TEXT DEFAULT 'idle',
@@ -258,6 +259,11 @@ class DbState:
             existing_scrape = {row[1] for row in conn.execute("PRAGMA table_info(scrape_tasks)")}
             if "name" not in existing_scrape:
                 conn.execute("ALTER TABLE scrape_tasks ADD COLUMN name TEXT")
+
+            # sif_tasks：每日定时 → 每周定时（周几 + 时刻），旧任务默认迁移为周一
+            existing_sif = {row[1] for row in conn.execute("PRAGMA table_info(sif_tasks)")}
+            if "schedule_weekday" not in existing_sif:
+                conn.execute("ALTER TABLE sif_tasks ADD COLUMN schedule_weekday INTEGER DEFAULT 1")
 
     # ---- 内部辅助 ----
 
@@ -988,8 +994,8 @@ class DbState:
                 conn.execute(
                     """INSERT INTO sif_tasks
                        (id, name, direction, mode, roots, keywords, asins, country,
-                        top_n, quota_limit, schedule_time, enabled, created_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        top_n, quota_limit, schedule_time, schedule_weekday, enabled, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     [tid,
                      (t.get("name") or "未命名任务").strip() or "未命名任务",
                      t.get("direction") or "",
@@ -1001,6 +1007,7 @@ class DbState:
                      int(t.get("topN") or 8),
                      int(t.get("quotaLimit") or 30),
                      t.get("scheduleTime") or None,
+                     int(t.get("scheduleWeekday") or 1),
                      1 if t.get("enabled", True) else 0,
                      now])
                 conn.commit()
@@ -1019,6 +1026,7 @@ class DbState:
             "topN":          row["top_n"] or 8,
             "quotaLimit":    row["quota_limit"] or 30,
             "scheduleTime":  row["schedule_time"],
+            "scheduleWeekday": row["schedule_weekday"] or 1,
             "enabled":       bool(row["enabled"]),
             "lastRunAt":     row["last_run_at"],
             "lastStatus":    row["last_status"] or "idle",
@@ -1042,6 +1050,7 @@ class DbState:
         allowed = {
             "name": "name", "direction": "direction", "mode": "mode",
             "country": "country", "schedule_time": "scheduleTime",
+            "schedule_weekday": "scheduleWeekday",
             "enabled": "enabled", "top_n": "topN", "quota_limit": "quotaLimit",
         }
         sets = []
@@ -1054,8 +1063,8 @@ class DbState:
                 v = json.dumps(v or [], ensure_ascii=False)
             elif col == "enabled":
                 v = 1 if v else 0
-            elif col in ("top_n", "quota_limit"):
-                v = int(v or 0)
+            elif col in ("top_n", "quota_limit", "schedule_weekday"):
+                v = int(v or (1 if col == "schedule_weekday" else 0))
             elif col == "country":
                 v = (v or "US").upper()
             elif col == "schedule_time":
