@@ -201,6 +201,8 @@ class DbState:
                     completed_at TEXT
                 );
 
+                -- ===== SIF 爆品关键词监控 v2 =====
+
                 CREATE TABLE IF NOT EXISTS sif_tasks (
                     id             TEXT PRIMARY KEY,
                     name           TEXT NOT NULL,
@@ -212,16 +214,24 @@ class DbState:
                     country        TEXT DEFAULT 'US',
                     top_n          INTEGER DEFAULT 8,
                     quota_limit    INTEGER DEFAULT 30,
-                    schedule_time  TEXT,
+                    asin_limit     INTEGER DEFAULT 20,
+                    backfill_days  INTEGER DEFAULT 90,
+                    auto_asin      INTEGER DEFAULT 1,
+                    freq_type      TEXT DEFAULT 'daily',
+                    every_n_days   INTEGER DEFAULT 2,
                     schedule_weekday INTEGER DEFAULT 1,
+                    schedule_time  TEXT,
                     enabled        INTEGER DEFAULT 1,
                     last_run_at    TEXT,
+                    last_daily_at  TEXT,
+                    last_weekly_at TEXT,
                     last_status    TEXT DEFAULT 'idle',
                     last_error     TEXT,
                     created_at     TEXT
                 );
 
-                CREATE TABLE IF NOT EXISTS sif_snapshots (
+                -- 关键词每日快照：只存当日数据点（不冗余历史），逐日累积出日粒度序列
+                CREATE TABLE IF NOT EXISTS sif_kw_snapshots (
                     id             INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id        TEXT NOT NULL,
                     run_date       TEXT NOT NULL,
@@ -230,12 +240,127 @@ class DbState:
                     search_volume  REAL,
                     rank           INTEGER,
                     cpc            REAL,
+                    cvr            REAL,
+                    click_share    REAL,
+                    traffic_cost   REAL,
                     entry_signal   TEXT,
-                    demand         TEXT,
-                    detail         TEXT,
+                    top_asins      TEXT DEFAULT '[]',
+                    root           TEXT,
+                    data_period    TEXT,
+                    is_new_entry   INTEGER DEFAULT 0,
                     UNIQUE(task_id, run_date, keyword)
                 );
-                CREATE INDEX IF NOT EXISTS idx_sif_snap_task ON sif_snapshots(task_id, run_date);
+                CREATE INDEX IF NOT EXISTS idx_sif_kw_snap ON sif_kw_snapshots(task_id, run_date);
+                CREATE INDEX IF NOT EXISTS idx_sif_kw_word ON sif_kw_snapshots(task_id, keyword, run_date);
+
+                -- ASIN 监控池（机会词 Top3 点击 ASIN + 词根头部竞品 + 手动添加）
+                CREATE TABLE IF NOT EXISTS sif_asins (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id        TEXT NOT NULL,
+                    asin           TEXT NOT NULL,
+                    title          TEXT,
+                    brand          TEXT,
+                    img            TEXT,
+                    url            TEXT,
+                    price          REAL,
+                    star           REAL,
+                    rating_num     INTEGER,
+                    category       TEXT,
+                    weight_oz      REAL,
+                    dims_in        TEXT DEFAULT '{}',
+                    first_available_day TEXT,
+                    variation_num  INTEGER,
+                    source         TEXT DEFAULT 'manual',
+                    source_ref     TEXT,
+                    added_at       TEXT,
+                    last_stat_date TEXT,
+                    active         INTEGER DEFAULT 1,
+                    UNIQUE(task_id, asin)
+                );
+
+                -- ASIN 真日粒度数据（ops_get_asin_traffic_trend granularity=day）
+                CREATE TABLE IF NOT EXISTS sif_asin_snapshots (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id        TEXT NOT NULL,
+                    asin           TEXT NOT NULL,
+                    stat_date      TEXT NOT NULL,
+                    price          REAL,
+                    bsr            INTEGER,
+                    bought_month   INTEGER,
+                    review_num     INTEGER,
+                    star           REAL,
+                    seller_num     INTEGER,
+                    total_score    REAL,
+                    nf_score       REAL,
+                    ad_score       REAL,
+                    sp_score       REAL,
+                    sb_score       REAL,
+                    sbv_score      REAL,
+                    promotion      TEXT,
+                    coupon         TEXT,
+                    captured_at    TEXT,
+                    UNIQUE(task_id, asin, stat_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_sif_asin_stat ON sif_asin_snapshots(task_id, asin, stat_date);
+
+                -- 关键词需求画像（每周层，按 ISO 周覆盖）
+                CREATE TABLE IF NOT EXISTS sif_kw_profiles (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id        TEXT NOT NULL,
+                    keyword        TEXT NOT NULL,
+                    iso_week       TEXT NOT NULL,
+                    profile        TEXT DEFAULT '{}',
+                    captured_at    TEXT,
+                    UNIQUE(task_id, keyword, iso_week)
+                );
+
+                -- 词根头部竞品概览（每周层）
+                CREATE TABLE IF NOT EXISTS sif_asin_weekly (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id        TEXT NOT NULL,
+                    root           TEXT NOT NULL,
+                    iso_week       TEXT NOT NULL,
+                    competitors    TEXT DEFAULT '[]',
+                    captured_at    TEXT,
+                    UNIQUE(task_id, root, iso_week)
+                );
+
+                -- 信号引擎产出（阈值在设置页可配）
+                CREATE TABLE IF NOT EXISTS sif_signals (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date           TEXT NOT NULL,
+                    created_at     TEXT,
+                    task_id        TEXT,
+                    direction      TEXT,
+                    kind           TEXT NOT NULL,
+                    severity       TEXT DEFAULT 'info',
+                    ref_type       TEXT NOT NULL,
+                    ref_id         TEXT NOT NULL,
+                    title          TEXT,
+                    detail         TEXT DEFAULT '{}',
+                    ack            INTEGER DEFAULT 0,
+                    UNIQUE(date, task_id, kind, ref_type, ref_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_sif_sig_date ON sif_signals(date DESC);
+
+                -- 运行日志（记录每次运行的调用数与统计，成本透明）
+                CREATE TABLE IF NOT EXISTS sif_runs (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id        TEXT NOT NULL,
+                    run_date       TEXT NOT NULL,
+                    tier           TEXT NOT NULL,
+                    started_at     TEXT,
+                    finished_at    TEXT,
+                    status         TEXT DEFAULT 'done',
+                    stats          TEXT DEFAULT '{}',
+                    error          TEXT
+                );
+
+                -- 全局设置（信号阈值 + 默认配额）
+                CREATE TABLE IF NOT EXISTS sif_settings (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
             """)
             # 兼容旧版数据库：幂等追加缺失列
             existing_ai_tasks = {row[1] for row in conn.execute("PRAGMA table_info(ai_analysis_tasks)")}
@@ -260,10 +385,43 @@ class DbState:
             if "name" not in existing_scrape:
                 conn.execute("ALTER TABLE scrape_tasks ADD COLUMN name TEXT")
 
-            # sif_tasks：每日定时 → 每周定时（周几 + 时刻），旧任务默认迁移为周一
+            # SIF v1 → v2：旧版结构（单表快照 + detail 冗余存 60 周历史）与新「爆品关键词
+            # 监控」不兼容，按确认「旧架构与历史数据全部丢弃」直接重建为 v2。
             existing_sif = {row[1] for row in conn.execute("PRAGMA table_info(sif_tasks)")}
-            if "schedule_weekday" not in existing_sif:
-                conn.execute("ALTER TABLE sif_tasks ADD COLUMN schedule_weekday INTEGER DEFAULT 1")
+            if existing_sif and "freq_type" not in existing_sif:
+                conn.execute("DROP TABLE IF EXISTS sif_snapshots")
+                conn.execute("DROP INDEX IF EXISTS idx_sif_snap_task")
+                conn.execute("DROP TABLE IF EXISTS sif_tasks")
+                conn.execute("""
+                    CREATE TABLE sif_tasks (
+                        id             TEXT PRIMARY KEY,
+                        name           TEXT NOT NULL,
+                        direction      TEXT DEFAULT '',
+                        mode           TEXT DEFAULT 'root',
+                        roots          TEXT DEFAULT '[]',
+                        keywords       TEXT DEFAULT '[]',
+                        asins          TEXT DEFAULT '[]',
+                        country        TEXT DEFAULT 'US',
+                        top_n          INTEGER DEFAULT 8,
+                        quota_limit    INTEGER DEFAULT 30,
+                        asin_limit     INTEGER DEFAULT 20,
+                        backfill_days  INTEGER DEFAULT 90,
+                        auto_asin      INTEGER DEFAULT 1,
+                        freq_type      TEXT DEFAULT 'daily',
+                        every_n_days   INTEGER DEFAULT 2,
+                        schedule_weekday INTEGER DEFAULT 1,
+                        schedule_time  TEXT,
+                        enabled        INTEGER DEFAULT 1,
+                        last_run_at    TEXT,
+                        last_daily_at  TEXT,
+                        last_weekly_at TEXT,
+                        last_status    TEXT DEFAULT 'idle',
+                        last_error     TEXT,
+                        created_at     TEXT
+                    )
+                """)
+                conn.commit()
+                print("[info] SIF 模块已迁移到 v2（爆品关键词监控），旧任务与快照数据已清空")
 
     # ---- 内部辅助 ----
 
@@ -983,7 +1141,82 @@ class DbState:
                 conn.execute("DELETE FROM ai_analysis_tasks WHERE id=?", [tid])
                 conn.commit()
 
-    # ---- SIF 关键词监测：任务与快照 ----
+    # ---- SIF 爆品关键词监控 v2：设置 ----
+
+    SIF_DEFAULT_SETTINGS = {
+        # 信号阈值（前端设置页可改，单位：%）
+        "thresholds": {
+            "kw_dod_pct":        20,   # 关键词搜索量日环比 ±%
+            "kw_wow_pct":        30,   # 关键词搜索量 7 日环比 ±%
+            "kw_rank_jump_pct":  20,   # ABA 排名改善幅度阈值（数值变小 = 变好）
+            "kw_new_entry":       1,   # 1=提示新入榜机会词，0=关闭
+            "asin_bsr_jump_pct": 30,   # BSR 单日跃升（排名数值变小 = 变好）
+            "asin_price_drop_pct": 10, # 价格降幅（内卷/清仓预警）
+            "asin_sales_wow_pct": 50,  # 近30天销量 7 日增速
+            "asin_review_wow_pct": 25,  # 评论数 7 日增速（起量佐证）
+            "new_product_days":  180,   # 新品黑马：上架天数上限
+            "new_product_sales": 500,   # 新品黑马：近30天销量下限
+            "nf_share_drop_pct": 20,   # 自然流量占比骤降（转广告依赖）
+            "min_search_volume": 500,   # 关键词最小搜索量过滤（降噪）
+        },
+        # 新建任务的默认配额
+        "defaults": {
+            "topN":        8,
+            "quotaLimit":  30,
+            "asinLimit":   20,
+            "backfillDays": 90,
+            "keepDays":    365,
+            "country":     "US",
+        },
+    }
+
+    def get_sif_settings(self) -> dict:
+        """读取全局设置（信号阈值 + 默认配额），缺失项用内置默认补齐。"""
+        import copy
+        out = copy.deepcopy(self.SIF_DEFAULT_SETTINGS)
+        with self._conn() as conn:
+            rows = conn.execute("SELECT key, value FROM sif_settings").fetchall()
+        stored = {r["key"]: r["value"] for r in rows}
+        for section in ("thresholds", "defaults"):
+            raw = stored.get(section)
+            if not raw:
+                continue
+            try:
+                val = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(val, dict):
+                for k, v in val.items():
+                    if k in out[section]:
+                        out[section][k] = v
+        return out
+
+    def save_sif_settings(self, section: str, values: dict) -> dict:
+        """保存某一节设置（thresholds / defaults），未知键忽略。"""
+        if section not in ("thresholds", "defaults"):
+            return self.get_sif_settings()
+        cur = self.get_sif_settings()
+        allowed = cur.get(section, {})
+        merged = dict(allowed)
+        for k, v in (values or {}).items():
+            if k not in allowed:
+                continue
+            try:
+                merged[k] = float(v) if isinstance(v, str) and "." in v else (
+                    int(v) if isinstance(allowed[k], int) and not isinstance(allowed[k], bool)
+                    else float(v))
+            except Exception:
+                continue
+        cur[section] = merged
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO sif_settings(key, value) VALUES (?,?)",
+                    [section, json.dumps(merged, ensure_ascii=False)])
+                conn.commit()
+        return self.get_sif_settings()
+
+    # ---- SIF v2：任务 CRUD ----
 
     def create_sif_task(self, t: dict) -> str:
         import secrets
@@ -994,8 +1227,10 @@ class DbState:
                 conn.execute(
                     """INSERT INTO sif_tasks
                        (id, name, direction, mode, roots, keywords, asins, country,
-                        top_n, quota_limit, schedule_time, schedule_weekday, enabled, created_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        top_n, quota_limit, asin_limit, backfill_days, auto_asin,
+                        freq_type, every_n_days, schedule_weekday, schedule_time,
+                        enabled, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     [tid,
                      (t.get("name") or "未命名任务").strip() or "未命名任务",
                      t.get("direction") or "",
@@ -1006,8 +1241,13 @@ class DbState:
                      (t.get("country") or "US").upper(),
                      int(t.get("topN") or 8),
                      int(t.get("quotaLimit") or 30),
-                     t.get("scheduleTime") or None,
+                     int(t.get("asinLimit") or 20),
+                     int(t.get("backfillDays") or 90),
+                     1 if t.get("autoAsin", True) else 0,
+                     t.get("freqType") or "daily",
+                     int(t.get("everyNDays") or 2),
                      int(t.get("scheduleWeekday") or 1),
+                     t.get("scheduleTime") or None,
                      1 if t.get("enabled", True) else 0,
                      now])
                 conn.commit()
@@ -1015,30 +1255,35 @@ class DbState:
 
     def _row_to_sif_task(self, row):
         return {
-            "id":            row["id"],
-            "name":          row["name"],
-            "direction":     row["direction"] or "",
-            "mode":          row["mode"] or "root",
-            "roots":         json.loads(row["roots"]     or "[]"),
-            "keywords":      json.loads(row["keywords"]  or "[]"),
-            "asins":         json.loads(row["asins"]     or "[]"),
-            "country":       row["country"] or "US",
-            "topN":          row["top_n"] or 8,
-            "quotaLimit":    row["quota_limit"] or 30,
-            "scheduleTime":  row["schedule_time"],
+            "id":              row["id"],
+            "name":            row["name"],
+            "direction":       row["direction"] or "",
+            "mode":            row["mode"] or "root",
+            "roots":           json.loads(row["roots"] or "[]"),
+            "keywords":        json.loads(row["keywords"] or "[]"),
+            "asins":           json.loads(row["asins"] or "[]"),
+            "country":         row["country"] or "US",
+            "topN":            row["top_n"] or 8,
+            "quotaLimit":      row["quota_limit"] or 30,
+            "asinLimit":       row["asin_limit"] or 20,
+            "backfillDays":    row["backfill_days"] or 90,
+            "autoAsin":        bool(row["auto_asin"]),
+            "freqType":        row["freq_type"] or "daily",
+            "everyNDays":      row["every_n_days"] or 2,
             "scheduleWeekday": row["schedule_weekday"] or 1,
-            "enabled":       bool(row["enabled"]),
-            "lastRunAt":     row["last_run_at"],
-            "lastStatus":    row["last_status"] or "idle",
-            "lastError":     row["last_error"],
-            "createdAt":     row["created_at"],
+            "scheduleTime":    row["schedule_time"],
+            "enabled":         bool(row["enabled"]),
+            "lastRunAt":       row["last_run_at"],
+            "lastDailyAt":     row["last_daily_at"],
+            "lastWeeklyAt":    row["last_weekly_at"],
+            "lastStatus":      row["last_status"] or "idle",
+            "lastError":       row["last_error"],
+            "createdAt":       row["created_at"],
         }
 
     def list_sif_tasks(self):
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM sif_tasks ORDER BY created_at DESC"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM sif_tasks ORDER BY created_at DESC").fetchall()
         return [self._row_to_sif_task(r) for r in rows]
 
     def get_sif_task(self, tid: str):
@@ -1050,25 +1295,32 @@ class DbState:
         allowed = {
             "name": "name", "direction": "direction", "mode": "mode",
             "country": "country", "schedule_time": "scheduleTime",
-            "schedule_weekday": "scheduleWeekday",
+            "schedule_weekday": "scheduleWeekday", "freq_type": "freqType",
             "enabled": "enabled", "top_n": "topN", "quota_limit": "quotaLimit",
+            "asin_limit": "asinLimit", "backfill_days": "backfillDays",
+            "auto_asin": "autoAsin", "every_n_days": "everyNDays",
+            "roots": "roots", "keywords": "keywords", "asins": "asins",
         }
-        sets = []
-        vals = []
+        json_cols = ("roots", "keywords", "asins")
+        int_cols = ("top_n", "quota_limit", "schedule_weekday", "asin_limit",
+                    "backfill_days", "every_n_days")
+        sets, vals = [], []
         for col, key in allowed.items():
             if key not in t:
                 continue
             v = t[key]
-            if col in ("roots", "keywords", "asins"):
+            if col in json_cols:
                 v = json.dumps(v or [], ensure_ascii=False)
-            elif col == "enabled":
+            elif col in ("enabled", "auto_asin"):
                 v = 1 if v else 0
-            elif col in ("top_n", "quota_limit", "schedule_weekday"):
-                v = int(v or (1 if col == "schedule_weekday" else 0))
+            elif col in int_cols:
+                v = int(v or 0)
             elif col == "country":
                 v = (v or "US").upper()
             elif col == "schedule_time":
                 v = v or None
+            elif col == "freq_type" and v not in ("daily", "every_n", "weekly"):
+                continue
             sets.append(f"{col}=?")
             vals.append(v)
         if not sets:
@@ -1076,81 +1328,592 @@ class DbState:
         vals.append(tid)
         with self.lock:
             with self._conn() as conn:
-                conn.execute(
-                    f"UPDATE sif_tasks SET {', '.join(sets)} WHERE id=?", vals
-                )
+                conn.execute(f"UPDATE sif_tasks SET {', '.join(sets)} WHERE id=?", vals)
                 conn.commit()
 
-    def set_sif_task_status(self, tid: str, status: str, error: str = None, run_at: str = None):
+    def set_sif_task_status(self, tid: str, status: str, error: str = None,
+                            run_at: str = None, daily_at: str = None, weekly_at: str = None):
         with self.lock:
             with self._conn() as conn:
                 conn.execute(
-                    "UPDATE sif_tasks SET last_status=?, last_error=?, last_run_at=? WHERE id=?",
-                    [status, error, run_at, tid],
-                )
+                    "UPDATE sif_tasks SET last_status=?, last_error=?, last_run_at=?, "
+                    "last_daily_at=COALESCE(?, last_daily_at), "
+                    "last_weekly_at=COALESCE(?, last_weekly_at) WHERE id=?",
+                    [status, error, run_at, daily_at, weekly_at, tid])
                 conn.commit()
 
     def delete_sif_task(self, tid: str):
+        """删除任务并连带清理其全部监控数据。"""
         with self.lock:
             with self._conn() as conn:
                 conn.execute("DELETE FROM sif_tasks WHERE id=?", [tid])
-                conn.execute("DELETE FROM sif_snapshots WHERE task_id=?", [tid])
+                for table in ("sif_kw_snapshots", "sif_asins", "sif_asin_snapshots",
+                              "sif_kw_profiles", "sif_asin_weekly", "sif_signals", "sif_runs"):
+                    conn.execute(f"DELETE FROM {table} WHERE task_id=?", [tid])
                 conn.commit()
 
-    def save_sif_snapshots(self, task_id: str, run_date: str, captured_at: str, items: list):
+    # ---- SIF v2：关键词每日快照 ----
+
+    def save_kw_snapshots(self, task_id: str, run_date: str, captured_at: str, items: list) -> int:
+        """写入当日快照（同日重跑按词覆盖更新，但做 carry-forward）。
+
+        screen 接口不返回 ABA 排名 —— 排名由每周层的 keyword_history 回填。
+        INSERT OR REPLACE 会整行覆盖，所以这里先把已有行的 rank/click_share 等
+        回填字段与首次入库时间、入榜标记带过来，避免同日第二次运行把它们冲成 NULL。
+        is_new_entry：该词在库里（含本日之前的运行）从未出现过才标 1。
+        """
+        if not items:
+            return 0
         with self.lock:
             with self._conn() as conn:
+                known = {r["keyword"] for r in conn.execute(
+                    "SELECT DISTINCT keyword FROM sif_kw_snapshots WHERE task_id=?", [task_id])}
+                today = {r["keyword"]: r for r in conn.execute(
+                    "SELECT * FROM sif_kw_snapshots WHERE task_id=? AND run_date=?",
+                    [task_id, run_date]).fetchall()}
+                rows = []
+                for it in items:
+                    kw = it.get("keyword") or ""
+                    if not kw:
+                        continue
+                    # 逐词合并：新值优先，缺失字段沿用当日已有行
+                    old = today.get(kw)
+                    rank = _as_int(it.get("rank"))
+                    if rank is None and old is not None:
+                        rank = old["rank"]
+                    click_share = it.get("click_share")
+                    if click_share is None and old is not None:
+                        click_share = old["click_share"]
+                    traffic_cost = it.get("traffic_cost")
+                    if traffic_cost is None and old is not None:
+                        traffic_cost = old["traffic_cost"]
+                    cvr = it.get("cvr")
+                    if cvr is None and old is not None:
+                        cvr = old["cvr"]
+                    cpc = it.get("cpc")
+                    if cpc is None and old is not None:
+                        cpc = old["cpc"]
+                    entry_signal = it.get("entry_signal") or (old["entry_signal"] if old is not None else "")
+                    top_asins = it.get("top_asins")
+                    if not top_asins and old is not None:
+                        top_asins = json.loads(old["top_asins"] or "[]")
+                    # 同日重跑不改变当天的"新入榜"判定：known 里含今天早前那次运行插入的行，
+                    # 若直接用它会把标记冲成 0，导致新入榜信号只在第一次运行那天出现。
+                    if old is not None:
+                        new_entry = old["is_new_entry"]
+                    else:
+                        new_entry = 0 if kw in known else 1
+                    rows.append((
+                        task_id, run_date,
+                        old["captured_at"] if old is not None else captured_at,
+                        kw, it.get("search_volume"), rank, cpc, cvr, click_share, traffic_cost,
+                        entry_signal or "", json.dumps(top_asins or [], ensure_ascii=False),
+                        it.get("root") or (old["root"] if old is not None else None),
+                        it.get("data_period") or (old["data_period"] if old is not None else None),
+                        new_entry,
+                    ))
+                if not rows:
+                    return 0
                 conn.executemany(
-                    """INSERT OR REPLACE INTO sif_snapshots
-                       (task_id, run_date, captured_at, keyword, search_volume, rank,
-                        cpc, entry_signal, demand, detail)
-                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                    [
-                        (task_id, run_date, captured_at, it.get("keyword", ""),
-                         it.get("search_volume"), it.get("rank"),
-                         it.get("cpc"), it.get("entry_signal"),
-                         json.dumps(it.get("demand", {}), ensure_ascii=False),
-                         json.dumps(it.get("detail", {}), ensure_ascii=False))
-                        for it in items
-                    ],
-                )
+                    """INSERT OR REPLACE INTO sif_kw_snapshots
+                       (task_id, run_date, captured_at, keyword, search_volume, rank, cpc, cvr,
+                        click_share, traffic_cost, entry_signal, top_asins, root, data_period, is_new_entry)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
                 conn.commit()
+        return len(rows)
 
-    def list_sif_run_dates(self, task_id: str) -> list:
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT run_date FROM sif_snapshots WHERE task_id=? "
-                "ORDER BY run_date DESC", [task_id]
-            ).fetchall()
-        return [r["run_date"] for r in rows]
-
-    def list_sif_snapshots(self, task_id: str, run_date: str = None) -> list:
+    def list_kw_snapshots(self, task_id: str, run_date: str = None) -> list:
         with self._conn() as conn:
             if run_date:
                 rows = conn.execute(
-                    "SELECT * FROM sif_snapshots WHERE task_id=? AND run_date=? "
-                    "ORDER BY search_volume DESC", [task_id, run_date]
-                ).fetchall()
+                    "SELECT * FROM sif_kw_snapshots WHERE task_id=? AND run_date=? "
+                    "ORDER BY search_volume DESC", [task_id, run_date]).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM sif_snapshots WHERE task_id=? "
-                    "ORDER BY run_date DESC, search_volume DESC", [task_id]
-                ).fetchall()
+                    "SELECT * FROM sif_kw_snapshots WHERE task_id=? "
+                    "ORDER BY run_date DESC, search_volume DESC", [task_id]).fetchall()
+        return [self._row_to_kw_snapshot(r) for r in rows]
+
+    def _row_to_kw_snapshot(self, row):
+        return {
+            "id":           row["id"],
+            "runDate":      row["run_date"],
+            "capturedAt":   row["captured_at"],
+            "keyword":      row["keyword"],
+            "searchVolume": row["search_volume"],
+            "rank":         row["rank"],
+            "cpc":          row["cpc"],
+            "cvr":          row["cvr"],
+            "clickShare":   row["click_share"],
+            "trafficCost":  row["traffic_cost"],
+            "entrySignal":  row["entry_signal"] or "",
+            "topAsins":     json.loads(row["top_asins"] or "[]"),
+            "root":         row["root"],
+            "dataPeriod":   row["data_period"],
+            "isNewEntry":   bool(row["is_new_entry"]),
+        }
+
+    def kw_dates(self, task_id: str, limit: int = 400) -> list:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT run_date FROM sif_kw_snapshots WHERE task_id=? "
+                "ORDER BY run_date DESC LIMIT ?", [task_id, int(limit)]).fetchall()
+        return [r["run_date"] for r in rows]
+
+    def kw_series(self, task_id: str, keyword: str, days: int = 90) -> list:
+        """某关键词的自建日序列（按日期升序）。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM (SELECT * FROM sif_kw_snapshots WHERE task_id=? AND keyword=? "
+                "ORDER BY run_date DESC LIMIT ?) ORDER BY run_date ASC",
+                [task_id, keyword, int(days)]).fetchall()
+        return [self._row_to_kw_snapshot(r) for r in rows]
+
+    def kw_universe(self, task_id: str) -> list:
+        """任务监控过的全部关键词（按最新搜索量降序）。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT keyword, MAX(run_date) AS last_date, MAX(COALESCE(search_volume,0)) AS sv "
+                "FROM sif_kw_snapshots WHERE task_id=? GROUP BY keyword ORDER BY sv DESC",
+                [task_id]).fetchall()
+        return [{"keyword": r["keyword"], "lastDate": r["last_date"], "peakVolume": r["sv"]}
+                for r in rows]
+
+    def update_kw_rank(self, task_id: str, run_date: str, keyword: str,
+                       rank: int = None, click_share: float = None):
+        """回填 ABA 排名 / Top3 点击集中度到当日快照行。
+
+        screen_opportunities 不返回排名，排名来自每周层的 keyword_history 最新一期，
+        因此该字段是周级刷新（每日快照沿用当周最新值）。"""
+        if rank is None and click_share is None:
+            return
+        sets, vals = [], []
+        if rank is not None:
+            sets.append('"rank"=?')
+            vals.append(int(rank))
+        if click_share is not None:
+            sets.append("click_share=?")
+            vals.append(float(click_share))
+        vals += [task_id, run_date, keyword]
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    f"UPDATE sif_kw_snapshots SET {', '.join(sets)} "
+                    "WHERE task_id=? AND run_date=? AND keyword=?", vals)
+                conn.commit()
+
+    def prune_kw_snapshots(self, task_id: str, before_date: str) -> int:
+        """按保留期清理过期快照（数据清理走 DELETE，仅作用于本模块自有 SQLite 表）。"""
+        with self.lock:
+            with self._conn() as conn:
+                n = conn.execute(
+                    "DELETE FROM sif_kw_snapshots WHERE task_id=? AND run_date<?",
+                    [task_id, before_date]).rowcount
+                conn.execute(
+                    "DELETE FROM sif_asin_snapshots WHERE task_id=? AND stat_date<?",
+                    [task_id, before_date]).rowcount
+                conn.commit()
+        return n
+
+    # ---- SIF v2：ASIN 监控池 ----
+
+    def add_asins(self, task_id: str, rows: list) -> int:
+        """入池（已存在则只补 source_ref，不覆盖已有画像）。返回新增数。"""
+        if not rows:
+            return 0
+        now = _now_iso()
+        added = 0
+        with self.lock:
+            with self._conn() as conn:
+                for r in rows:
+                    asin = (r.get("asin") or "").strip()
+                    if not asin:
+                        continue
+                    cur = conn.execute(
+                        "SELECT id FROM sif_asins WHERE task_id=? AND asin=?",
+                        [task_id, asin]).fetchone()
+                    if cur:
+                        if not r.get("force_reactivate"):
+                            continue
+                        conn.execute("UPDATE sif_asins SET active=1 WHERE id=?", [cur["id"]])
+                        continue
+                    conn.execute(
+                        """INSERT INTO sif_asins
+                           (task_id, asin, title, brand, img, url, price, star, rating_num,
+                            category, weight_oz, dims_in, first_available_day, variation_num,
+                            source, source_ref, added_at, active)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        [task_id, asin, r.get("title"), r.get("brand"), r.get("img"), r.get("url"),
+                         r.get("price"), r.get("star"), _as_int(r.get("rating_num")),
+                         r.get("category"), r.get("weight_oz"),
+                         json.dumps(r.get("dims_in") or {}, ensure_ascii=False),
+                         r.get("first_available_day"), r.get("variation_num"),
+                         r.get("source") or "manual",
+                         json.dumps({k: v for k, v in r.items()
+                                     if k in ("keyword", "root", "covered_volume",
+                                              "keyword_count", "rank1_count", "monthly_orders",
+                                              "posture", "serp_share", "first_available_day")},
+                                    ensure_ascii=False),
+                         now, 1])
+                    added += 1
+                conn.commit()
+        return added
+
+    def update_asin_profile(self, task_id: str, asin: str, p: dict):
+        """用 market_get_asin_profile 结果刷新静态属性。"""
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """UPDATE sif_asins SET title=COALESCE(?,title), brand=COALESCE(?,brand),
+                       img=COALESCE(?,img), url=COALESCE(?,url), price=COALESCE(?,price),
+                       star=COALESCE(?,star), rating_num=COALESCE(?,rating_num),
+                       category=COALESCE(?,category), weight_oz=COALESCE(?,weight_oz),
+                       first_available_day=COALESCE(?,first_available_day),
+                       variation_num=COALESCE(?,variation_num),
+                       dims_in=CASE WHEN ?='{}' THEN dims_in ELSE ? END
+                       WHERE task_id=? AND asin=?""",
+                    [p.get("title"), p.get("brand"), p.get("img"), p.get("url"), p.get("price"),
+                     p.get("star"), _as_int(p.get("rating_num")), p.get("category"),
+                     p.get("weight_oz"), p.get("first_available_day"), p.get("variation_num"),
+                     json.dumps(p.get("dims_in") or {}, ensure_ascii=False),
+                     json.dumps(p.get("dims_in") or {}, ensure_ascii=False),
+                     task_id, asin])
+                conn.commit()
+
+    def list_asins(self, task_id: str, active_only: bool = True) -> list:
+        with self._conn() as conn:
+            sql = "SELECT * FROM sif_asins WHERE task_id=?"
+            if active_only:
+                sql += " AND active=1"
+            rows = conn.execute(sql + " ORDER BY added_at ASC", [task_id]).fetchall()
+        return [self._row_to_asin(r) for r in rows]
+
+    def count_asins(self, task_id: str) -> int:
+        with self._conn() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM sif_asins WHERE task_id=? AND active=1", [task_id]).fetchone()[0]
+
+    def _row_to_asin(self, row):
+        return {
+            "id": row["id"], "asin": row["asin"], "title": row["title"] or "",
+            "brand": row["brand"] or "", "img": row["img"], "url": row["url"],
+            "price": row["price"], "star": row["star"], "ratingNum": row["rating_num"],
+            "category": row["category"], "weightOz": row["weight_oz"],
+            "dimsIn": json.loads(row["dims_in"] or "{}"),
+            "firstAvailableDay": row["first_available_day"],
+            "variationNum": row["variation_num"],
+            "source": row["source"] or "manual",
+            "sourceRef": json.loads(row["source_ref"] or "{}"),
+            "addedAt": row["added_at"], "lastStatDate": row["last_stat_date"],
+            "active": bool(row["active"]),
+        }
+
+    def set_asin_active(self, task_id: str, asin: str, active: bool):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("UPDATE sif_asins SET active=? WHERE task_id=? AND asin=?",
+                             [1 if active else 0, task_id, asin])
+                conn.commit()
+
+    def delete_asin(self, task_id: str, asin: str):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM sif_asins WHERE task_id=? AND asin=?", [task_id, asin])
+                conn.execute("DELETE FROM sif_asin_snapshots WHERE task_id=? AND asin=?",
+                             [task_id, asin])
+                conn.commit()
+
+    # ---- SIF v2：ASIN 日粒度数据 ----
+
+    def save_asin_snapshots(self, task_id: str, asin: str, points: list) -> int:
+        if not points:
+            return 0
+        now = _now_iso()
+        rows = []
+        for p in points:
+            d = p.get("date")
+            if not d:
+                continue
+            rows.append((
+                task_id, asin, d, p.get("price"), _as_int(p.get("bsr")),
+                _as_int(p.get("bought_month")), _as_int(p.get("review")),
+                p.get("star"), _as_int(p.get("seller")),
+                p.get("total_score"), p.get("nf_score"), p.get("ad_score"),
+                p.get("sp_score"), p.get("sb_score"), p.get("sbv_score"),
+                _short(p.get("promotion")), _short(p.get("coupon")), now))
+        with self.lock:
+            with self._conn() as conn:
+                conn.executemany(
+                    """INSERT OR REPLACE INTO sif_asin_snapshots
+                       (task_id, asin, stat_date, price, bsr, bought_month, review_num, star,
+                        seller_num, total_score, nf_score, ad_score, sp_score, sb_score,
+                        sbv_score, promotion, coupon, captured_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+                latest = max(r[2] for r in rows)
+                conn.execute(
+                    "UPDATE sif_asins SET last_stat_date=? WHERE task_id=? AND asin=?",
+                    [latest, task_id, asin])
+                conn.commit()
+        return len(rows)
+
+    def asin_series(self, task_id: str, asin: str, days: int = 90) -> list:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM (SELECT * FROM sif_asin_snapshots WHERE task_id=? AND asin=? "
+                "ORDER BY stat_date DESC LIMIT ?) ORDER BY stat_date ASC",
+                [task_id, asin, int(days)]).fetchall()
+        return [self._row_to_asin_snapshot(r) for r in rows]
+
+    def _row_to_asin_snapshot(self, row):
+        return {
+            "date": row["stat_date"], "price": row["price"], "bsr": row["bsr"],
+            "boughtMonth": row["bought_month"], "reviewNum": row["review_num"],
+            "star": row["star"], "sellerNum": row["seller_num"],
+            "totalScore": row["total_score"], "nfScore": row["nf_score"],
+            "adScore": row["ad_score"], "spScore": row["sp_score"],
+            "sbScore": row["sb_score"], "sbvScore": row["sbv_score"],
+            "promotion": row["promotion"], "coupon": row["coupon"],
+        }
+
+    def asin_latest_map(self, task_id: str) -> dict:
+        """每个 ASIN 的最新日数据点（用于爆品榜排序与环比）。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT s.* FROM sif_asin_snapshots s
+                   JOIN (SELECT asin, MAX(stat_date) AS d FROM sif_asin_snapshots
+                         WHERE task_id=? GROUP BY asin) m
+                     ON s.asin=m.asin AND s.stat_date=m.d WHERE s.task_id=?""",
+                [task_id, task_id]).fetchall()
+        out = {}
+        for r in rows:
+            out[r["asin"]] = self._row_to_asin_snapshot(r)
+        return out
+
+    def asin_prev_map(self, task_id: str, days_back: int = 7) -> dict:
+        """每个 ASIN 约 N 天前的数据点（做周环比基线）。"""
+        import datetime
+        cutoff = (datetime.date.today() - datetime.timedelta(days=int(days_back))).isoformat()
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT s.* FROM sif_asin_snapshots s
+                   JOIN (SELECT asin, MAX(stat_date) AS d FROM sif_asin_snapshots
+                         WHERE task_id=? AND stat_date<=? GROUP BY asin) m
+                     ON s.asin=m.asin AND s.stat_date=m.d WHERE s.task_id=?""",
+                [task_id, cutoff, task_id]).fetchall()
+        out = {}
+        for r in rows:
+            out[r["asin"]] = self._row_to_asin_snapshot(r)
+        return out
+
+    def asin_kw_dates(self, task_id: str, asin: str) -> list:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT stat_date FROM sif_asin_snapshots WHERE task_id=? AND asin=? "
+                "ORDER BY stat_date DESC", [task_id, asin]).fetchall()
+        return [r["stat_date"] for r in rows]
+
+    # ---- SIF v2：需求画像 / 竞品概览 ----
+
+    def save_kw_profiles(self, task_id: str, iso_week: str, profiles: list) -> int:
+        if not profiles:
+            return 0
+        now = _now_iso()
+        with self.lock:
+            with self._conn() as conn:
+                conn.executemany(
+                    """INSERT OR REPLACE INTO sif_kw_profiles
+                       (task_id, keyword, iso_week, profile, captured_at) VALUES (?,?,?,?,?)""",
+                    [(task_id, p.get("keyword", ""), iso_week,
+                      json.dumps(p, ensure_ascii=False), now) for p in profiles if p.get("keyword")])
+                conn.commit()
+        return len(profiles)
+
+    def latest_kw_profiles(self, task_id: str) -> dict:
+        """{keyword: profile dict}，取该任务最新 iso_week 的画像。"""
+        with self._conn() as conn:
+            wk = conn.execute(
+                "SELECT MAX(iso_week) AS w FROM sif_kw_profiles WHERE task_id=?",
+                [task_id]).fetchone()
+            if not wk or not wk["w"]:
+                return {}
+            rows = conn.execute(
+                "SELECT keyword, profile FROM sif_kw_profiles WHERE task_id=? AND iso_week=?",
+                [task_id, wk["w"]]).fetchall()
+        return {r["keyword"]: json.loads(r["profile"] or "{}") for r in rows}
+
+    def kw_profile(self, task_id: str, keyword: str):
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT profile, iso_week FROM sif_kw_profiles WHERE task_id=? AND keyword=? "
+                "ORDER BY iso_week DESC LIMIT 1", [task_id, keyword]).fetchone()
+        if not row:
+            return None
+        return {"week": row["iso_week"], "profile": json.loads(row["profile"] or "{}")}
+
+    def save_asin_weekly(self, task_id: str, root: str, iso_week: str, competitors: list):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT OR REPLACE INTO sif_asin_weekly
+                       (task_id, root, iso_week, competitors, captured_at) VALUES (?,?,?,?,?)""",
+                    [task_id, root, iso_week,
+                     json.dumps(competitors or [], ensure_ascii=False), _now_iso()])
+                conn.commit()
+
+    def list_asin_weekly(self, task_id: str) -> list:
+        with self._conn() as conn:
+            wk = conn.execute(
+                "SELECT MAX(iso_week) AS w FROM sif_asin_weekly WHERE task_id=?",
+                [task_id]).fetchone()
+            if not wk or not wk["w"]:
+                return []
+            rows = conn.execute(
+                "SELECT root, competitors, iso_week FROM sif_asin_weekly WHERE task_id=? AND iso_week=?",
+                [task_id, wk["w"]]).fetchall()
+        return [{"root": r["root"], "week": r["iso_week"],
+                 "competitors": json.loads(r["competitors"] or "[]")} for r in rows]
+
+    # ---- SIF v2：信号 ----
+
+    def save_signals(self, rows: list) -> int:
+        """写信号（同一天同任务同类型同对象幂等去重）。"""
+        if not rows:
+            return 0
+        with self.lock:
+            with self._conn() as conn:
+                for r in rows:
+                    conn.execute(
+                        """INSERT OR IGNORE INTO sif_signals
+                           (date, created_at, task_id, direction, kind, severity,
+                            ref_type, ref_id, title, detail)
+                           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                        [r.get("date"), _now_iso(), r.get("task_id"), r.get("direction"),
+                         r.get("kind"), r.get("severity") or "info", r.get("ref_type"),
+                         r.get("ref_id"), r.get("title"),
+                         json.dumps(r.get("detail") or {}, ensure_ascii=False)])
+                conn.commit()
+        return len(rows)
+
+    def list_signals(self, days: int = 14, task_id: str = None, limit: int = 400) -> list:
+        import datetime
+        since = (datetime.date.today() - datetime.timedelta(days=int(days))).isoformat()
+        sql = "SELECT * FROM sif_signals WHERE date>=?"
+        args = [since]
+        if task_id:
+            sql += " AND task_id=?"
+            args.append(task_id)
+        sql += " ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, date DESC LIMIT ?"
+        args.append(int(limit))
+        with self._conn() as conn:
+            rows = conn.execute(sql, args).fetchall()
         out = []
         for r in rows:
             out.append({
-                "id":           r["id"],
-                "runDate":      r["run_date"],
-                "capturedAt":   r["captured_at"],
-                "keyword":      r["keyword"],
-                "searchVolume": r["search_volume"],
-                "rank":         r["rank"],
-                "cpc":          r["cpc"],
-                "entrySignal":  r["entry_signal"],
-                "demand":       json.loads(r["demand"] or "{}"),
-                "detail":       json.loads(r["detail"] or "{}"),
+                "id": r["id"], "date": r["date"], "createdAt": r["created_at"],
+                "taskId": r["task_id"], "direction": r["direction"] or "", "kind": r["kind"],
+                "severity": r["severity"] or "info", "refType": r["ref_type"],
+                "refId": r["ref_id"], "title": r["title"] or "",
+                "detail": json.loads(r["detail"] or "{}"), "ack": bool(r["ack"]),
             })
         return out
+
+    def ack_signal(self, sid, ack: bool = True):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("UPDATE sif_signals SET ack=? WHERE id=?", [1 if ack else 0, int(sid)])
+                conn.commit()
+
+    def delete_signals(self, days: int, task_id: str = None):
+        import datetime
+        cutoff = (datetime.date.today() - datetime.timedelta(days=int(days))).isoformat()
+        sql, args = "DELETE FROM sif_signals WHERE date<?", [cutoff]
+        if task_id:
+            sql += " AND task_id=?"
+            args.append(task_id)
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(sql, args)
+                conn.commit()
+
+    def signal_counts(self, days: int = 14) -> dict:
+        import datetime
+        since = (datetime.date.today() - datetime.timedelta(days=int(days))).isoformat()
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT severity, COUNT(*) AS n FROM sif_signals WHERE date>=? GROUP BY severity",
+                [since]).fetchall()
+        out = {"high": 0, "warn": 0, "info": 0, "total": 0}
+        for r in rows:
+            out[r["severity"]] = r["n"]
+            out["total"] += r["n"]
+        return out
+
+    # ---- SIF v2：运行日志 ----
+
+    def log_sif_run(self, task_id: str, run_date: str, tier: str, started_at: str,
+                    finished_at: str, status: str, stats: dict, error: str = None):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO sif_runs
+                       (task_id, run_date, tier, started_at, finished_at, status, stats, error)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    [task_id, run_date, tier, started_at, finished_at, status,
+                     json.dumps(stats or {}, ensure_ascii=False), error])
+                conn.commit()
+
+    def patch_sif_run_stats(self, task_id: str, run_date: str, tier: str, patch: dict):
+        """把运行日志写完之后才产生的统计（如信号条数）并回最近一条对应记录。"""
+        with self.lock:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT id, stats FROM sif_runs WHERE task_id=? AND run_date=? AND tier=? "
+                    "ORDER BY id DESC LIMIT 1", [task_id, run_date, tier]).fetchone()
+                if not row:
+                    return
+                merged = {}
+                try:
+                    merged = json.loads(row["stats"] or "{}")
+                except Exception:
+                    merged = {}
+                merged.update(patch or {})
+                conn.execute("UPDATE sif_runs SET stats=? WHERE id=?",
+                             [json.dumps(merged, ensure_ascii=False), row["id"]])
+                conn.commit()
+
+    def list_sif_runs(self, task_id: str = None, limit: int = 60) -> list:
+        sql = ("SELECT r.*, t.name AS task_name FROM sif_runs r "
+               "LEFT JOIN sif_tasks t ON t.id=r.task_id ")
+        args = []
+        if task_id:
+            sql += "WHERE r.task_id=? "
+            args.append(task_id)
+        sql += "ORDER BY r.id DESC LIMIT ?"
+        args.append(int(limit))
+        with self._conn() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        return [{
+            "id": r["id"], "taskId": r["task_id"], "taskName": r["task_name"] or "",
+            "runDate": r["run_date"], "tier": r["tier"], "startedAt": r["started_at"],
+            "finishedAt": r["finished_at"], "status": r["status"],
+            "stats": json.loads(r["stats"] or "{}"), "error": r["error"],
+        } for r in rows]
+
+    def sif_overview(self) -> dict:
+        """全局概览：任务数 / 监控词数 / 监控 ASIN 数 / 最新数据日期。"""
+        with self._conn() as conn:
+            tasks = conn.execute("SELECT COUNT(*) FROM sif_tasks").fetchone()[0]
+            kws = conn.execute("SELECT COUNT(DISTINCT keyword) FROM sif_kw_snapshots").fetchone()[0]
+            asins = conn.execute(
+                "SELECT COUNT(DISTINCT asin) FROM sif_asins WHERE active=1").fetchone()[0]
+            kw_date = conn.execute(
+                "SELECT MAX(run_date) FROM sif_kw_snapshots").fetchone()[0]
+            asin_date = conn.execute(
+                "SELECT MAX(stat_date) FROM sif_asin_snapshots").fetchone()[0]
+            calls = conn.execute(
+                "SELECT COALESCE(SUM(json_extract(stats,'$.calls')),0) FROM sif_runs").fetchone()[0]
+        return {"tasks": tasks, "keywords": kws, "asins": asins,
+                "latestKwDate": kw_date, "latestAsinDate": asin_date, "totalCalls": calls}
 
     def import_from_json(self, json_path):
         """首次启动时从旧版 fba-data.json 一键迁移"""
@@ -1199,3 +1962,23 @@ class DbState:
     def product_count(self):
         with self._conn() as conn:
             return conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+
+
+def _as_int(v):
+    if v is None:
+        return None
+    try:
+        return int(float(v))
+    except Exception:
+        return None
+
+
+def _short(v, n=200):
+    """促销/优惠券字段可能是 dict 或长字符串，统一压成短文本入库。"""
+    if v is None:
+        return None
+    if isinstance(v, (dict, list)):
+        s = json.dumps(v, ensure_ascii=False)
+    else:
+        s = str(v)
+    return s[:n] or None

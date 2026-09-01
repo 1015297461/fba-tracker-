@@ -2862,3 +2862,145 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .sif-tip-date { font-weight: 700; }
 .sif-tip-val { opacity: .88; }
 .sif-note { font-size: 12px; color: var(--ink-2); line-height: 1.7; background: var(--bg-2); border-radius: 8px; padding: 9px 12px; }
+
+/* ============================================================
+   SIF 爆品关键词监控 v2 —— 新增组件
+   ============================================================ */
+
+.sif-field select {
+  font: inherit; font-size: 12px; padding: 6px 8px; border: 1px solid var(--border-strong);
+  border-radius: 7px; background: var(--card-bg); color: var(--ink);
+}
+.sif-down { color: #be123c; }
+.sif-flat { color: var(--ink-4); }
+.sif-sub { font-size: 11px; color: var(--ink-3); font-weight: 400; }
+.sif-stat-sub { font-size: 10px; color: var(--ink-4); }
+.sif-field-label { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.sif-err { font-size: 12px; color: #be123c; background: #fff1f2; border: 1px solid #fecdd3; border-radius: 8px; padding: 8px 11px; line-height: 1.6; word-break: break-all; }
+
+/* ---- 页签 ---- */
+.sif-tabs { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--border); padding-bottom: 8px; flex-wrap: wrap; }
+.sif-tab { font: inherit; font-size: 12.5px; padding: 6px 12px; border: 1px solid transparent; border-radius: 8px 8px 0 0; background: none; color: var(--ink-3); cursor: pointer; }
+.sif-tab:hover { background: var(--bg-2); color: var(--ink); }
+.sif-tab-on { color: var(--ink); font-weight: 600; background: var(--card-bg); border-color: var(--border); border-bottom-color: var(--card-bg); }
+.sif-tabs-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+/* ---- 通用小控件 ---- */
+.sif-btn-sm { font-size: 11px; padding: 3px 9px; border-radius: 6px; }
+.sif-del { color: var(--ink-3); }
+.sif-del:hover { color: var(--red) !important; border-color: var(--red) !important; }
+.sif-x { border: none; background: none; font-size: 14px; color: var(--ink-3); cursor: pointer; padding: 2px 6px; }
+.sif-x:hover { color: var(--ink); }
+.sif-mini { font: inherit; font-size: 11.5px; padding: 4px 7px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--card-bg); color: var(--ink); }
+.sif-pool-input { width: 170px; }
+.sif-link { border: none; background: none; font: inherit; font-size: 12px; color: var(--accent); cursor: pointer; padding: 0; text-decoration: underline; }
+.sif-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sif-inline-field { flex-direction: row !important; align-items: center; gap: 6px; }
+.sif-inline-field input { width: 96px; }
+.sif-inline-tag { font-size: 10px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; margin-left: 6px; color: var(--ink-3); }
+.sif-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ---- 分段选择 ---- */
+.sif-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
+.sif-seg-btn { font: inherit; font-size: 11.5px; padding: 5px 11px; border: none; background: var(--card-bg); color: var(--ink-3); cursor: pointer; }
+.sif-seg-btn + .sif-seg-btn { border-left: 1px solid var(--border); }
+.sif-seg-on { background: var(--accent); color: #fff; font-weight: 600; }
+
+/* ---- 面板 ---- */
+.sif-panel { border: 1px solid var(--border); border-radius: 12px; background: var(--card-bg); overflow: hidden; }
+.sif-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-2); flex-wrap: wrap; }
+.sif-panel-title { font-size: 13px; font-weight: 700; color: var(--ink); }
+
+/* ---- 统计卡与布局 ---- */
+.sif-grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.sif-two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+@media (max-width: 1180px) {
+  .sif-two-col { grid-template-columns: 1fr; }
+  .sif-grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sif-settings-grid { grid-template-columns: 1fr !important; }
+}
+
+/* ---- 表格 ---- */
+.sif-scroll { max-height: 420px; overflow: auto; }
+.sif-scroll-sm { max-height: 250px; }
+.sif-table th { position: sticky; top: 0; background: var(--bg-2); z-index: 1; }
+.sif-table-sm { font-size: 11.5px; }
+.sif-table-sm th, .sif-table-sm td { padding: 5px 8px; }
+.sif-badge { font-size: 9.5px; font-weight: 700; background: var(--green); color: #fff; border-radius: 4px; padding: 0 4px; margin-left: 5px; vertical-align: 1px; }
+
+/* ---- chips ---- */
+.sif-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.sif-chip { font-size: 11px; color: var(--ink-2); background: var(--bg-2); border: 1px solid var(--border); border-radius: 20px; padding: 2px 9px; }
+.sif-chip-btn { cursor: pointer; font: inherit; }
+.sif-chip-btn b { margin-left: 6px; font-size: 10px; color: var(--ink-3); font-weight: 600; }
+.sif-chip-btn:hover { border-color: var(--accent); }
+
+/* ---- 信号 ---- */
+.sif-sev { font-size: 10px; font-weight: 700; border-radius: 4px; padding: 1px 6px; flex-shrink: 0; }
+.sif-sev-high { background: #fff1f2; color: #be123c; }
+.sif-sev-warn { background: #fffbeb; color: #b45309; }
+.sif-sev-info { background: var(--bg-2); color: var(--ink-3); }
+.sif-sig-row { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 12px; cursor: pointer; }
+.sif-sig-row:hover { background: var(--bg-2); }
+.sif-sig-row:last-child { border-bottom: none; }
+.sif-sig-card { border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 7px; }
+.sif-sig-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sif-sig-card-head .btn { margin-left: auto; }
+.sif-sig-kind { font-size: 12px; font-weight: 700; color: var(--ink); }
+.sif-sig-ref { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--accent); cursor: pointer; }
+.sif-sig-title { font-size: 12px; color: var(--ink-2); }
+.sif-sig-date { font-size: 10.5px; color: var(--ink-4); }
+.sif-sig-detail { display: flex; flex-wrap: wrap; gap: 6px; }
+.sif-sig-ops { display: flex; gap: 6px; flex-wrap: wrap; }
+.sif-sev-border-high { border-left-color: var(--red); }
+.sif-sev-border-warn { border-left-color: var(--orange); }
+.sif-sev-border-info { border-left-color: var(--border-strong); }
+.sif-ack { opacity: .55; }
+
+/* ---- 迷你折线与图例 ---- */
+.sif-spark { display: block; vertical-align: middle; }
+.sif-spark-empty { color: var(--ink-4); font-size: 11px; }
+.sif-legend { display: flex; gap: 14px; flex-wrap: wrap; padding: 6px 2px 0; }
+.sif-legend-item { font-size: 11px; color: var(--ink-3); display: inline-flex; align-items: center; gap: 5px; }
+.sif-legend-item i { width: 11px; height: 2.5px; border-radius: 2px; display: inline-block; }
+.sif-tip-val { display: flex; align-items: center; }
+.sif-tip-val i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+
+/* ---- 点查结果渲染 ---- */
+.sif-kv { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.sif-kv-row { display: flex; gap: 10px; align-items: baseline; font-size: 12px; flex-wrap: wrap; }
+.sif-kv-k { color: var(--ink-3); min-width: 150px; flex-shrink: 0; }
+.sif-kv-v { color: var(--ink); font-weight: 600; }
+.sif-kv-sub { flex: 1; min-width: 220px; border-left: 2px solid var(--border); padding-left: 8px; }
+.sif-md { font-size: 12px; color: var(--ink-2); line-height: 1.65; overflow-x: auto; }
+.sif-md table { border-collapse: collapse; margin: 6px 0; font-size: 11.5px; }
+.sif-md th, .sif-md td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+.sif-md th { background: var(--bg-2); }
+.sif-md blockquote { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--border-strong); background: var(--bg-2); color: var(--ink-2); }
+.sif-anchor { font-size: 12.5px; font-weight: 600; color: var(--ink); background: var(--blue-soft); border-radius: 8px; padding: 8px 11px; line-height: 1.6; }
+
+/* ---- 设置页 ---- */
+.sif-settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px; align-items: start; }
+.sif-setting-row { display: flex; flex-direction: column; gap: 2px; padding: 6px 0; border-bottom: 1px dashed var(--border); }
+.sif-setting-row:last-child { border-bottom: none; }
+.sif-setting-row label { display: flex; align-items: center; gap: 10px; }
+.sif-setting-label { font-size: 12px; color: var(--ink-2); flex: 1; }
+.sif-setting-row input { width: 96px; font: inherit; font-size: 12px; padding: 4px 7px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--card-bg); color: var(--ink); }
+.sif-setting-hint { font-size: 11px; color: var(--ink-4); line-height: 1.5; }
+
+/* ---- ASIN 详情头部 ---- */
+.sif-modal-wide { width: min(1180px, calc(100vw - 28px)); }
+.sif-asin-head { display: flex; gap: 12px; align-items: flex-start; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.sif-asin-img { width: 74px; height: 74px; object-fit: contain; border-radius: 8px; background: var(--bg-2); flex-shrink: 0; }
+.sif-asin-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.sif-asin-title { font-size: 13px; font-weight: 600; color: var(--accent); text-decoration: none; }
+.sif-asin-title:hover { text-decoration: underline; }
+.sif-asin-meta { font-size: 11.5px; color: var(--ink-3); }
+
+/* ---- 左栏底部统计 & 任务卡补充 ---- */
+.sif-foot-stats { margin-top: auto; display: flex; justify-content: space-around; gap: 6px; padding: 10px 8px; border-top: 1px solid var(--border); font-size: 11px; color: var(--ink-3); position: sticky; bottom: 0; background: var(--bg); }
+.sif-foot-stats b { font-size: 13px; color: var(--ink); display: block; text-align: center; }
+.sif-task .sif-last-err { font-size: 10.5px; margin-top: 5px; line-height: 1.5; }
+.sif-dir-btn { font-size: 11.5px; padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border-strong); background: var(--card-bg); color: var(--ink-2); cursor: pointer; }
+.sif-dir-btn:hover { border-color: var(--accent); }
+.sif-detail-title .sif-st { margin-left: 8px; vertical-align: 2px; }
