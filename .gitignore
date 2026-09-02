@@ -29,3 +29,7 @@ node_modules/
 export/
 # 编译产物（npm run build 重新生成）
 compiled/
+
+# 工具运行时目录（WorkBuddy 记忆 / 定时锁等，非项目源码）
+.workbuddy/
+.mimocode/

@@ -1,3 +1,4 @@
+import datetime
 import json
 import os
 import sqlite3
@@ -5,6 +6,12 @@ import secrets
 import threading
 
 from .utils import _now_iso
+
+# SIF 任务失败退避策略：第 n 次失败后等待对应分钟数再重试；当天失败次数达到
+# 上限即熔断（次日计划时刻自动重置）。目的是让「每天最多浪费 3 次配额」，
+# 而不是像早期版本那样每分钟重试一整天（单次 daily 层约 25 次 SIF 调用）。
+SIF_RETRY_BACKOFF_MIN = (5, 30, 120)
+SIF_MAX_RETRIES_PER_DAY = len(SIF_RETRY_BACKOFF_MIN) + 1
 
 
 class DbState:
@@ -227,6 +234,9 @@ class DbState:
                     last_weekly_at TEXT,
                     last_status    TEXT DEFAULT 'idle',
                     last_error     TEXT,
+                    fail_count     INTEGER DEFAULT 0,
+                    fail_date      TEXT,
+                    next_retry_at  TEXT,
                     created_at     TEXT
                 );
 
@@ -422,6 +432,15 @@ class DbState:
                 """)
                 conn.commit()
                 print("[info] SIF 模块已迁移到 v2（爆品关键词监控），旧任务与快照数据已清空")
+
+            # SIF v2.1：失败退避 / 熔断字段。新表已含这三列，这里只为老库补列，
+            # 所以重建之后重新读一次列信息，避免重复 ADD COLUMN。
+            _sif_cols = {r[1] for r in conn.execute("PRAGMA table_info(sif_tasks)")}
+            for col, ddl in (("fail_count", "INTEGER DEFAULT 0"),
+                             ("fail_date", "TEXT"),
+                             ("next_retry_at", "TEXT")):
+                if col not in _sif_cols:
+                    conn.execute(f"ALTER TABLE sif_tasks ADD COLUMN {col} {ddl}")
 
     # ---- 内部辅助 ----
 
@@ -1254,6 +1273,8 @@ class DbState:
         return tid
 
     def _row_to_sif_task(self, row):
+        fail_count = int(row["fail_count"] or 0)
+        fail_date = (row["fail_date"] or "")[:10]
         return {
             "id":              row["id"],
             "name":            row["name"],
@@ -1279,6 +1300,12 @@ class DbState:
             "lastStatus":      row["last_status"] or "idle",
             "lastError":       row["last_error"],
             "createdAt":       row["created_at"],
+            "failCount":       fail_count,
+            "failDate":        row["fail_date"],
+            "nextRetryAt":     row["next_retry_at"],
+            # 当天失败次数已达上限即熔断：调度器当天不再触发，次日计划时刻自动恢复
+            "tripped":         bool(fail_date) and fail_date == _now_iso()[:10]
+                               and fail_count >= SIF_MAX_RETRIES_PER_DAY,
         }
 
     def list_sif_tasks(self):
@@ -1323,6 +1350,9 @@ class DbState:
                 continue
             sets.append(f"{col}=?")
             vals.append(v)
+        if t.get("enabled"):
+            # 手动重新启用视为人工确认问题已解决：清掉退避与熔断状态，立刻恢复调度
+            sets.extend(["fail_count=0", "fail_date=NULL", "next_retry_at=NULL"])
         if not sets:
             return
         vals.append(tid)
@@ -1333,14 +1363,63 @@ class DbState:
 
     def set_sif_task_status(self, tid: str, status: str, error: str = None,
                             run_at: str = None, daily_at: str = None, weekly_at: str = None):
+        """更新任务运行状态。
+
+        done / partial 视为本轮跑完，同时清零失败退避计数（计数只在
+        mark_sif_task_failed 里累加）——成功一次即复位，退避不会跨天残留。
+        """
+        ok = 1 if status in ("done", "partial") else 0
         with self.lock:
             with self._conn() as conn:
                 conn.execute(
                     "UPDATE sif_tasks SET last_status=?, last_error=?, last_run_at=?, "
                     "last_daily_at=COALESCE(?, last_daily_at), "
-                    "last_weekly_at=COALESCE(?, last_weekly_at) WHERE id=?",
-                    [status, error, run_at, daily_at, weekly_at, tid])
+                    "last_weekly_at=COALESCE(?, last_weekly_at), "
+                    "fail_count=CASE WHEN ? THEN 0 ELSE fail_count END, "
+                    "fail_date=CASE WHEN ? THEN NULL ELSE fail_date END, "
+                    "next_retry_at=CASE WHEN ? THEN NULL ELSE next_retry_at END "
+                    "WHERE id=?",
+                    [status, error, run_at, daily_at, weekly_at, ok, ok, ok, tid])
                 conn.commit()
+
+    def mark_sif_task_failed(self, tid: str, error: str, now: str = None,
+                             max_retries: int = SIF_MAX_RETRIES_PER_DAY) -> dict:
+        """记录一次硬失败：累计当日失败次数，按指数退避排下一次重试。
+
+        返回 {"failCount": n, "nextRetryAt": iso 或 None, "tripped": bool}。
+        · 未到上限 → next_retry_at = 现在 + 退避分钟，当天稍后重试一次；
+        · 达到上限 → tripped=True 且 next_retry_at=NULL，调度器当天不再触发，
+          次日计划时刻到来时因 fail_date != today 自动重置。
+
+        这里刻意不推进 last_daily_at：失败的运行不该消耗掉当天唯一的跑位。
+        「今天已跑过」的判定改由 next_retry_at 闸门承担，否则下一分钟仍会被
+        判定命中，形成每分钟重试一整天的死循环。
+        """
+        now = now or _now_iso()
+        today = now[:10]
+        with self.lock:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT fail_count, fail_date FROM sif_tasks WHERE id=?", [tid]).fetchone()
+                prev_n = int(row["fail_count"] or 0) if row else 0
+                prev_d = (row["fail_date"] or "")[:10] if row else ""
+                # 封顶到上限：熔断后即使再有失败也停在 max_retries，计数不无限膨胀
+                n = min(prev_n + 1 if prev_d == today else 1, max_retries)
+                tripped = n >= max_retries
+                nxt = None
+                if not tripped:
+                    mins = SIF_RETRY_BACKOFF_MIN[min(n, len(SIF_RETRY_BACKOFF_MIN)) - 1]
+                    try:
+                        base = datetime.datetime.fromisoformat(now[:19])
+                    except Exception:
+                        base = datetime.datetime.now()
+                    nxt = (base + datetime.timedelta(minutes=mins)).strftime("%Y-%m-%dT%H:%M")
+                conn.execute(
+                    "UPDATE sif_tasks SET last_status=?, last_error=?, last_run_at=?, "
+                    "fail_count=?, fail_date=?, next_retry_at=? WHERE id=?",
+                    ["error", (error or "")[:500], now, n, today, nxt, tid])
+                conn.commit()
+        return {"failCount": n, "nextRetryAt": nxt, "tripped": tripped}
 
     def delete_sif_task(self, tid: str):
         """删除任务并连带清理其全部监控数据。"""

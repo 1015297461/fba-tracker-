@@ -67,8 +67,45 @@ def is_configured() -> bool:
     return bool(_load_config()[1])
 
 
+# 错误信息里出现这些词，说明重试也不可能成功（配置缺失 / 鉴权被拒 / 接口不存在）。
+# 网络超时、5xx、限流（rate limit）、配额耗尽都不在此列——它们跨一段时间可能自愈，
+# 交给调度层的退避与当日熔断处理更合适，不该把任务彻底停用。
+_FATAL_HINTS = (
+    "unauthorized", "forbidden", "401", "403",
+    "invalid key", "invalid secret", "secret-key", "signature",
+    "unknown tool", "no such tool", "tool not found", "method not found",
+    "未授权", "鉴权失败", "密钥", "签名错误", "权限不足", "工具不存在",
+)
+
+
+def is_fatal_message(text: str) -> bool:
+    """判断错误信息是否属于「重试也不会成功」的类别。"""
+    low = (text or "").lower()
+    return any(h in low for h in _FATAL_HINTS)
+
+
+def record_error(stats: dict, label: str, e: Exception) -> None:
+    """把一次调用失败记进 stats，并把不可恢复错误单独标到 stats["fatal"]。
+
+    分层抓取里每步都自己吞掉 SifError 继续跑，所以「这一步是不是致命错误」
+    必须靠 stats 传出去，否则调用方无法决定要不要直接停用任务。
+    """
+    stats["errors"] = stats.get("errors", 0) + 1
+    stats.setdefault("error_detail", []).append(f"{label}: {str(e)[:120]}")
+    if isinstance(e, SifError) and e.fatal:
+        stats.setdefault("fatal", []).append(f"{label}: {str(e)[:200]}")
+
+
 class SifError(Exception):
-    """SIF 调用失败（未配置/网络/业务错误），message 面向用户展示。"""
+    """SIF 调用失败（未配置/网络/业务错误），message 面向用户展示。
+
+    fatal=True 表示重试也不可能成功（密钥未配置、鉴权被拒、工具不存在等），
+    调度层遇到这种错误直接停用任务，一次都不重试。
+    """
+
+    def __init__(self, message: str, fatal: bool = False):
+        super().__init__(message)
+        self.fatal = fatal
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +116,8 @@ def call_tool(name: str, arguments: dict, timeout: int = 60) -> dict:
     """调用 SIF MCP 工具，返回结构化 JSON（dict）。失败抛 SifError。"""
     url, key = _load_config()
     if not key:
-        raise SifError("SIF MCP 未配置：请设置环境变量 SIF_MCP_KEY 或创建 data/sif-config.json")
+        raise SifError("SIF MCP 未配置：请设置环境变量 SIF_MCP_KEY 或创建 data/sif-config.json",
+                       fatal=True)
     body = json.dumps({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": name, "arguments": arguments},
@@ -97,7 +135,13 @@ def call_tool(name: str, arguments: dict, timeout: int = 60) -> dict:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
-        raise SifError(f"SIF HTTP {e.code}: {e.read()[:200]}") from e
+        code = getattr(e, "code", 0) or 0
+        try:
+            detail = e.read()[:200].decode("utf-8", "replace")
+        except Exception:
+            detail = ""
+        raise SifError(f"SIF HTTP {code}: {detail}",
+                       fatal=code in (401, 403) or is_fatal_message(detail)) from e
     except Exception as e:
         raise SifError(f"SIF 网络错误: {type(e).__name__}: {e}") from e
 
@@ -106,7 +150,7 @@ def call_tool(name: str, arguments: dict, timeout: int = 60) -> dict:
         raise SifError(f"SIF 响应解析失败: {raw[:200]}")
     if isinstance(payload, dict) and payload.get("error"):
         msg = payload["error"].get("message", "unknown")
-        raise SifError(f"SIF 错误: {msg}")
+        raise SifError(f"SIF 错误: {msg}", fatal=is_fatal_message(msg))
     result = payload.get("result", {}) if isinstance(payload, dict) else {}
     if result.get("isError"):
         err_text = ""
@@ -119,7 +163,8 @@ def call_tool(name: str, arguments: dict, timeout: int = 60) -> dict:
                 err_text = t
             if err_text:
                 break
-        raise SifError(f"SIF 工具 {name} 失败: {err_text[:300]}")
+        raise SifError(f"SIF 工具 {name} 失败: {err_text[:300]}",
+                       fatal=is_fatal_message(err_text))
     for c in result.get("content", []) or []:
         t = c.get("text", "")
         if not t:
@@ -572,7 +617,8 @@ def new_stats() -> dict:
     return {"calls": 0, "screen_calls": 0, "demand_calls": 0, "history_calls": 0,
             "asin_trend_calls": 0, "profile_calls": 0, "competitor_calls": 0,
             "discovered": 0, "profiles_updated": 0, "asin_monitored": 0,
-            "asin_new": 0, "asin_points_saved": 0, "errors": 0, "error_detail": []}
+            "asin_new": 0, "asin_points_saved": 0, "errors": 0, "error_detail": [],
+            "fatal": []}
 
 
 def run_daily_layer(task: dict, pool: list, stats: dict, th: _Throttle,
@@ -597,8 +643,7 @@ def run_daily_layer(task: dict, pool: list, stats: dict, th: _Throttle,
                 stats["screen_calls"] += 1
                 stats["calls"] += 1
             except SifError as e:
-                stats["errors"] += 1
-                stats["error_detail"].append(f"screen({root}): {str(e)[:120]}")
+                record_error(stats, f"screen({root})", e)
     else:
         for kw in (task.get("keywords") or []):
             kw = (kw or "").strip()
@@ -628,8 +673,7 @@ def run_daily_layer(task: dict, pool: list, stats: dict, th: _Throttle,
                 on_asin_points(asin, points)
                 stats["asin_points_saved"] += len(points)
         except SifError as e:
-            stats["errors"] += 1
-            stats["error_detail"].append(f"asin_trend({asin}): {str(e)[:120]}")
+            record_error(stats, f"asin_trend({asin})", e)
     return ordered
 
 
@@ -651,8 +695,7 @@ def run_weekly_layer(task: dict, keywords: list, stats: dict, th: _Throttle,
                 on_profile(d["profiles"])
                 stats["profiles_updated"] += len(d["profiles"])
         except SifError as e:
-            stats["errors"] += 1
-            stats["error_detail"].append(f"demand: {str(e)[:120]}")
+            record_error(stats, "demand", e)
 
     for i in range(0, len(kws), HISTORY_BATCH):
         th.wait()
@@ -663,8 +706,7 @@ def run_weekly_layer(task: dict, keywords: list, stats: dict, th: _Throttle,
             if on_trend and h["series"]:
                 on_trend(h["series"])
         except SifError as e:
-            stats["errors"] += 1
-            stats["error_detail"].append(f"history: {str(e)[:120]}")
+            record_error(stats, "history", e)
 
     if (task.get("mode") or "root") == "root" and task.get("autoAsin", True):
         for root in [r.strip() for r in (task.get("roots") or []) if r and r.strip()]:
@@ -685,8 +727,7 @@ def run_weekly_layer(task: dict, keywords: list, stats: dict, th: _Throttle,
                             "source": "competitor", "root": root,
                         })
             except SifError as e:
-                stats["errors"] += 1
-                stats["error_detail"].append(f"competitors({root}): {str(e)[:120]}")
+                record_error(stats, f"competitors({root})", e)
     return new_asins
 
 
@@ -717,6 +758,5 @@ def enrich_asin_profiles(asins: list, stats: dict, th: _Throttle, country: str =
             stats["profile_calls"] += 1
             stats["calls"] += 1
         except SifError as e:
-            stats["errors"] += 1
-            stats["error_detail"].append(f"asin_profile: {str(e)[:120]}")
+            record_error(stats, "asin_profile", e)
     return out

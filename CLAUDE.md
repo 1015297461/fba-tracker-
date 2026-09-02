@@ -183,7 +183,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | `review_tasks` / `review_results` | 评论采集：任务记录 + 评论池（按 asin+review_id 去重） |
 | `export_jobs` | 后台导出任务（`ExportWorker` 消费，最多2并发） |
 | `ai_analysis_tasks` | AI分析任务（`AiAnalysisWorker` 消费，强制串行1并发；`files` 字段是产出文件名列表 JSON；`status` 除 pending/running/done/failed 外还有 `cancelled`；`username` 记录发起人，登录态按用户名分区要用） |
-| `sif_tasks` + `sif_kw_snapshots` / `sif_asins` / `sif_asin_snapshots` / `sif_kw_profiles` / `sif_asin_weekly` / `sif_signals` / `sif_runs` / `sif_settings` | SIF 爆品关键词监控 v2：任务配置（方向/模式/词根/配额/频率三档 daily·every_n·weekly + 时刻 + 两层最近运行日）；关键词每日快照（只存当日点，日序列由累积得到，UNIQUE(task,run_date,keyword)）；ASIN 监控池（含静态画像与 last_stat_date）；ASIN 真日粒度数据（UNIQUE(task,asin,stat_date)）；每周需求画像与词根竞品概览（按 ISO 周覆盖）；信号（UNIQUE(date,task,kind,ref_type,ref_id) 幂等）；运行日志（每次分层调用的 stats）；全局设置（thresholds 信号阈值 / defaults 默认配额，前端可改） |
+| `sif_tasks` + `sif_kw_snapshots` / `sif_asins` / `sif_asin_snapshots` / `sif_kw_profiles` / `sif_asin_weekly` / `sif_signals` / `sif_runs` / `sif_settings` | SIF 爆品关键词监控 v2：任务配置（方向/模式/词根/配额/频率三档 daily·every_n·weekly + 时刻 + 两层最近运行日 + 失败退避熔断 fail_count/fail_date/next_retry_at）；关键词每日快照（只存当日点，日序列由累积得到，UNIQUE(task,run_date,keyword)）；ASIN 监控池（含静态画像与 last_stat_date）；ASIN 真日粒度数据（UNIQUE(task,asin,stat_date)）；每周需求画像与词根竞品概览（按 ISO 周覆盖）；信号（UNIQUE(date,task,kind,ref_type,ref_id) 幂等）；运行日志（每次分层调用的 stats）；全局设置（thresholds 信号阈值 / defaults 默认配额，前端可改） |
 
 ### API 路由
 
@@ -259,6 +259,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 - **调度器**：`start_scheduler()` 守护线程每分钟扫描，命中即 `_launch()` 后台线程执行（同任务用 `_running` 集合去重，手动与定时同路径）。**启动时把残留 `running` 标为 `error`**（崩溃恢复）。
 - **信号引擎**（`sif_signals.py`，纯本地计算、0 配额）：关键词侧 kw_volume_surge / kw_volume_drop / kw_rank_jump / kw_new_entry；ASIN 侧 asin_bsr_jump / asin_price_drop / asin_sales_surge / asin_review_surge / asin_new_hot（上架 N 天内月销过门槛的黑马）/ asin_traffic_shift（自然流量占比骤降 = 转靠广告撑量）。全部阈值走 `sif_settings.thresholds`，**前端「设置」页可改并立即生效**；信号写入 `sif_signals`，UNIQUE(date,task,kind,ref_type,ref_id) 幂等，同日重跑不堆重复。
 - **成本透明**：每次运行按层写 `sif_runs`（含实际 `calls` 调用数、发现词数、监控/新增 ASIN 数、入库数据点数、信号数、错误详情），前端「运行记录」直接展示；`_Throttle` 保证两次调用间隔 ≥0.3s。想砍成本优先降 `asin_limit`，其次降 `topN`。
+- **失败退避 + 熔断（防无限重试）**：单次运行抛硬异常不再每分钟重烧配额——`mark_sif_task_failed()` 记 `fail_count` 并按 5m→30m→2h 指数退避写 `next_retry_at`，`_freq_hit` 早于频率判定做闸门拦截；当天第 4 次失败熔断到次日计划时刻，成功一次清零，手动「启用」也会清零。`SifError.fatal`（密钥未配/HTTP 401·403/工具不存在）直接停用任务，一次都不重试。任务卡片展示「第 n 次失败，HH:MM 重试」或「已熔断，明日自动恢复」。
 - **v1 → v2 迁移**：旧版单表 `sif_snapshots`（detail 里冗余存 60 周历史）与新结构不兼容，`_init_db()` 检测到 `sif_tasks` 缺 `freq_type` 列即 DROP 旧 `sif_tasks`/`sif_snapshots` 并重建 v2 表——**旧任务与历史快照会被清空**（本次升级已与用户确认）。
 - **SIF 已知坑**：批量工具（demand/history）实测单次最多返回 10 词，必须分批；`market_get_asin_keyword_signals` 用 `time_type=lately` + `time_value='7'|'30'`（`week` 需传该周**周日**日期，当周因 T+1 不可用）；响应里 ASIN 常被包成 markdown 链接 `[B0XXX](url)`，统一用 `_clean()` 剥壳；数字字段混着 `'1,234'`/`'45%'`/`'$3.2'`，统一 `_num()` 解析。
 
@@ -274,10 +275,10 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 
 - `src/features/detail/index.tsx`（1413 行，11 个组件；`TabProd` 前有 `getEffectiveBalancePayments(b)` 辅助函数；跨批次汇总通过 `titleExtra` 注入 StageCard 标题行）
 - `src/context/ProductContext.tsx`（927 行，~19 个 update 函数）
-- `src/features/tools/SifKeyword.tsx`（1586 行，SIF 爆品监控 v2：六页签 + 任务表单 + 关键词/ASIN 详情弹窗 + 点查弹窗 + 设置面板全在一个文件里）
-- `backend/db.py`（1979 行，SIF v2 的 8 张表读写集中在文件后半段，改前先 grep `SIF v2` 分区注释定位）
-- `backend/routes/sif_keywords.py`（941 行，前半是分层编排 `execute_task()` + 调度器，后半是 `register()` 里的路由表）
-- `styles.css`（3006 行，按模块分区，新模块追加在文件末尾对应分区注释下；SIF v2 组件样式在文件最末）
+- `src/features/tools/SifKeyword.tsx`（1751 行，SIF 爆品监控 v2：六页签 + 任务表单 + 关键词/ASIN 详情弹窗 + 点查弹窗 + 设置面板全在一个文件里）
+- `backend/db.py`（2063 行，SIF v2 的 8 张表读写集中在文件后半段，改前先 grep `SIF v2` 分区注释定位）
+- `backend/routes/sif_keywords.py`（1015 行，前半是分层编排 `execute_task()` + 调度器，后半是 `register()` 里的路由表）
+- `styles.css`（3008 行，按模块分区，新模块追加在文件末尾对应分区注释下；SIF v2 组件样式在文件最末）
 - `backend/product_fetcher.py`（1368 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
   限流参数（均可用环境变量覆盖，当前默认值）：
   `SCRAPER_CONCURRENCY=3`（并发 worker 数）、`SCRAPER_MIN_INTERVAL_MS=700`（请求最小间隔 ms）、

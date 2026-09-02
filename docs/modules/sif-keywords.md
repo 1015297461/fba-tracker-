@@ -45,6 +45,7 @@
 | `enabled` | 定时开关 |
 | `last_run_at` / `last_daily_at` / `last_weekly_at` | 最近整体运行 / 每日层最近日期 / 每周层最近日期（分层判定靠后两个） |
 | `last_status` / `last_error` | `idle·running·done·partial·error` / 错误摘要（`partial`=有调用失败但未全崩） |
+| `fail_count` / `fail_date` / `next_retry_at` | 失败重试计数 / 计数所属日期 / 下次重试时刻——退避闸门用（见 6.9） |
 
 ### 2.2 `sif_kw_snapshots`（关键词每日快照）
 
@@ -83,10 +84,11 @@ total_score·nf_score·ad_score·sp_score·sb_score·sbv_score·promotion·coupo
 
 ```
 调度线程（每分钟扫描，start_scheduler）
-  └─ _freq_hit(task)：enabled + 已过 schedule_time + 本档频率该跑 + 当天未跑
+  └─ _freq_hit(task)：enabled + 已过 schedule_time + 本档频率该跑 + 当天未跑 + 退避/熔断闸门
        daily   → 今天没跑过即可
        every_n → 距 last_daily_at ≥ N 天
        weekly  → 今天周几 == schedule_weekday
+      退避闸门（早于频率判定）：next_retry_at 未到期 / 当天失败达上限已熔断 → 直接跳过
      命中 → _launch() 后台线程（_running 集合去重；手动 POST /api/sif/run 走同一入口）
         └─ execute_task(state, task)
             ├─ weekly_due = 距 last_weekly_at ≥ 7 天
@@ -152,7 +154,11 @@ total_score·nf_score·ad_score·sp_score·sb_score·sbv_score·promotion·coupo
 5. **信号按数据日 + 滞后上限 3 天**：既避免"ASIN 信号永不触发"，也避免同一份延迟数据天天重报。
 6. **无全局并发上限**：多任务同时到点各自起线程（仅同任务去重）。任务多时再加全局信号量。
 7. **删除即清干净**：`delete_sif_task()` 连带清 7 张子表；`pool/remove` 清该 ASIN 日线；`keepDays` 控快照保留期。
-8. **崩溃恢复**：服务启动把残留 `running` 的任务标为 `error`（沿用导出/AI worker 的处理方式）。
+8. **崩溃恢复**：服务启动把残留 `running` 的任务记一次失败（走退避逻辑，非无脑标 error），随后按退避节奏收敛。
+9. **失败退避 + 熔断（防无限重试）**：单次运行抛硬异常不再每分钟重烧配额——`_note_failure()` 记 `fail_count`
+   并按 5m→30m→2h 指数退避写 `next_retry_at`，`_freq_hit` 早于频率判定做闸门拦截；当天第 4 次失败熔断到次日
+   计划时刻，成功一次清零，手动「启用」也清零。`SifError.fatal`（密钥未配 / HTTP 401·403 / 工具不存在）由
+   `_disable_task()` 直接停用任务，一次都不重试。任务卡片展示「第 n 次失败，HH:MM 重试」或「已熔断，明日自动恢复」。
 
 ## 7. 前端（`SifKeyword.tsx`）
 

@@ -41,6 +41,7 @@ import time
 from urllib.parse import urlparse, parse_qs
 
 from .. import sif_fetcher, sif_signals
+from ..db import SIF_MAX_RETRIES_PER_DAY
 from ..utils import _extract_token, _now_iso
 
 # 正在执行的任务 id 集合（调度器与手动触发共用，避免同一任务并发跑）
@@ -49,6 +50,7 @@ _running_lock = threading.Lock()
 
 WEEKLY_INTERVAL_DAYS = 7      # 每周层的最小间隔（天）
 DEFAULT_KEEP_DAYS = 365       # 快照保留天数（设置页 defaults.keepDays 可调）
+SIF_STALE_RUNNING_MIN = 30    # running 状态超过这个分钟数才判定为僵死（服务重启遗留）
 
 
 def _is_running(tid: str) -> bool:
@@ -162,7 +164,8 @@ def execute_task(state, task: dict) -> dict:
     th = sif_fetcher._Throttle()
     stats = sif_fetcher.new_stats()
 
-    state.set_sif_task_status(tid, "running", error=None)
+    # 记下本次运行的开始时间：lastRunAt 同时用于判定「running 是否已僵死」
+    state.set_sif_task_status(tid, "running", error=None, run_at=started)
 
     last_weekly = (task.get("lastWeeklyAt") or "")[:10]
     gap = _days_between(last_weekly, run_date) if last_weekly else None
@@ -199,7 +202,8 @@ def execute_task(state, task: dict) -> dict:
         w_stats = {"calls": 0, "screen_calls": 0, "demand_calls": 0, "history_calls": 0,
                    "asin_trend_calls": 0, "profile_calls": 0, "competitor_calls": 0,
                    "discovered": 0, "profiles_updated": 0, "asin_new": 0,
-                   "asin_monitored": 0, "asin_points_saved": 0, "errors": 0, "error_detail": []}
+                   "asin_monitored": 0, "asin_points_saved": 0, "errors": 0,
+                   "error_detail": [], "fatal": []}
         iso_week = _iso_week()
         keywords = [r["keyword"] for r in kw_rows if r.get("keyword")]
         if not keywords:
@@ -253,6 +257,17 @@ def execute_task(state, task: dict) -> dict:
                               {"signals": signals, "pruneBefore": cutoff,
                                "signalErrors": sig_errs})
 
+    # ---------- 不可恢复错误：直接停用，别让它每天白烧一份配额 ----------
+    fatal = list(stats.get("fatal") or [])
+    fatal += list((stats.get("weekly") or {}).get("fatal") or [])
+    if fatal:
+        msg = "不可恢复错误，任务已停用：" + "; ".join(fatal[:2])
+        state.set_sif_task_status(tid, "error", error=msg[:500], run_at=_now_iso())
+        state.update_sif_task(tid, {"enabled": False})
+        stats["disabled"] = True
+        print(f"  [sif] 任务 {task['name']} {msg}")
+        return stats
+
     err = (f"{stats['errors']} 次调用失败：" + "; ".join(stats["error_detail"][:3])
            if stats["errors"] else None)
     state.set_sif_task_status(tid, "done" if not stats["errors"] else "partial", error=err,
@@ -261,6 +276,36 @@ def execute_task(state, task: dict) -> dict:
     print(f"  [sif] 任务 {task['name']} 完成[{stats['tiers']}]: 词 {stats['discovered']} / "
           f"ASIN {stats['asin_monitored']}(新{stats['asin_new']}) / 调用 {stats['calls']} / 信号 {signals}")
     return stats
+
+
+def _note_failure(state, tid: str, task: dict, error: str):
+    """记录一次硬失败：累计当日次数，按指数退避排下次重试，到上限即熔断。"""
+    print(f"  [sif] 任务 {task['name']} 失败: {str(error)[:200]}")
+    try:
+        r = state.mark_sif_task_failed(tid, str(error)[:500])
+        state.log_sif_run(tid, _today(), "daily", None, _now_iso(), "error", {}, str(error)[:500])
+        if r["tripped"]:
+            print(f"  [sif] 任务 {task['name']} 当天第 {r['failCount']} 次失败，已熔断，次日自动恢复")
+        elif r["nextRetryAt"]:
+            print(f"  [sif] 任务 {task['name']} 将在 {r['nextRetryAt'][11:]} 重试"
+                  f"（当天第 {r['failCount']} 次失败）")
+    except Exception:
+        pass
+
+
+def _disable_task(state, tid: str, task: dict, reason: str):
+    """不可恢复错误（密钥失效 / 鉴权被拒 / 接口不存在）：直接停用，一次都不重试。
+
+    这类错误重试多少次都不会成功，继续跑只是白烧配额，所以要人工确认后手动启用。
+    """
+    print(f"  [sif] 任务 {task['name']} 遇到不可恢复错误，已停用: {str(reason)[:200]}")
+    try:
+        state.set_sif_task_status(tid, "error", error=f"[已停用] {str(reason)[:480]}",
+                                  run_at=_now_iso())
+        state.update_sif_task(tid, {"enabled": False})
+        state.log_sif_run(tid, _today(), "daily", None, _now_iso(), "error", {}, str(reason)[:500])
+    except Exception:
+        pass
 
 
 def _launch(state, task: dict):
@@ -273,28 +318,44 @@ def _launch(state, task: dict):
     def _run():
         try:
             execute_task(state, state.get_sif_task(tid) or task)
+        except sif_fetcher.SifError as e:
+            # 分层抓取内部会吞掉各步的 SifError，能冒到这里的通常是未加保护的调用
+            if e.fatal:
+                _disable_task(state, tid, task, str(e))
+            else:
+                _note_failure(state, tid, task, str(e))
         except Exception as e:
             print(f"  [sif] 任务 {task['name']} 异常: {e}")
-            try:
-                state.set_sif_task_status(tid, "error", error=str(e)[:500], run_at=_now_iso())
-                state.log_sif_run(tid, _today(), "daily", None, _now_iso(), "error", {}, str(e)[:500])
-            except Exception:
-                pass
+            _note_failure(state, tid, task, str(e))
         finally:
             _mark(tid, False)
 
     threading.Thread(target=_run, daemon=True, name=f"SifTask-{tid[:8]}").start()
 
 
-def _freq_hit(t: dict, today: str, weekday: int, now_hm: str) -> bool:
-    """判断任务是否应在本次扫描触发。"""
+def _freq_hit(t: dict, today: str, weekday: int, now_hm: str, now_iso: str = "") -> bool:
+    """判断任务是否应在本次扫描触发。
+
+    失败退避由 fail_count / next_retry_at 承担：当天失败过且未到下次重试时刻、
+    或失败次数已达上限（熔断），都直接跳过。跨天后 fail_date != today，这两个
+    条件自动失效，任务在次日计划时刻重新参与调度——这是熔断能自愈的关键。
+
+    注意：失败时不会推进 lastDailyAt（见 db.mark_sif_task_failed），所以「今天
+    已跑过」这个判断拦不住失败重试，闸门必须落在这里。
+    """
     sch = (t.get("scheduleTime") or "").strip()
     if not sch or ":" not in sch:
         return False
     if now_hm < sch:                                  # 未到设定时刻
         return False
-    if (t.get("lastDailyAt") or "")[:10] == today:     # 今天已跑过
+    if (t.get("lastDailyAt") or "")[:10] == today:     # 今天已跑过（成功/部分成功）
         return False
+    if (t.get("failDate") or "")[:10] == today:        # 当天失败过：走退避或熔断
+        if int(t.get("failCount") or 0) >= SIF_MAX_RETRIES_PER_DAY:
+            return False                               # 已熔断，次日自动恢复
+        nra = (t.get("nextRetryAt") or "")[:16]
+        if nra and (now_iso or "")[:16] < nra:
+            return False                               # 退避未到期
     freq = t.get("freqType") or "daily"
     if freq == "weekly":
         if int(t.get("scheduleWeekday") or 1) != weekday:
@@ -313,12 +374,19 @@ def start_scheduler(state):
     """后台守护线程：每分钟扫描一次，按各任务的频率档位触发抓取。"""
 
     def loop():
-        # 崩溃恢复：重启后把残留 running 状态的任务标记为失败
+        # 崩溃恢复：重启后把残留 running 状态的任务标记为失败。
+        # _is_running 是内存集合，进程一重启就丢了，所以这里用 last_run_at 做老化
+        # 判断：只有明显跑超单次运行时长的才算僵死，避免误判刚启动的任务。
         try:
+            stale = (datetime.datetime.now() -
+                     datetime.timedelta(minutes=SIF_STALE_RUNNING_MIN)).strftime("%Y-%m-%dT%H:%M")
             for t in state.list_sif_tasks():
-                if t.get("lastStatus") == "running":
-                    state.set_sif_task_status(t["id"], "error", error="上次运行被中断（服务重启）")
-                    print(f"  [sif] 任务 {t['name']} 上次运行被中断，已标记失败")
+                if t.get("lastStatus") != "running":
+                    continue
+                if (t.get("lastRunAt") or "")[:16] > stale:
+                    continue
+                print(f"  [sif] 任务 {t['name']} 上次运行被中断，已标记失败")
+                _note_failure(state, t["id"], t, "上次运行被中断（服务重启）")
         except Exception as e:
             print(f"  [sif] 启动恢复检查异常: {e}")
 
@@ -326,10 +394,11 @@ def start_scheduler(state):
             try:
                 today, weekday = _today(), datetime.date.today().isoweekday()
                 now_hm = time.strftime("%H:%M")
+                now_iso = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M")
                 for t in state.list_sif_tasks():
                     if not t.get("enabled"):
                         continue
-                    if not _freq_hit(t, today, weekday, now_hm):
+                    if not _freq_hit(t, today, weekday, now_hm, now_iso):
                         continue
                     print(f"  [sif] 定时触发 {t['name']}（{t.get('freqType')} {t.get('scheduleTime')}）@ {now_hm}")
                     _launch(state, t)

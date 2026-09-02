@@ -3001,6 +3001,8 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .sif-foot-stats { margin-top: auto; display: flex; justify-content: space-around; gap: 6px; padding: 10px 8px; border-top: 1px solid var(--border); font-size: 11px; color: var(--ink-3); position: sticky; bottom: 0; background: var(--bg); }
 .sif-foot-stats b { font-size: 13px; color: var(--ink); display: block; text-align: center; }
 .sif-task .sif-last-err { font-size: 10.5px; margin-top: 5px; line-height: 1.5; }
+.sif-task .sif-retry-hint { font-size: 10.5px; margin-top: 5px; color: #b45309; }
+.sif-task .sif-retry-hint.sif-retry-tripped { color: #be123c; font-weight: 600; }
 .sif-dir-btn { font-size: 11.5px; padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border-strong); background: var(--card-bg); color: var(--ink-2); cursor: pointer; }
 .sif-dir-btn:hover { border-color: var(--accent); }
 .sif-detail-title .sif-st { margin-left: 8px; vertical-align: 2px; }

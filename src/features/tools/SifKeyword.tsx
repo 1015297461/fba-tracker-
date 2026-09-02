@@ -24,6 +24,7 @@ interface Task {
   scheduleWeekday: number; scheduleTime: string | null; enabled: boolean;
   lastRunAt: string | null; lastDailyAt: string | null; lastWeeklyAt: string | null;
   lastStatus: string; lastError: string | null; createdAt: string;
+  failCount: number; nextRetryAt: string | null; tripped: boolean;
 }
 
 interface KwProfile {
@@ -244,6 +245,14 @@ function statusCls(s: string): string {
 function statusLabel(s: string): string {
   return s === 'running' ? '抓取中' : s === 'done' ? '正常' : s === 'error' ? '失败'
     : s === 'partial' ? '部分失败' : '待运行';
+}
+function retryHint(t: Task): string {
+  if (t.tripped) return '已熔断，明日自动恢复';
+  if (t.failCount > 0 && t.nextRetryAt) {
+    const dt = t.nextRetryAt.slice(5, 16).replace('T', ' ');
+    return `第 ${t.failCount} 次失败，${dt} 重试`;
+  }
+  return '';
 }
 function freqText(t: Task): string {
   const time = t.scheduleTime || '未设时刻';
@@ -1311,6 +1320,9 @@ export function SifKeyword() {
                 <button className="btn sif-btn-sm sif-del" onClick={e => { e.stopPropagation(); delTask(t); }}>删</button>
               </span>
             </div>
+            {retryHint(t) && (
+              <div className={'sif-retry-hint' + (t.tripped ? ' sif-retry-tripped' : '')}>{retryHint(t)}</div>
+            )}
             {t.lastError && <div className="sif-last-err">{t.lastError}</div>}
           </div>
         ))}
