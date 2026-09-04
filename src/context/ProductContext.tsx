@@ -684,7 +684,7 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
       if (p.id !== productId) return p;
       const batches = (p.stages?.production?.batches || []).map((b: any) => {
         if (b.id !== batchId) return b;
-        return { ...b, extraCosts: [...(b.extraCosts || []), { id: uid(), ...item }] };
+        return { ...b, extraCosts: [...(b.extraCosts || []), { id: uid(), allocation: 'pro_rata', ...item }] };
       });
       return { ...p, stages: { ...p.stages, production: { ...p.stages.production, batches } } };
     }));

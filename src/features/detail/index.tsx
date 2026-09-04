@@ -417,18 +417,30 @@ function getEffectiveBalancePayments(b: ProductionBatch): BalancePayment[] {
 interface BatchComputedResult {
   skuSubtotal: number;
   extraSubtotal: number;
-  skuTotal: number;
+  /** 整张采购订单的最终承诺，不随出货状态切换。 */
+  contractTotal: number;
   depositPct: number;
   balancePct: number;
   theorDeposit: number;
   orderQty: number;
   validShipments: Shipment[];
   shippedQty: number;
-  actualShippedValue: number;
-  effectiveTotal: number;
+  shippedSkuValue: number;
+  allocatedExtraCost: number;
+  shipmentSettlements: Record<string, { skuValue: number; extraAmount: number; total: number }>;
+  /** 已实际出货、截至当前已形成的累计应结。 */
+  shippedSettlement: number;
+  /** 尚未履约的合同金额（合同总额减去累计已出货结算）。 */
+  unfulfilledCommitment: number;
   pendingQty: number;
   actualTotalPaid: number;
-  paidComplete: boolean;
+  /** 已履约金额尚未被实际付款覆盖的部分。 */
+  currentOutstanding: number;
+  /** 已付款中尚未对应到已履约金额的预付部分。 */
+  prepaymentBalance: number;
+  /** 从合同现金承诺视角仍未支付的余额。 */
+  contractOutstanding: number;
+  contractPaidComplete: boolean;
 }
 
 // 受控数字输入框：本地暂存输入中的原始字符串，失焦时才转 Number 提交。
@@ -454,10 +466,10 @@ function computeBatch(b: ProductionBatch, hasVariants: boolean): BatchComputedRe
     ? b.items.reduce((s, i) => s + (Number(i.qty) || 0) * (Number(i.unitPrice) || 0), 0)
     : (Number(b.qty) || 0) * (Number(b.unitPrice) || 0);
   const extraSubtotal = (b.extraCosts || []).reduce((s, c) => s + (Number(c.qty) || 0) * (Number(c.unitPrice) || 0), 0);
-  const skuTotal = skuSubtotal + extraSubtotal;
+  const contractTotal = skuSubtotal + extraSubtotal;
   const depositPct = Number(b.depositPct) || 0;
   const balancePct = b.balancePct != null ? Number(b.balancePct) : Math.max(0, 100 - depositPct);
-  const theorDeposit = +(skuTotal * depositPct / 100).toFixed(2);
+  const theorDeposit = +(contractTotal * depositPct / 100).toFixed(2);
   const orderQty = hasVariants && b.items.length > 0
     ? b.items.reduce((s, i) => s + (Number(i.qty) || 0), 0)
     : (Number(b.qty) || 0);
@@ -473,21 +485,62 @@ function computeBatch(b: ProductionBatch, hasVariants: boolean): BatchComputedRe
     }, 0);
     return sum + (Number(sh.qty) || 0) * (Number(b.unitPrice) || 0);
   }, 0);
-  // 其他费用（代采配件/运费/违约赔付扣款等）不挂在具体某次出货上，是整批次一次性的，
-  // 只要这批已经有出货记录就整笔计入实际出货结算，不按出货比例拆分。
-  const actualShippedValue = validShipments.length > 0 ? shippedSkuValue + extraSubtotal : 0;
-  const effectiveTotal = validShipments.length > 0 ? actualShippedValue : skuTotal;
+  // 费用的确认口径与合同承诺拆开：
+  // - first_shipment：历史数据兼容，首笔实际出货时一次计入；
+  // - pro_rata：新费用默认，按累计实际出货数量分摊，超量出货不重复计入；
+  // - manual：只在指定且已实际出货的记录中确认。
+  const extraAmount = (cost: any) => (Number(cost.qty) || 0) * (Number(cost.unitPrice) || 0);
+  const allocatedForShipment = (sh: Shipment) => {
+    const shipmentIndex = validShipments.findIndex(x => x.id === sh.id);
+    if (shipmentIndex < 0) return 0;
+    const priorQty = validShipments.slice(0, shipmentIndex).reduce((sum, x) => {
+      if (hasVariants) return sum + (x.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0);
+      return sum + (Number(x.qty) || 0);
+    }, 0);
+    const thisQty = hasVariants
+      ? (sh.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0)
+      : (Number(sh.qty) || 0);
+    return (b.extraCosts || []).reduce((sum, cost: any) => {
+      const amount = extraAmount(cost);
+      const allocation = cost.allocation || 'first_shipment';
+      if (allocation === 'manual') return sum + (cost.shipmentRef === sh.id ? amount : 0);
+      if (allocation === 'pro_rata') {
+        if (orderQty <= 0) return sum;
+        const before = Math.min(Math.max(priorQty, 0), orderQty) / orderQty;
+        const after = Math.min(Math.max(priorQty + thisQty, 0), orderQty) / orderQty;
+        return sum + amount * (after - before);
+      }
+      return sum + (shipmentIndex === 0 ? amount : 0);
+    }, 0);
+  };
+  const shipmentSettlements = validShipments.reduce((map, sh) => {
+    const skuValue = hasVariants
+      ? (sh.items || []).reduce((sum, si) => {
+          const bi = b.items.find(x => x.variantId === si.variantId);
+          return sum + (Number(si.qty) || 0) * (Number(bi?.unitPrice) || 0);
+        }, 0)
+      : (Number(sh.qty) || 0) * (Number(b.unitPrice) || 0);
+    const extraAmount = allocatedForShipment(sh);
+    map[sh.id] = { skuValue, extraAmount, total: skuValue + extraAmount };
+    return map;
+  }, {} as Record<string, { skuValue: number; extraAmount: number; total: number }>);
+  const allocatedExtraCost = Object.values(shipmentSettlements).reduce((sum, item) => sum + item.extraAmount, 0);
+  const shippedSettlement = shippedSkuValue + allocatedExtraCost;
+  const unfulfilledCommitment = contractTotal - shippedSettlement;
   const pendingQty = orderQty - shippedQty;
   const effBps = getEffectiveBalancePayments(b);
   const tailPaid = effBps.reduce((s, bp) => s + (Number(bp.amount) || 0), 0);
   const actualTotalPaid = (Number(b.depositActual) || 0) + tailPaid;
-  const paidComplete = effectiveTotal > 0 && actualTotalPaid >= effectiveTotal;
+  const currentOutstanding = Math.max(0, shippedSettlement - actualTotalPaid);
+  const prepaymentBalance = Math.max(0, actualTotalPaid - shippedSettlement);
+  const contractOutstanding = Math.max(0, contractTotal - actualTotalPaid);
+  const contractPaidComplete = contractTotal > 0 && actualTotalPaid >= contractTotal;
   return {
-    skuSubtotal, extraSubtotal, skuTotal,
+    skuSubtotal, extraSubtotal, contractTotal,
     depositPct, balancePct, theorDeposit,
     orderQty, validShipments, shippedQty,
-    actualShippedValue, effectiveTotal, pendingQty,
-    actualTotalPaid, paidComplete,
+    shippedSkuValue, allocatedExtraCost, shipmentSettlements, shippedSettlement, unfulfilledCommitment, pendingQty,
+    actualTotalPaid, currentOutstanding, prepaymentBalance, contractOutstanding, contractPaidComplete,
   };
 }
 
@@ -525,8 +578,10 @@ function TabProd({ p }: { p: any }) {
     }
   }
 
-  // 总订单金额 = 各批次订单金额（skuTotal）之和
-  const totalOrderAmount = allBatches.reduce((sum, b) => sum + computeBatch(b, hasVariants).skuTotal, 0);
+  // 产品层聚合：合同承诺、已履约结算与当前待付各自独立，避免一个金额承担多种口径。
+  const totalContractAmount = allBatches.reduce((sum, b) => sum + computeBatch(b, hasVariants).contractTotal, 0);
+  const totalShippedSettlement = allBatches.reduce((sum, b) => sum + computeBatch(b, hasVariants).shippedSettlement, 0);
+  const totalCurrentOutstanding = allBatches.reduce((sum, b) => sum + computeBatch(b, hasVariants).currentOutstanding, 0);
 
   const skuEntries = Object.values(skuQtyMap).filter(e => e.qty > 0);
   const prodHeaderExtra = totalOrderQty > 0 ? (
@@ -547,14 +602,16 @@ function TabProd({ p }: { p: any }) {
           </span>
         )}
       </span>
-      {totalOrderAmount > 0 && (
+      {totalContractAmount > 0 && (
         <span className="shs-item">
           <span className="shs-lbl">
-            <FieldHint label="总订单金额" hint={`= 各批次订单金额之和（订单金额 = SKU小计 + 其他费用小计）= ¥${totalOrderAmount.toFixed(2)}`} />
+            <FieldHint label="合同总额" hint={`= 各批次采购合同总额之和（SKU小计 + 其他费用）= ¥${totalContractAmount.toFixed(2)}`} />
           </span>
-          <span className="shs-val mono">¥{totalOrderAmount.toFixed(2)}</span>
+          <span className="shs-val mono">¥{totalContractAmount.toFixed(2)}</span>
         </span>
       )}
+      {totalShippedSettlement > 0 && <span className="shs-item"><span className="shs-lbl">已出货结算</span><span className="shs-val mono">¥{totalShippedSettlement.toFixed(2)}</span></span>}
+      {totalCurrentOutstanding > 0 && <span className="shs-item"><span className="shs-lbl">当前待付</span><span className="shs-val mono" style={{color:'var(--orange)'}}>¥{totalCurrentOutstanding.toFixed(2)}</span></span>}
     </div>
   ) : null;
 
@@ -565,7 +622,7 @@ function TabProd({ p }: { p: any }) {
           {allBatches.map((b, idx) => {
             const c = computeBatch(b, hasVariants);
             const pendingClass = c.pendingQty < 0 ? 'rmc-warn' : c.pendingQty === 0 && c.orderQty > 0 ? 'rmc-done' : 'rmc-pending';
-            const paidClass = c.paidComplete ? 'rmc-done' : c.actualTotalPaid > 0 ? 'rmc-pending' : 'rmc-warn';
+            const paidClass = c.currentOutstanding === 0 ? 'rmc-done' : c.actualTotalPaid > 0 ? 'rmc-pending' : 'rmc-warn';
             const depositActualVal = Number(b.depositActual) || 0;
             const tailPaidVal = c.actualTotalPaid - depositActualVal;
             const batchMeta = (
@@ -582,8 +639,8 @@ function TabProd({ p }: { p: any }) {
                   </span>
                   <span className="rmc-val">{c.pendingQty > 0 ? c.pendingQty + ' pcs' : c.pendingQty < 0 ? '超出' + Math.abs(c.pendingQty) : '✓'}</span>
                 </span>}
-                {c.effectiveTotal > 0 && c.orderQty > 0 && <span className={"record-meta-chip " + paidClass}>
-                  <span className="rmc-val">{c.paidComplete ? '已付清' : c.actualTotalPaid > 0 ? '未付清 ¥' + (c.effectiveTotal - c.actualTotalPaid).toFixed(2) : '未付款'}</span>
+                {c.contractTotal > 0 && c.orderQty > 0 && <span className={"record-meta-chip " + paidClass}>
+                  <span className="rmc-val">{c.currentOutstanding > 0 ? '当前待付 ¥' + c.currentOutstanding.toFixed(2) : c.prepaymentBalance > 0 ? '预付 ¥' + c.prepaymentBalance.toFixed(2) : c.contractPaidComplete ? '合同已付清' : '当前无待付'}</span>
                 </span>}
                 {c.actualTotalPaid > 0 && (
                   <span className="record-meta-chip"><span className="rmc-lbl">
@@ -693,7 +750,7 @@ function TabProd({ p }: { p: any }) {
                         : '代采配件 / 运费 / 其他'}
                     </span>
                     <button className="btn btn-sm btn-add" onClick={() =>
-                      addBatchExtra(p.id, b.id, { name:'', qty:1, unitPrice:0 })
+                      addBatchExtra(p.id, b.id, { name:'', qty:1, unitPrice:0, allocation:'pro_rata' })
                     }>+ 添加费用</button>
                   </div>
                   {isExpanded(b.id+'|extra') && (b.extraCosts||[]).length > 0 && (
@@ -704,6 +761,8 @@ function TabProd({ p }: { p: any }) {
                           <th className="num">数量</th>
                           <th className="num">单价(¥)</th>
                           <th className="num">小计(¥)</th>
+                          <th>结算归属</th>
+                          <th>指定出货</th>
                           <th></th>
                         </tr>
                       </thead>
@@ -717,6 +776,21 @@ function TabProd({ p }: { p: any }) {
                             <td className="num"><NumCell value={c.unitPrice} step="0.01"
                               onCommit={v => updateBatchExtra(p.id, b.id, c.id, { unitPrice:v })} /></td>
                             <td className="num">¥{((Number(c.qty)||0)*(Number(c.unitPrice)||0)).toFixed(2)}</td>
+                            <td>
+                              <select className="cell" value={c.allocation || 'first_shipment'}
+                                onChange={e => updateBatchExtra(p.id, b.id, c.id, { allocation:e.target.value, shipmentRef: e.target.value === 'manual' ? c.shipmentRef || '' : undefined })}>
+                                <option value="pro_rata">按数量分摊</option>
+                                <option value="first_shipment">首次出货计入</option>
+                                <option value="manual">指定出货计入</option>
+                              </select>
+                            </td>
+                            <td>
+                              {c.allocation === 'manual' ? <select className="cell" value={c.shipmentRef || ''}
+                                onChange={e => updateBatchExtra(p.id, b.id, c.id, { shipmentRef:e.target.value })}>
+                                <option value="">— 选择出货 —</option>
+                                {(b.shipments||[]).map((sh: any, si: number) => <option key={sh.id} value={sh.id}>#{si+1} {sh.shipDate || sh.expectedShip || '未填日期'}</option>)}
+                              </select> : <span style={{color:'var(--ink-4)',fontSize:11}}>自动</span>}
+                            </td>
                             <td><button className="row-del" onClick={() => { if (confirm('确定删除该笔费用？')) removeBatchExtra(p.id, b.id, c.id); }}>✕</button></td>
                           </tr>
                         ))}
@@ -733,16 +807,14 @@ function TabProd({ p }: { p: any }) {
                   <div className="payment-section-title" style={{cursor:'pointer'}} onClick={() => toggleSection(payKey)}>
                     <button className="sec-toggle" onClick={e => { e.stopPropagation(); toggleSection(payKey); }}>{isExpanded(payKey) ? '▾' : '▸'}</button>
                     <span>付款条款</span>
-                    {c.effectiveTotal > 0 && (
+                    {c.contractTotal > 0 && (
                       <span className="payment-hdr-summary" style={{marginLeft:12, fontSize:11.5, fontFamily:'var(--font-mono)'}}>
-                        已付 <strong style={c.actualTotalPaid >= c.effectiveTotal ? {color:'var(--green)'} : {color:'var(--orange)'}}>¥{c.actualTotalPaid.toFixed(2)}</strong>
-                        &nbsp;/&nbsp;¥{c.effectiveTotal.toFixed(2)}
-                        {c.actualTotalPaid >= c.effectiveTotal
-                          ? <>&nbsp;·&nbsp;<strong style={{color:'var(--green)'}}>✓ 已付清</strong></>
-                          : c.actualTotalPaid > 0
-                            ? <>&nbsp;·&nbsp;待付 <strong style={{color:'var(--orange)'}}>¥{(c.effectiveTotal - c.actualTotalPaid).toFixed(2)}</strong></>
-                            : <>&nbsp;·&nbsp;<span style={{color:'var(--orange)',fontWeight:600}}>未付款</span></>
-                        }
+                        合同已付 <strong style={c.contractPaidComplete ? {color:'var(--green)'} : {color:'var(--orange)'}}>¥{c.actualTotalPaid.toFixed(2)}</strong>
+                        &nbsp;/&nbsp;¥{c.contractTotal.toFixed(2)}
+                        {c.currentOutstanding > 0 ? <>&nbsp;·&nbsp;当前待付 <strong style={{color:'var(--orange)'}}>¥{c.currentOutstanding.toFixed(2)}</strong></>
+                          : c.prepaymentBalance > 0 ? <>&nbsp;·&nbsp;<strong style={{color:'var(--blue)'}}>预付 ¥{c.prepaymentBalance.toFixed(2)}</strong></>
+                          : c.contractPaidComplete ? <>&nbsp;·&nbsp;<strong style={{color:'var(--green)'}}>✓ 合同已付清</strong></>
+                          : <>&nbsp;·&nbsp;<span style={{color:'var(--ink-4)'}}>当前无待付</span></>}
                       </span>
                     )}
                   </div>
@@ -750,25 +822,28 @@ function TabProd({ p }: { p: any }) {
                   <div className="fieldgrid cols-4">
                     <div className="calc-field">
                       <span className="calc-field-label">
-                        <FieldHint label="订单金额" placement="right" hint={`= SKU 小计(¥${c.skuSubtotal.toFixed(2)}) + 其他费用小计(¥${c.extraSubtotal.toFixed(2)}) = ¥${c.skuTotal.toFixed(2)}`} />
+                        <FieldHint label="采购合同总额" placement="right" hint={`= SKU 小计(¥${c.skuSubtotal.toFixed(2)}) + 其他费用小计(¥${c.extraSubtotal.toFixed(2)}) = ¥${c.contractTotal.toFixed(2)}；不随出货状态改变。`} />
                       </span>
-                      <span className="calc-field-value mono" style={{fontWeight:600,color:'var(--blue)'}}>¥{c.skuTotal.toFixed(2)}</span>
+                      <span className="calc-field-value mono" style={{fontWeight:600,color:'var(--blue)'}}>¥{c.contractTotal.toFixed(2)}</span>
                     </div>
-                    {c.validShipments.length > 0 ? (
-                      <div className="calc-field">
-                        <span className="calc-field-label">
-                          <FieldHint label="实际出货结算" placement="right" hint={`= Σ(各出货记录数量 × 对应SKU单价) + 其他费用小计(¥${c.extraSubtotal.toFixed(2)})，按已实际出货（已填出货日期）的记录计算 = ¥${c.actualShippedValue.toFixed(2)}`} />
-                        </span>
-                        <span className="calc-field-value mono" style={{fontWeight:600,color: c.actualShippedValue !== c.skuTotal ? 'var(--orange)' : 'var(--green)'}}>¥{c.actualShippedValue.toFixed(2)}</span>
-                      </div>
-                    ) : <div />}
-                    <div /><div />
+                    <div className="calc-field">
+                      <span className="calc-field-label"><FieldHint label="累计已出货结算" placement="right" hint={`= 已实际出货 SKU 货值(¥${c.shippedSkuValue.toFixed(2)}) + 已确认费用(¥${c.allocatedExtraCost.toFixed(2)}) = ¥${c.shippedSettlement.toFixed(2)}；计划出货不计入。`} /></span>
+                      <span className="calc-field-value mono" style={{fontWeight:600,color: c.shippedSettlement > 0 ? 'var(--green)' : 'var(--ink-4)'}}>¥{c.shippedSettlement.toFixed(2)}</span>
+                    </div>
+                    <div className="calc-field">
+                      <span className="calc-field-label"><FieldHint label="未履约合同承诺" placement="right" hint={`= 采购合同总额(¥${c.contractTotal.toFixed(2)}) − 累计已出货结算(¥${c.shippedSettlement.toFixed(2)}) = ¥${c.unfulfilledCommitment.toFixed(2)}`} /></span>
+                      <span className="calc-field-value mono">¥{c.unfulfilledCommitment.toFixed(2)}</span>
+                    </div>
+                    <div className="calc-field">
+                      <span className="calc-field-label"><FieldHint label="当前待付" placement="right" hint={`= max(0, 累计已出货结算 ¥${c.shippedSettlement.toFixed(2)} − 累计已付 ¥${c.actualTotalPaid.toFixed(2)}) = ¥${c.currentOutstanding.toFixed(2)}；仅代表已履约部分尚未覆盖的付款。`} /></span>
+                      <span className="calc-field-value mono" style={c.currentOutstanding > 0 ? {color:'var(--orange)',fontWeight:600} : {color:'var(--green)'}}>¥{c.currentOutstanding.toFixed(2)}</span>
+                    </div>
                     <EditField label="预付款比例" type="number" mono suffix="%" value={b.depositPct}
-                      hint="手动填写，用于计算「理论预付款」= 订单金额 × 该比例" hintPlacement="right"
+                      hint="手动填写，用于计算「理论预付款」= 采购合同总额 × 该比例" hintPlacement="right"
                       onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositPct:v })} />
                     <div className="calc-field">
                       <span className="calc-field-label">
-                        <FieldHint label="理论预付款" placement="right" hint={`= 订单金额(¥${c.skuTotal.toFixed(2)}) × 预付款比例(${c.depositPct}%) = ¥${c.theorDeposit.toFixed(2)}`} />
+                        <FieldHint label="理论预付款" placement="right" hint={`= 采购合同总额(¥${c.contractTotal.toFixed(2)}) × 预付款比例(${c.depositPct}%) = ¥${c.theorDeposit.toFixed(2)}`} />
                       </span>
                       <span className="calc-field-value mono">¥{c.theorDeposit.toFixed(2)}</span>
                     </div>
@@ -781,17 +856,12 @@ function TabProd({ p }: { p: any }) {
                       onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { balancePct:Number(v) })} />
                     <div className="calc-field">
                       <span className="calc-field-label">
-                        <FieldHint label="应结尾款" placement="right" hint={`= 结算金额(¥${c.effectiveTotal.toFixed(2)}，${c.validShipments.length > 0 ? '取实际出货结算' : '尚无出货记录，取订单金额'}) − 实际预付款(¥${(Number(b.depositActual)||0).toFixed(2)}) = ¥${(c.effectiveTotal - (Number(b.depositActual)||0)).toFixed(2)}（可为负数：其他费用里的违约赔付扣款等场景）`} />
-                      </span>
-                      <span className="calc-field-value mono">¥{(c.effectiveTotal - (Number(b.depositActual)||0)).toFixed(2)}</span>
-                    </div>
-                    <div className="calc-field">
-                      <span className="calc-field-label">
                         <FieldHint label="已付总金额" placement="right" hint={`= 实际预付款(¥${(Number(b.depositActual)||0).toFixed(2)}) + 尾款支付记录合计(¥${(c.actualTotalPaid - (Number(b.depositActual)||0)).toFixed(2)}) = ¥${c.actualTotalPaid.toFixed(2)}`} />
                       </span>
-                      <span className="calc-field-value mono" style={c.actualTotalPaid >= c.effectiveTotal ? {color:'var(--green)',fontWeight:600} : {color:'var(--orange)',fontWeight:600}}>¥{c.actualTotalPaid.toFixed(2)}</span>
+                      <span className="calc-field-value mono" style={c.contractPaidComplete ? {color:'var(--green)',fontWeight:600} : {color:'var(--orange)',fontWeight:600}}>¥{c.actualTotalPaid.toFixed(2)}</span>
                     </div>
-                    <div />
+                    <div className="calc-field"><span className="calc-field-label"><FieldHint label="预付余额" placement="right" hint={`= max(0, 已付总金额 ¥${c.actualTotalPaid.toFixed(2)} − 累计已出货结算 ¥${c.shippedSettlement.toFixed(2)}) = ¥${c.prepaymentBalance.toFixed(2)}`} /></span><span className="calc-field-value mono" style={{color:'var(--blue)'}}>¥{c.prepaymentBalance.toFixed(2)}</span></div>
+                    <div className="calc-field"><span className="calc-field-label"><FieldHint label="合同未付余额" placement="right" hint={`= max(0, 采购合同总额 ¥${c.contractTotal.toFixed(2)} − 已付总金额 ¥${c.actualTotalPaid.toFixed(2)}) = ¥${c.contractOutstanding.toFixed(2)}`} /></span><span className="calc-field-value mono">¥{c.contractOutstanding.toFixed(2)}</span></div>
                   </div>
 
                   <div className="sku-items-block" style={{marginTop:12}}>
@@ -893,15 +963,20 @@ function TabProd({ p }: { p: any }) {
                               return `${si.qty||0} × ¥${(Number(bi?.unitPrice)||0).toFixed(2)} = ¥${lineTotal.toFixed(2)}`;
                             }).join(' + ') + (shSettlement > 0 ? ` = ¥${shSettlement.toFixed(2)}` : '')
                           : `${shQty} × ¥${(Number(b.unitPrice)||0).toFixed(2)} = ¥${shSettlement.toFixed(2)}`;
-                        const balanceDue = shSettlement * (c.balancePct / 100);
-                        const balanceHint = `= 结算金额(¥${shSettlement.toFixed(2)}) × ${c.balancePct}% = ¥${balanceDue.toFixed(2)}`;
+                        // 计划出货只展示货值预估；只有实际出货日期存在时才形成应结。
+                        const settled = c.shipmentSettlements[sh.id];
+                        const extraAllocated = settled?.extraAmount || 0;
+                        const currentSettlement = settled?.total || 0;
+                        const settlementHintWithExtra = settled
+                          ? `${settlementHint} + 本次归属费用(¥${extraAllocated.toFixed(2)}) = ¥${currentSettlement.toFixed(2)}`
+                          : `${settlementHint}；尚未填写实际出货日期，仅作计划货值，不计入当前应付。`;
                         return (
                           <div key={sh.id} className="batch-ship-entry">
                             <div className="batch-ship-entry-hdr" style={{cursor:'pointer'}} onClick={() => toggleSection(b.id+'|sh|'+sh.id)}>
                               <button className="sec-toggle" onClick={e => { e.stopPropagation(); toggleSection(b.id+'|sh|'+sh.id); }}>{isExpanded(b.id+'|sh|'+sh.id) ? '▾' : '▸'}</button>
                               <span className="batch-ship-no">#{shIdx + 1}</span>
                               <span className="batch-ship-info">
-                                {(sh.shipDate || sh.expectedShip) || '日期未填'}{shVariantNames ? ' · ' + shVariantNames : ''} · {shQty} pcs{shSettlement > 0 ? <>&nbsp;·&nbsp;<FieldHint label={<span>结算 <strong>¥{shSettlement.toFixed(2)}</strong></span>} placement="bottom" hint={settlementHint} /></> : ''}{shSettlement > 0 ? <>&nbsp;·&nbsp;<FieldHint label={<span>应付尾款 <strong>¥{balanceDue.toFixed(2)}</strong></span>} placement="bottom" hint={balanceHint} /></> : ''} · {sh.method || '—'}{sh.carrier ? ' · ' + sh.carrier : ''}
+                                {(sh.shipDate || sh.expectedShip) || '日期未填'}{shVariantNames ? ' · ' + shVariantNames : ''} · {shQty} pcs{shSettlement !== 0 ? <>&nbsp;·&nbsp;<FieldHint label={<span>{settled ? '本次应结' : '计划货值'} <strong>¥{(settled ? currentSettlement : shSettlement).toFixed(2)}</strong></span>} placement="bottom" hint={settlementHintWithExtra} /></> : ''} · {sh.method || '—'}{sh.carrier ? ' · ' + sh.carrier : ''}
                               </span>
                               <StatusSelect value={sh.status} size="sm"
                                 onChange={v => updateBatchShipment(p.id, b.id, sh.id, { status: v })} />

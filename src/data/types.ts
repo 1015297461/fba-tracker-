@@ -39,6 +39,13 @@ export interface ExtraCost {
   name: string;
   qty: number;
   unitPrice: number;
+  /**
+   * 费用何时进入已出货结算。旧数据没有该字段时按 first_shipment 解释，
+   * 以保持历史批次的原有金额不变；新建费用默认按数量分摊。
+   */
+  allocation?: 'first_shipment' | 'pro_rata' | 'manual';
+  /** allocation=manual 时，指定归属的出货记录。 */
+  shipmentRef?: string;
 }
 
 export interface ShipmentItem {
