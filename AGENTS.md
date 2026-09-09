@@ -279,12 +279,12 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 
 ## 已知的体量较大的文件（非 bug，但改动前建议先用 grep/大纲定位再改）
 
-- `src/features/detail/index.tsx`（1580 行，11 个组件；`TabProd` 前有 `getEffectiveBalancePayments(b)` 辅助函数；跨批次汇总通过 `titleExtra` 注入 StageCard 标题行；`TabProd` 的批次列表被 DndContext+SortableContext 包裹以支持拖拽调序）
+- `src/features/detail/index.tsx`（1577 行，11 个组件；`TabProd` 前有 `getEffectiveBalancePayments(b)` 辅助函数；跨批次汇总通过 `titleExtra` 注入 StageCard 标题行；`TabProd` 的批次列表被 DndContext+SortableContext 包裹以支持拖拽调序）
 - `src/context/ProductContext.tsx`（943 行，~19 个 update 函数 + reorderProducts/reorderRecords 两个重排函数）
 - `src/features/tools/SifKeyword.tsx`（1751 行，SIF 爆品监控 v2：六页签 + 任务表单 + 关键词/ASIN 详情弹窗 + 点查弹窗 + 设置面板全在一个文件里）
 - `backend/db.py`（2063 行，SIF v2 的 8 张表读写集中在文件后半段，改前先 grep `SIF v2` 分区注释定位）
 - `backend/routes/sif_keywords.py`（1015 行，前半是分层编排 `execute_task()` + 调度器，后半是 `register()` 里的路由表）
-- `styles.css`（3032 行，按模块分区，新模块追加在文件末尾对应分区注释下；SIF v2 组件样式在文件最末）
+- `styles.css`（3030 行，按模块分区，新模块追加在文件末尾对应分区注释下；SIF v2 组件样式在文件最末）
 - `backend/product_fetcher.py`（1368 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
   限流参数（均可用环境变量覆盖，当前默认值）：
   `SCRAPER_CONCURRENCY=3`（并发 worker 数）、`SCRAPER_MIN_INTERVAL_MS=700`（请求最小间隔 ms）、

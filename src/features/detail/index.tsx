@@ -637,9 +637,6 @@ function TabProd({ p }: { p: any }) {
     <>
       <StageCard stage={STAGES[9]} productId={p.id} stageKey="production" stageData={prod} titleExtra={prodHeaderExtra}>
         <div className="record-list">
-          {allBatches.length > 1 && (
-            <div className="record-sort-hint">按住 ⋮⋮ 可拖动调整批次顺序（键盘：聚焦把手后按空格，再用 ↑↓ 移动）</div>
-          )}
           {/* 以下 map 块保持原有缩进，仅为外层加上排序上下文，避免整块重排产生无意义 diff */}
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={batchIds} strategy={verticalListSortingStrategy}>
