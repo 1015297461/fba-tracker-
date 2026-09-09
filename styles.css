@@ -594,6 +594,30 @@ input, textarea, select { font-family: inherit; font-size: 13px; }
   display: grid; place-items: center;
   letter-spacing: 0.02em;
 }
+
+/* ---- 记录卡拖拽排序（生产批次等列表）---- */
+.record-drag {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 22px; flex: 0 0 auto;
+  margin-left: -4px;                 /* 贴近卡片左缘，避免把编号挤得太远 */
+  font-size: 12px; line-height: 1;
+  color: var(--ink-4);
+  cursor: grab;
+  border-radius: 4px;
+  user-select: none;
+  touch-action: none;                /* dnd-kit 要求：否则移动端手势会被页面滚动抢走 */
+  transition: color .12s, background .12s;
+}
+.record-drag:hover { color: var(--ink-2); background: var(--bg-3, rgba(127,127,127,0.14)); }
+.record-drag:active { cursor: grabbing; }
+.record-drag:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; color: var(--ink-2); }
+/* 拖拽中的卡片：抬起并高亮边框，与下方静止卡片区分开 */
+.sortable-dragging .record-card {
+  border-color: var(--accent);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+}
+.record-sort-hint { font-size: 11px; color: var(--ink-4); padding: 0 2px 6px; }
+
 .record-title { font-weight: 600; font-size: 12.5px; color: var(--ink); }
 .record-dates { font-size: 11px; color: var(--ink-4); font-family: var(--font-mono); margin-left: 4px; }
 .record-final-badge {

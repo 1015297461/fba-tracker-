@@ -1,7 +1,9 @@
 import React from 'react';
 import { STAGES, TABS, STAGE_STATUSES } from '../../data/constants';
 import { useProducts, _variantInUse } from '../../context/ProductContext';
-import { StatusSelect, EditField, StageCard, RecordCard, AddRecordButton, VariantSelector, FieldHint } from '../../components';
+import { StatusSelect, EditField, StageCard, RecordCard, SortableRecordCard, AddRecordButton, VariantSelector, FieldHint } from '../../components';
+import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { TabEval } from '../list-view';
 import { uid } from '../../data/products';
 import type { ProductionBatch, Shipment, BalancePayment } from '../../data/types';
@@ -545,7 +547,7 @@ function computeBatch(b: ProductionBatch, hasVariants: boolean): BatchComputedRe
 }
 
 function TabProd({ p }: { p: any }) {
-  const { addRecord, updateRecord, removeRecord,
+  const { addRecord, updateRecord, removeRecord, reorderRecords,
           addBatchItem, updateBatchItem, removeBatchItem,
           addBatchExtra, updateBatchExtra, removeBatchExtra,
           addBalancePayment, updateBalancePayment, removeBalancePayment,
@@ -562,6 +564,22 @@ function TabProd({ p }: { p: any }) {
     return next;
   });
   const isExpanded = (key: string) => expandedSections.has(key);
+
+  // 拖拽排序：PointerSensor 设 4px 位移阈值，避免把手上的普通点击被误判成拖拽；
+  // KeyboardSensor 让把手聚焦后可用「空格 + ↑↓」完成排序，不依赖鼠标也能调序。
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const batchIds = React.useMemo(
+    () => (prod.batches || []).map((b: any) => b.id).filter(Boolean), [prod.batches]);
+  // 拖拽结束才落库：只改 batches 数组顺序，不动批次自身任何字段（批次号保持用户填的值）
+  const handleDragEnd = (e: any) => {
+    const { active, over } = e || {};
+    if (over && active && active.id !== over.id) {
+      reorderRecords(p.id, 'production', 'batches', String(active.id), String(over.id));
+    }
+  };
 
   // 跨批次汇总：总下单量 + SKU 明细 + 总订单金额
   const allBatches: ProductionBatch[] = prod.batches || [];
@@ -619,6 +637,12 @@ function TabProd({ p }: { p: any }) {
     <>
       <StageCard stage={STAGES[9]} productId={p.id} stageKey="production" stageData={prod} titleExtra={prodHeaderExtra}>
         <div className="record-list">
+          {allBatches.length > 1 && (
+            <div className="record-sort-hint">按住 ⋮⋮ 可拖动调整批次顺序（键盘：聚焦把手后按空格，再用 ↑↓ 移动）</div>
+          )}
+          {/* 以下 map 块保持原有缩进，仅为外层加上排序上下文，避免整块重排产生无意义 diff */}
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext items={batchIds} strategy={verticalListSortingStrategy}>
           {allBatches.map((b, idx) => {
             const c = computeBatch(b, hasVariants);
             const pendingClass = c.pendingQty < 0 ? 'rmc-warn' : c.pendingQty === 0 && c.orderQty > 0 ? 'rmc-done' : 'rmc-pending';
@@ -651,7 +675,7 @@ function TabProd({ p }: { p: any }) {
               </>
             );
             return (
-              <RecordCard key={b.id} index={b.batchNo || ('B'+(idx+1))} title={`生产批次 ${b.batchNo || 'B'+(idx+1)}`}
+              <SortableRecordCard key={b.id} sortableId={b.id} index={b.batchNo || ('B'+(idx+1))} title={`生产批次 ${b.batchNo || 'B'+(idx+1)}`}
                 color={STAGES[9].color} status={b.status}
                 meta={batchMeta}
                 defaultOpen={false}   // 生产批次默认折叠，点击标题展开
@@ -1071,9 +1095,11 @@ function TabProd({ p }: { p: any }) {
                   <EditField label="批次备注" wide multi value={b.note}
                     onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { note:v })} />
                 </div>
-              </RecordCard>
+              </SortableRecordCard>
             );
           })}
+          </SortableContext>
+          </DndContext>
         </div>
         <div style={{marginTop:10}}>
           <AddRecordButton label="添加生产批次" onClick={() => {

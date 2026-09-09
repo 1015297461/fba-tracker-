@@ -448,6 +448,22 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
     });
   }, []);
 
+  // 记录级重排：把 stageKey.arrayKey 里 activeId 那条移到 overId 所在位置（拖拽排序落地写入）。
+  // 与 reorderProducts（产品级）对称；只改数组顺序，不触碰记录自身的任何字段。
+  const reorderRecords = React.useCallback((id: string, stageKey: string, arrayKey: string,
+                                           activeId: string, overId: string) => {
+    if (!activeId || !overId || activeId === overId) return;
+    setProducts(prev => prev.map(p => {
+      if (p.id !== id) return p;
+      const s = p.stages[stageKey] || {};
+      const arr: any[] = s[arrayKey] || [];
+      const oldIndex = arr.findIndex((r: any) => r.id === activeId);
+      const newIndex = arr.findIndex((r: any) => r.id === overId);
+      if (oldIndex === -1 || newIndex === -1 || oldIndex === newIndex) return p;
+      return { ...p, stages: { ...p.stages, [stageKey]: { ...s, [arrayKey]: arrayMove(arr, oldIndex, newIndex) } } };
+    }));
+  }, []);
+
   const update = React.useCallback((id: string, updater: (p: Product) => Product) => {
     setProducts(prev => prev.map(p => p.id === id ? updater(p) : p));
   }, []);
@@ -893,7 +909,7 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
     products, setProducts, update, updateStage, updateRecord, addRecord, removeRecord,
     updateSubShipment, addSubShipment, removeSubShipment, addLog, updateLog, removeLog,
     savedAt, resetToDefaults, exportJSON, importJSON, exportProduct,
-    createProduct, removeProduct, duplicateProduct, reorderProducts,
+    createProduct, removeProduct, duplicateProduct, reorderProducts, reorderRecords,
     trash, restoreFromTrash, purgeFromTrash, emptyTrash,
     syncMode, syncStatus, syncVersion: versionRef.current,
     needLogin, currentUser, login, logout,
@@ -909,7 +925,7 @@ export function ProductsProvider({ children, initial }: { children: React.ReactN
   }), [products, update, updateStage, updateRecord, addRecord, removeRecord,
     updateSubShipment, addSubShipment, removeSubShipment, addLog, updateLog, removeLog,
     savedAt, resetToDefaults, exportJSON, importJSON, exportProduct,
-    createProduct, removeProduct, duplicateProduct, reorderProducts,
+    createProduct, removeProduct, duplicateProduct, reorderProducts, reorderRecords,
     trash, restoreFromTrash, purgeFromTrash, emptyTrash,
     syncMode, syncStatus, needLogin, currentUser, login, logout,
     addVariant, updateVariant, updateVariantStage, removeVariant,

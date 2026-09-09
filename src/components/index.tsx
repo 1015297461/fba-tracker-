@@ -1,5 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
+import { useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { STAGE_STATUSES } from '../data/constants';
 import { useProducts } from '../context/ProductContext';
 import type { StageDefinition } from '../data/types';
@@ -187,7 +189,7 @@ export function StageCard({ stage, productId, stageKey, stageData, children, ext
   );
 }
 
-export function RecordCard({ index, title, status, onStatusChange, onRemove, isFinal, color, children, dates, meta, defaultOpen = true }: {
+export function RecordCard({ index, title, status, onStatusChange, onRemove, isFinal, color, children, dates, meta, defaultOpen = true, dragHandle }: {
   index: number | string;
   title: string;
   status?: string;
@@ -199,6 +201,7 @@ export function RecordCard({ index, title, status, onStatusChange, onRemove, isF
   dates?: string;
   meta?: React.ReactNode;
   defaultOpen?: boolean;
+  dragHandle?: React.ReactNode;   // 拖拽把手，由 SortableRecordCard 传入；不传则无把手，其他 Tab 行为不变
 }) {
   const [open, setOpen] = React.useState(defaultOpen);
   const toggle = () => setOpen(o => !o);
@@ -206,6 +209,7 @@ export function RecordCard({ index, title, status, onStatusChange, onRemove, isF
     <div className={"record-card" + (isFinal ? ' final' : '')}>
       {/* 点击标题栏（空白区域/编号/标题）即可折叠展开；交互控件各自 stopPropagation 防止误触 */}
       <div className="record-hdr" onClick={toggle}>
+        {dragHandle}
         <div className="record-num" style={{ background: color, color:'#fff' }}>#{index}</div>
         <button className="record-collapse" onClick={e => { e.stopPropagation(); toggle(); }} title={open ? '折叠' : '展开'}>
           {open ? '▾' : '▸'}
@@ -218,6 +222,34 @@ export function RecordCard({ index, title, status, onStatusChange, onRemove, isF
         <button className="record-remove" onClick={e => { e.stopPropagation(); onRemove(); }} title="删除">✕</button>
       </div>
       {open && <div className="record-body">{children}</div>}
+    </div>
+  );
+}
+
+/** 可拖拽排序的记录卡 —— 仅在被 DndContext + SortableContext 包裹时使用。
+ *  把手单独挂在标题栏最左侧：既不抢「点击标题栏折叠」的点击，也不影响卡内输入框选词。
+ *  键盘可达：聚焦把手后按空格/回车激活，↑↓ 移动，再按空格/回车放下（dnd-kit KeyboardSensor）。 */
+export function SortableRecordCard({ sortableId, ...cardProps }:
+    { sortableId: string } & React.ComponentProps<typeof RecordCard>) {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef,
+          transform, transition, isDragging } = useSortable({ id: sortableId });
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.45 : undefined,
+    position: 'relative',
+    zIndex: isDragging ? 20 : undefined,
+  };
+  return (
+    <div ref={setNodeRef} style={style}
+         className={'sortable-record' + (isDragging ? ' sortable-dragging' : '')}>
+      <RecordCard {...cardProps}
+        dragHandle={
+          <span ref={setActivatorNodeRef} className="record-drag"
+                title="拖动调整顺序（键盘：聚焦后按空格，再用 ↑↓ 移动，空格确认）"
+                onClick={e => e.stopPropagation()}
+                {...attributes} {...listeners}>⋮⋮</span>
+        } />
     </div>
   );
 }
