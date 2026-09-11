@@ -1301,8 +1301,14 @@ def scrape_product(asin, marketplace, with_reviews=False):
 
 
 def scrape_products(asins, marketplace, with_reviews=False, on_progress=None):
-    """批量抓取，返回与 asins 等长的结果列表；失败项会自动重试一轮。"""
-    batch_size = max(1, int(os.environ.get("SCRAPER_CONCURRENCY", "3")))
+    """批量抓取，返回与 asins 等长的结果列表；失败项会自动重试一轮。
+
+    batch_size（每批提交几个）与 concurrency（同时几个 worker）是两件事：
+    批大、并发小 → worker 一直有活干；批小 → 反复重建线程池、批间空等，吞吐反而更低。
+    真正的速率上限由令牌桶决定（默认 40 请求/分钟），这里调多大都不会突破。
+    """
+    concurrency = max(1, int(os.environ.get("SCRAPER_CONCURRENCY", "3")))
+    batch_size = max(1, int(os.environ.get("SCRAPER_BATCH_SIZE", "40")))
     asins = [a.strip().upper() for a in asins if a and a.strip()]
     results = [None] * len(asins)
     completed = 0
@@ -1313,11 +1319,23 @@ def scrape_products(asins, marketplace, with_reviews=False, on_progress=None):
             time.sleep(stagger_sec)
         return idx, scrape_product(asin, marketplace, with_reviews)
 
+    def _stagger_for(pos, stagger_base, jitter):
+        """只有「同时启动的那一批」需要错开发车，排队中的任务会被空闲 worker 自然错开。
+
+        原实现是 pos * stagger_base：40 个一批时末尾任务要白等 39×0.4 ≈ 15.6 秒。
+        """
+        if pos == 0:
+            return 0.0
+        wait = random.random() * jitter
+        if pos < concurrency:
+            wait += pos * stagger_base
+        return wait
+
     def _process(indices, stagger_base, jitter, count_progress):
         nonlocal completed
-        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
             futures = [
-                executor.submit(_run_one, idx, asins[idx], (pos * stagger_base + random.random() * jitter) if pos > 0 else 0)
+                executor.submit(_run_one, idx, asins[idx], _stagger_for(pos, stagger_base, jitter))
                 for pos, idx in enumerate(indices)
             ]
             for fut in as_completed(futures):
@@ -1347,7 +1365,10 @@ def scrape_products(asins, marketplace, with_reviews=False, on_progress=None):
     if failed_indices:
         session = get_session(marketplace)
         session.profile = random.choice(BROWSER_PROFILES)
-        time.sleep(min(5 + len(failed_indices) * 1.0, 15))
+        # 原实现是 sleep(min(5 + 失败数, 15))，每次 scrape_products 调用都会执行一次，
+        # 前端每批只带几个 ASIN 时等于每批白等 6 秒起。失败项在 fetch_product_page
+        # 内部已经退避过 2/5/10 秒，这里只留一个短间隔。
+        time.sleep(2.0 + random.random())
 
         for start in range(0, len(failed_indices), batch_size):
             chunk = failed_indices[start:start + batch_size]

@@ -32,7 +32,10 @@ function mkInfo(code: string) {
   return MARKETPLACES.find(m => m.code === code) || { code, flag: '', name: code, domain: 'www.amazon.com' };
 }
 
-const BATCH_SIZE = 3;
+// 每次 POST 提交给后端的 ASIN 数。后端真正的速率闸门是令牌桶（默认 40 请求/分钟），
+// 与批大小无关；这里调大只是减少 HTTP 往返与「每次调用一次的失败重试等待」。
+// 原来的 3 会让 500 个 ASIN 变成 167 次串行 POST，批与批之间后端完全空闲。
+const BATCH_SIZE = 50;
 const PAGE_SIZE_OPTIONS = [50, 100, 150];
 
 // ============================================================

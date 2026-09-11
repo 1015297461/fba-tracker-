@@ -136,6 +136,8 @@ src/
     tools/
       KeywordRank.tsx           # 工具：关键词排名监控
       ProductScrape.tsx         # 工具：产品采集（含详情预览弹窗 + 图片 Lightbox + ASIN搜索过滤 + 列头排序 + 多选导出 + 每页50/100/150条分页跳转）
+                                #   顶部 BATCH_SIZE 决定每次 POST 带多少个 ASIN（现为 50）；
+                                #   后端速率闸门与批大小无关，改小它只会增加 HTTP 往返与后端空等
       ReviewFetch.tsx           # 工具：评论采集（多ASIN批量抓取，按评分/排序/是否验证购买过滤）
       PdfSplit.tsx              # 工具：批量 PDF 拆分（每文件独立配置拆分方式，拆分结果通过浏览器下载）
       AiAnalyze.tsx             # 工具：AI分析（无人值守 shell 出去跑 `Codex -p` 执行 Codex Skill；
@@ -285,10 +287,17 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 - `backend/db.py`（2063 行，SIF v2 的 8 张表读写集中在文件后半段，改前先 grep `SIF v2` 分区注释定位）
 - `backend/routes/sif_keywords.py`（1015 行，前半是分层编排 `execute_task()` + 调度器，后半是 `register()` 里的路由表）
 - `styles.css`（3030 行，按模块分区，新模块追加在文件末尾对应分区注释下；SIF v2 组件样式在文件最末）
-- `backend/product_fetcher.py`（1368 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
-  限流参数（均可用环境变量覆盖，当前默认值）：
-  `SCRAPER_CONCURRENCY=3`（并发 worker 数）、`SCRAPER_MIN_INTERVAL_MS=700`（请求最小间隔 ms）、
-  `SCRAPER_REFILL_MS=1500`（令牌桶补充间隔 ms）、`SCRAPER_BUCKET_CAPACITY=8`（令牌桶容量）
+- `backend/product_fetcher.py`（1389 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
+
+  **限流的两层概念（改参数前务必分清）**：
+  - **速率闸门**：`SCRAPER_REFILL_MS=1500`（令牌桶补充间隔 ms）、`SCRAPER_BUCKET_CAPACITY=8`（令牌桶容量）、
+    `SCRAPER_MIN_INTERVAL_MS=700`（请求最小间隔 ms）→ 稳态 **40 请求/分钟**。
+    **只有这三项会改变真实请求速率上限**，因此只有它们影响封禁风险。
+  - **填充能力**：`SCRAPER_CONCURRENCY=3`（并发 worker 数）、`SCRAPER_BATCH_SIZE=40`（每批提交多少个 ASIN）。
+    二者只决定「能否把闸门吃满」。批大小与并发数**已解耦**：批大而并发小 → worker 始终有活干；
+    批小则会反复重建线程池、批间空等，吞吐反而更低。
+  - `scrape_products` 内的 `stagger` 只对「同时启动的那一批」生效，排队中的任务由空闲 worker 自然错开。
+  - 失败重试轮前的等待是固定短值（约 2 秒）；失败项在 `fetch_product_page` 内部已退避过 2/5/10 秒。
 
 ## 暂时隐藏的功能（注释保留，可随时恢复）
 
