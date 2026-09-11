@@ -88,7 +88,8 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
     pdf.py                      # /api/pdf/*
     ai_analysis.py               # /api/ai/*
   rank_fetcher.py              # 关键词排名抓取器（正则解析，无 bs4 依赖）
-  product_fetcher.py           # 产品详情抓取器（bs4 解析 + 反爬：会话池/令牌桶/CAPTCHA/Dog-page检测）
+  product_fetcher.py           # 产品详情抓取器（bs4 解析 + 反爬：会话池/令牌桶/CAPTCHA/Dog-page检测/
+                              #   连续坏响应自适应降速；并发数与批大小已解耦，见文末参数说明）
   sif_fetcher.py               # SIF 抓取器 v2（HTTP JSON-RPC 直连 mcp.sif.com，零第三方依赖；封装关键词域/ASIN域/
                               #   决策域共 14 个工具 + 每日层/每周层编排 run_daily_layer()/run_weekly_layer()；
                               #   密钥读环境变量 SIF_MCP_KEY 或 data/sif-config.json，见"SIF 爆品关键词监控模块"一节）
@@ -136,6 +137,8 @@ src/
     tools/
       KeywordRank.tsx           # 工具：关键词排名监控
       ProductScrape.tsx         # 工具：产品采集（含详情预览弹窗 + 图片 Lightbox + ASIN搜索过滤 + 列头排序 + 多选导出 + 每页50/100/150条分页跳转）
+                                #   顶部 BATCH_SIZE 决定每次 POST 带多少个 ASIN（现为 50）；
+                                #   后端速率闸门与批大小无关，改小它只会增加 HTTP 往返和后端空等
       ReviewFetch.tsx           # 工具：评论采集（多ASIN批量抓取，按评分/排序/是否验证购买过滤）
       PdfSplit.tsx              # 工具：批量 PDF 拆分（每文件独立配置拆分方式，拆分结果通过浏览器下载）
       AiAnalyze.tsx             # 工具：AI分析（无人值守 shell 出去跑 `Codex -p` 执行 Codex Skill；
@@ -285,10 +288,21 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 - `backend/db.py`（2063 行，SIF v2 的 8 张表读写集中在文件后半段，改前先 grep `SIF v2` 分区注释定位）
 - `backend/routes/sif_keywords.py`（1015 行，前半是分层编排 `execute_task()` + 调度器，后半是 `register()` 里的路由表）
 - `styles.css`（3030 行，按模块分区，新模块追加在文件末尾对应分区注释下；SIF v2 组件样式在文件最末）
-- `backend/product_fetcher.py`（1368 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
-  限流参数（均可用环境变量覆盖，当前默认值）：
-  `SCRAPER_CONCURRENCY=3`（并发 worker 数）、`SCRAPER_MIN_INTERVAL_MS=700`（请求最小间隔 ms）、
-  `SCRAPER_REFILL_MS=1500`（令牌桶补充间隔 ms）、`SCRAPER_BUCKET_CAPACITY=8`（令牌桶容量）
+- `backend/product_fetcher.py`（1458 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
+
+  **限流的两层概念（改参数前务必分清）**：
+  - **速率闸门**：令牌桶 + 最小间隔，决定每分钟最多发几个请求
+    `SCRAPER_REFILL_MS=1500`（令牌桶补充间隔 ms）、`SCRAPER_BUCKET_CAPACITY=8`（令牌桶容量）、
+    `SCRAPER_MIN_INTERVAL_MS=700`（请求最小间隔 ms）→ 稳态 **40 请求/分钟**
+  - **填充能力**：`SCRAPER_CONCURRENCY=6`（并发 worker 数），上限 = 并发数 ÷ 单请求耗时。
+    **提并发不会突破令牌桶**；只有改上面三个 TOKEN_* / 间隔参数才会抬高真实速率上限。
+  - `SCRAPER_BATCH_SIZE=40`（每批提交多少个 ASIN，与并发数解耦）。
+    批太小会反复重建线程池、频繁触发失败重试轮等待；`stagger` 只对「同时启动的那一批」生效，
+    排队任务不会再叠加位置延迟。
+  - **自适应降速**：`SCRAPER_BAD_STREAK=8`（连续坏响应阈值）、`SCRAPER_COOLDOWN_SEC=30`（冷却秒数）。
+    连续坏响应达阈值即轮换指纹 + 清 cookie + 阻塞全部 worker 直到冷却结束。
+    阈值取 8 是因为实测 IP 被高频挑战时坏响应会成簇出现，阈值 5 会让任务长时间卡在冷却里。
+  - `SCRAPER_RETRY_PAUSE_SEC=2.0`（失败重试轮前的固定等待，原为 `max(5+失败数, 15)`）
 
 ## 暂时隐藏的功能（注释保留，可随时恢复）
 

@@ -142,10 +142,34 @@ BROWSER_PROFILES = [
 
 # ============================================================
 # 限流参数（无代理走本机住宅 IP，比关键词排名更保守，均可用环境变量覆盖）
+#
+# 两层概念必须分清，别混为一谈：
+#   令牌桶 / 最小间隔 → 真正的「速率闸门」，决定每分钟最多发几个请求
+#   并发数           → 只是「填充能力」，上限 = 并发数 ÷ 单请求耗时
+# 提并发不会突破令牌桶；只有改 TOKEN_* 才会抬高真实请求速率上限。
 # ============================================================
 TOKEN_BUCKET_CAPACITY = int(os.environ.get("SCRAPER_BUCKET_CAPACITY", "8"))
 TOKEN_REFILL_RATE_MS = int(os.environ.get("SCRAPER_REFILL_MS", "1500"))
 MIN_REQUEST_INTERVAL_MS = int(os.environ.get("SCRAPER_MIN_INTERVAL_MS", "700"))
+
+# 并发 worker 数：只影响填充能力，不抬高速率上限。
+# 单请求要 8~10s 时，3 个 worker 只能填到 ~20 req/min，吃不满令牌桶 40 req/min 的额度，
+# 网络一抖就掉到个位数；提到 6 是为了一直把令牌桶吃满，而不是为了发得更快。
+SCRAPER_CONCURRENCY = max(1, int(os.environ.get("SCRAPER_CONCURRENCY", "6")))
+# 每批提交多少个 ASIN：与并发数解耦。批太小会反复重建线程池、频繁触发失败重试轮等待，
+# 而且批内的 stagger 会按位置线性叠加，末位白等好几秒。
+SCRAPER_BATCH_SIZE = max(1, int(os.environ.get("SCRAPER_BATCH_SIZE", "40")))
+
+# 自适应降速：连续这么多次坏响应（非 200 / CAPTCHA / 网络错误）就进入冷却。
+# 没有这道闸门时，被限了也会全速重试，等于持续试探边界。
+# 阈值取 8 而不是 5：实测 IP 被高频挑战时，坏响应会成簇出现，阈值太低会把整个任务
+# 拖死在冷却里（实测 8 个 ASIN 触发 3 次冷却，180 秒占了总耗时的 76%）。
+SCRAPER_BAD_STREAK_LIMIT = max(1, int(os.environ.get("SCRAPER_BAD_STREAK", "8")))
+# 冷却时长取 30s：够让短时挑战过去，又不会让任务长时间停滞。
+SCRAPER_COOLDOWN_SEC = max(0, int(os.environ.get("SCRAPER_COOLDOWN_SEC", "30")))
+# 失败重试轮前的固定等待。原来是 sleep(min(5 + 失败数, 15))，对每批都执行一次，
+# 批小的时候等于每 3 个 ASIN 就白等 6 秒。
+SCRAPER_RETRY_PAUSE_SEC = float(os.environ.get("SCRAPER_RETRY_PAUSE_SEC", "2.0"))
 
 MAX_RETRIES = 3
 RETRY_DELAYS = [2.0, 5.0, 10.0]
@@ -161,7 +185,9 @@ class ProductNotFoundError(Exception):
 class SessionState:
     def __init__(self, marketplace):
         self.lock = threading.Lock()
+        self.marketplace = marketplace
         currency = MARKETPLACES.get(marketplace, {}).get("currency")
+        self.currency = currency
         self.cookies = {"i18n-prefs": currency} if currency else {}
         self.profile = random.choice(BROWSER_PROFILES)
         self.last_request_time = 0.0
@@ -169,6 +195,9 @@ class SessionState:
         self.initialized = False
         self.token_bucket = TOKEN_BUCKET_CAPACITY
         self.last_token_refill = time.monotonic()
+        # 自适应降速：连续坏响应计数 + 冷却截止时刻（time.monotonic 基准）
+        self.bad_streak = 0
+        self.cooldown_until = 0.0
 
     def merge_cookies(self, set_cookie_headers):
         if not set_cookie_headers:
@@ -212,6 +241,38 @@ class SessionState:
                     self.last_token_refill = now2 - (elapsed2 % refill_sec)
 
             self.token_bucket -= 1
+
+    def note_result(self, ok):
+        """记录一次请求的健康度。连续坏响应到阈值就冷却一段时间并轮换身份。
+
+        连续 SCRAPER_BAD_STREAK_LIMIT 次非 200 基本可以断定这个出口 IP 已经被盯上了，
+        此时继续按令牌桶全速重试只会加深标记，所以停下来换个指纹、清掉 cookie 再继续。
+        """
+        with self.lock:
+            if ok:
+                self.bad_streak = 0
+                return
+            self.bad_streak += 1
+            if self.bad_streak < SCRAPER_BAD_STREAK_LIMIT:
+                return
+            self.bad_streak = 0
+            self.cooldown_until = time.monotonic() + SCRAPER_COOLDOWN_SEC
+            self.profile = random.choice(BROWSER_PROFILES)
+            self.cookies = {"i18n-prefs": self.currency} if self.currency else {}
+            self.initialized = False
+            self.token_bucket = TOKEN_BUCKET_CAPACITY
+            self.last_token_refill = time.monotonic()
+        print(f"  [scrape] 连续 {SCRAPER_BAD_STREAK_LIMIT} 次坏响应，"
+              f"{self.marketplace} 冷却 {SCRAPER_COOLDOWN_SEC}s 并轮换会话指纹")
+
+    def wait_cooldown(self):
+        """冷却期内阻塞所有 worker，避免被限流时还在继续敲。"""
+        while True:
+            with self.lock:
+                remain = self.cooldown_until - time.monotonic()
+            if remain <= 0:
+                return
+            time.sleep(min(remain, 5.0))
 
 
 _sessions = {}
@@ -393,6 +454,7 @@ def fetch_product_page(asin, marketplace):
             session.profile = random.choice(BROWSER_PROFILES)
             time.sleep(RETRY_DELAYS[min(attempt - 1, len(RETRY_DELAYS) - 1)] + random.random() * 2)
 
+        session.wait_cooldown()
         session.acquire_rate_limit()
 
         referer = random.choice(referers)
@@ -401,6 +463,7 @@ def fetch_product_page(asin, marketplace):
         status, html_text, resp_headers, err = _http_get(product_url, headers, timeout=30)
 
         if err:
+            session.note_result(False)
             last_error = err
             continue
 
@@ -412,24 +475,29 @@ def fetch_product_page(asin, marketplace):
             session.cookies["i18n-prefs"] = mp["currency"]
 
         if status == 404:
+            # ASIN 不存在是正常业务结果，不是被限流，不计入坏响应
             raise ProductNotFoundError(f"产品不存在或ASIN无效 ({asin})，请检查ASIN是否正确")
 
         if status == 503 or is_dog_page(html_text):
+            session.note_result(False)
             last_error = "Amazon服务暂时不可用(503)，正在重试..."
             session.cookies = {}
             session.initialized = False
             continue
 
         if status != 200:
+            session.note_result(False)
             last_error = f"http_{status}"
             continue
 
         if is_captcha_page(html_text):
+            session.note_result(False)
             last_error = "检测到CAPTCHA验证页面"
             session.cookies = {}
             session.initialized = False
             continue
 
+        session.note_result(True)
         return html_text
 
     raise RuntimeError(last_error or f"Failed to fetch product page after {MAX_RETRIES + 1} attempts")
@@ -1301,8 +1369,14 @@ def scrape_product(asin, marketplace, with_reviews=False):
 
 
 def scrape_products(asins, marketplace, with_reviews=False, on_progress=None):
-    """批量抓取，返回与 asins 等长的结果列表；失败项会自动重试一轮。"""
-    batch_size = max(1, int(os.environ.get("SCRAPER_CONCURRENCY", "3")))
+    """批量抓取，返回与 asins 等长的结果列表；失败项会自动重试一轮。
+
+    batch_size（每批提交几个）与 concurrency（同时几个 worker）是两件事：
+    批大、并发小 → worker 一直有活干；批小 → 反复重建线程池、批间空等，吞吐反而更低。
+    真正的速率上限由令牌桶决定，这里调多大都不会突破。
+    """
+    batch_size = SCRAPER_BATCH_SIZE
+    concurrency = SCRAPER_CONCURRENCY
     asins = [a.strip().upper() for a in asins if a and a.strip()]
     results = [None] * len(asins)
     completed = 0
@@ -1313,11 +1387,24 @@ def scrape_products(asins, marketplace, with_reviews=False, on_progress=None):
             time.sleep(stagger_sec)
         return idx, scrape_product(asin, marketplace, with_reviews)
 
+    def _stagger_for(pos, stagger_base, jitter):
+        """只有「同时启动的那一批」需要错开发车，排队中的任务会被空闲 worker 自然错开。
+
+        原实现是 pos * stagger_base：40 个一批时末尾任务要白等 39×0.4 ≈ 15.6 秒。
+        仅按并发数封顶也不对——那样每个排队任务都要再等满 2 秒。
+        """
+        if pos == 0:
+            return 0.0
+        wait = random.random() * jitter
+        if pos < concurrency:
+            wait += pos * stagger_base
+        return wait
+
     def _process(indices, stagger_base, jitter, count_progress):
         nonlocal completed
-        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
             futures = [
-                executor.submit(_run_one, idx, asins[idx], (pos * stagger_base + random.random() * jitter) if pos > 0 else 0)
+                executor.submit(_run_one, idx, asins[idx], _stagger_for(pos, stagger_base, jitter))
                 for pos, idx in enumerate(indices)
             ]
             for fut in as_completed(futures):
@@ -1347,7 +1434,10 @@ def scrape_products(asins, marketplace, with_reviews=False, on_progress=None):
     if failed_indices:
         session = get_session(marketplace)
         session.profile = random.choice(BROWSER_PROFILES)
-        time.sleep(min(5 + len(failed_indices) * 1.0, 15))
+        # 原实现是 sleep(min(5 + 失败数, 15))，而前端每批只带 3 个 ASIN 时，这一句几乎每批
+        # 都会执行，等于每 3 个 ASIN 就白等 6 秒起。失败项在 fetch_product_page 内部已经
+        # 退避过 2/5/10 秒，这里只留一个短间隔即可。
+        time.sleep(SCRAPER_RETRY_PAUSE_SEC + random.random())
 
         for start in range(0, len(failed_indices), batch_size):
             chunk = failed_indices[start:start + batch_size]
