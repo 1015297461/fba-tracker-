@@ -80,7 +80,9 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
     auth_routes.py             # /api/login /api/logout /api/me
     products.py                 # /api/products (GET/PUT) + /api/trash/*（回收站）
     rank.py                     # /api/rank/*，含 run_rank_task()/start_scheduler()
-    scrape.py                   # /api/scrape/*，含 run_scrape_task()
+    scrape.py                   # /api/scrape/*，产品采集。执行权在服务端：start_scrape_task() 起后台
+                              #   线程并立即返回 taskId，前端只轮询 /progress；支持断点续跑与取消，
+                              #   同一时间只允许一个采集任务；recover_stale_tasks() 处理服务重启
     review.py                   # /api/review/*，含 run_review_task()
     sif_keywords.py              # /api/sif/*，SIF 爆品关键词监控：任务 CRUD + 三档频率调度器（daily/every_n/weekly）
                               #   + 分层抓取编排 execute_task() + 看板/趋势/信号/入池/设置/点查路由
@@ -101,7 +103,7 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
 requirements.txt              # Python 依赖声明（beautifulsoup4/pypdf/openpyxl/Pillow）
 
 index.html                   # 唯一 HTML 入口，引用 styles.css + compiled/bundle.js
-styles.css                   # 全局样式（3032 行，按模块分区注释，如 PRODUCT SCRAPE / PDF SPLIT 区块）
+styles.css                   # 全局样式（3031 行，按模块分区注释，如 PRODUCT SCRAPE / PDF SPLIT 区块）
 
 src/
   main.tsx                   # ReactDOM.createRoot 挂载 <App/>
@@ -188,7 +190,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | `trash` | 回收站：产品被删除时的完整快照（`product_json`），`write()` 检测到某 id 从新列表中消失即挪进这张表而非真删 |
 | `audit_log` | 产品数据变更审计 |
 | `keyword_tasks` / `rank_snapshots` | 关键词排名：任务配置 + 历史快照 |
-| `scrape_tasks` / `scrape_products` | 产品采集：任务记录 + 落库的商品详情 |
+| `scrape_tasks` / `scrape_products` | 产品采集：任务记录 + 落库的商品详情。`scrape_tasks.asins` 存完整 ASIN 列表（断点续跑的唯一依据），`status` 是服务端维护的六态；`scrape_products` 有 `UNIQUE(task_id, asin)`，同一 ASIN 只保留最新一次结果 |
 | `review_tasks` / `review_results` | 评论采集：任务记录 + 评论池（按 asin+review_id 去重） |
 | `export_jobs` | 后台导出任务（`ExportWorker` 消费，最多2并发） |
 | `ai_analysis_tasks` | AI分析任务（`AiAnalysisWorker` 消费，强制串行1并发；`files` 字段是产出文件名列表 JSON；`status` 除 pending/running/done/failed 外还有 `cancelled`；`username` 记录发起人，登录态按用户名分区要用） |
@@ -206,7 +208,10 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | GET | `/api/me` | 当前登录用户 |
 | POST | `/api/login` / `/api/logout` | Token 登录/登出（`fba-users.json`） |
 | GET/POST/DELETE | `/api/rank/*` | 关键词排名：任务列表/历史/创建/删除/单关键词 |
-| GET/POST/PUT/DELETE | `/api/scrape/*` | 产品采集：任务列表/结果/运行/重命名/删除/重置会话 |
+| POST | `/api/scrape/start` | 提交采集（body `{asins,marketplace,withReviews,taskId?}`），**立即返回 `{taskId}`**，抓取在服务端后台线程执行；已有任务在跑时返回 409 |
+| GET | `/api/scrape/progress` | 采集进度 `{task, live}`，`task.status` ∈ running·paused·completed·partial·cancelled·error（前端 2 秒轮询） |
+| POST | `/api/scrape/cancel` | 取消运行中的采集任务（在下一个分块边界生效） |
+| GET | `/api/scrape/tasks` | 任务列表 + `activeTaskId`（当前正在执行的任务）｜`GET /api/scrape/products?taskId=` 取某任务的结果｜`PUT` 重命名｜`DELETE ?id=` 删除任务及结果（运行中返回 409）｜`DELETE /api/scrape/reset-session` 重置站点会话 |
 | POST | `/api/exports/create` | 创建后台导出任务，body `{type,label,fileName,params}`，立即返回 `{jobId}` |
 | GET | `/api/exports/list` | 列出所有导出记录（最近 100 条） |
 | DELETE | `/api/exports?id=` | 删除导出记录及临时文件 |
@@ -285,9 +290,9 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 - `src/features/detail/index.tsx`（1577 行，11 个组件；`TabProd` 前有 `getEffectiveBalancePayments(b)` 辅助函数；跨批次汇总通过 `titleExtra` 注入 StageCard 标题行；`TabProd` 的批次列表被 DndContext+SortableContext 包裹以支持拖拽调序）
 - `src/context/ProductContext.tsx`（943 行，~19 个 update 函数 + reorderProducts/reorderRecords 两个重排函数）
 - `src/features/tools/SifKeyword.tsx`（1751 行，SIF 爆品监控 v2：六页签 + 任务表单 + 关键词/ASIN 详情弹窗 + 点查弹窗 + 设置面板全在一个文件里）
-- `backend/db.py`（2063 行，SIF v2 的 8 张表读写集中在文件后半段，改前先 grep `SIF v2` 分区注释定位）
+- `backend/db.py`（2227 行，SIF v2 的 8 张表读写集中在文件后半段，改前先 grep `SIF v2` 分区注释定位）
 - `backend/routes/sif_keywords.py`（1015 行，前半是分层编排 `execute_task()` + 调度器，后半是 `register()` 里的路由表）
-- `styles.css`（3030 行，按模块分区，新模块追加在文件末尾对应分区注释下；SIF v2 组件样式在文件最末）
+- `styles.css`（3031 行，按模块分区，新模块追加在文件末尾对应分区注释下；SIF v2 组件样式在文件最末）
 - `backend/product_fetcher.py`（1458 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
 
   **限流的两层概念（改参数前务必分清）**：
