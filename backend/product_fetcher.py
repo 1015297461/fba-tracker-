@@ -164,17 +164,9 @@ SCRAPER_BATCH_SIZE = max(1, int(os.environ.get("SCRAPER_BATCH_SIZE", "40")))
 # 没有这道闸门时，被限了也会全速重试，等于持续试探边界。
 # 阈值取 8 而不是 5：实测 IP 被高频挑战时，坏响应会成簇出现，阈值太低会把整个任务
 # 拖死在冷却里（实测 8 个 ASIN 触发 3 次冷却，180 秒占了总耗时的 76%）。
+# 冷却只管「停一会儿再继续」，**不会中止任务**——被限流时表现为变慢，而不是失败。
 SCRAPER_BAD_STREAK_LIMIT = max(1, int(os.environ.get("SCRAPER_BAD_STREAK", "8")))
-# 冷却时长走指数退避：30s → 60s → 120s → 240s，上限 300s。
-# 固定 30s 只适合「偶发挑战」；IP 被持续限流时，固定短冷却会退化成
-# 「每 8 个请求停 30 秒」的慢性空转（50 个 ASIN 最坏能累积十几分钟纯等待）。
 SCRAPER_COOLDOWN_SEC = max(0, int(os.environ.get("SCRAPER_COOLDOWN_SEC", "30")))
-SCRAPER_COOLDOWN_MAX_SEC = max(SCRAPER_COOLDOWN_SEC,
-                               int(os.environ.get("SCRAPER_COOLDOWN_MAX_SEC", "300")))
-# 连续成功这么多次就认为 IP 已恢复，把冷却等级降回第一档
-SCRAPER_OK_STREAK_RESET = max(1, int(os.environ.get("SCRAPER_OK_STREAK_RESET", "5")))
-# 连续触发这么多次冷却后仍全是坏响应 → 判定出口 IP 已被持续限流，让上层中止任务
-SCRAPER_MAX_COOLDOWNS = max(1, int(os.environ.get("SCRAPER_MAX_COOLDOWNS", "4")))
 # 失败重试轮前的固定等待。原来是 sleep(min(5 + 失败数, 15))，对每批都执行一次，
 # 批小的时候等于每 3 个 ASIN 就白等 6 秒。
 SCRAPER_RETRY_PAUSE_SEC = float(os.environ.get("SCRAPER_RETRY_PAUSE_SEC", "2.0"))
@@ -185,10 +177,6 @@ RETRY_DELAYS = [2.0, 5.0, 10.0]
 
 class ProductNotFoundError(Exception):
     pass
-
-
-class ScraperBlockedError(Exception):
-    """出口 IP 已被持续限流，继续抓只会空转，需要停下来歇一段时间。"""
 
 
 # ============================================================
@@ -207,12 +195,9 @@ class SessionState:
         self.initialized = False
         self.token_bucket = TOKEN_BUCKET_CAPACITY
         self.last_token_refill = time.monotonic()
-        # 自适应降速：坏/好响应连击、冷却截止时刻与冷却等级（time.monotonic 基准）
+        # 自适应降速：连续坏响应计数 + 冷却截止时刻（time.monotonic 基准）
         self.bad_streak = 0
-        self.ok_streak = 0
-        self.cooldown_streak = 0      # 连续触发冷却的次数，用于指数退避
         self.cooldown_until = 0.0
-        self.blocked = False          # 判定出口 IP 已被持续限流
 
     def merge_cookies(self, set_cookie_headers):
         if not set_cookie_headers:
@@ -258,45 +243,28 @@ class SessionState:
             self.token_bucket -= 1
 
     def note_result(self, ok):
-        """记录一次请求的健康度。连续坏响应到阈值就冷却并轮换身份，冷却时长逐级翻倍。
+        """记录一次请求的健康度。连续坏响应到阈值就冷却一段时间并轮换身份。
 
         连续 SCRAPER_BAD_STREAK_LIMIT 次非 200 基本可以断定出口 IP 已经被盯上，
-        此时继续按令牌桶全速重试只会加深标记，所以停下来换个指纹、清掉 cookie。
-        冷却走指数退避，是因为固定时长在「持续被限流」时会退化成慢性空转；
-        连续多轮冷却后依旧全是坏响应，就置 blocked，让上层直接中止任务。
+        此时继续按令牌桶全速重试只会加深标记，所以停下来换个指纹、清掉 cookie 再继续。
+        这里只负责「歇一会儿」，不会中止任务——被限流时的表现是变慢，不是失败。
         """
         with self.lock:
             if ok:
                 self.bad_streak = 0
-                self.ok_streak += 1
-                if self.ok_streak >= SCRAPER_OK_STREAK_RESET and self.cooldown_streak:
-                    self.cooldown_streak = 0        # IP 已恢复，撤掉退避等级
                 return
-
-            self.ok_streak = 0
             self.bad_streak += 1
             if self.bad_streak < SCRAPER_BAD_STREAK_LIMIT:
                 return
-
             self.bad_streak = 0
-            self.cooldown_streak += 1
-            wait = min(SCRAPER_COOLDOWN_SEC * (2 ** (self.cooldown_streak - 1)),
-                       SCRAPER_COOLDOWN_MAX_SEC)
-            self.cooldown_until = time.monotonic() + wait
+            self.cooldown_until = time.monotonic() + SCRAPER_COOLDOWN_SEC
             self.profile = random.choice(BROWSER_PROFILES)
             self.cookies = {"i18n-prefs": self.currency} if self.currency else {}
             self.initialized = False
             self.token_bucket = TOKEN_BUCKET_CAPACITY
             self.last_token_refill = time.monotonic()
-            just_blocked = self.cooldown_streak >= SCRAPER_MAX_COOLDOWNS
-            if just_blocked:
-                self.blocked = True
-
-        print(f"  [scrape] 连续 {SCRAPER_BAD_STREAK_LIMIT} 次坏响应，{self.marketplace} "
-              f"冷却 {wait}s（第 {self.cooldown_streak} 档）并轮换会话指纹")
-        if just_blocked:
-            print(f"  [scrape] {self.marketplace} 已连续冷却 {SCRAPER_MAX_COOLDOWNS} 次仍被挑战，"
-                  f"判定出口 IP 被持续限流，建议停止采集、稍后再试")
+        print(f"  [scrape] 连续 {SCRAPER_BAD_STREAK_LIMIT} 次坏响应，"
+              f"{self.marketplace} 冷却 {SCRAPER_COOLDOWN_SEC}s 并轮换会话指纹")
 
     def wait_cooldown(self):
         """冷却期内阻塞所有 worker，避免被限流时还在继续敲。"""
@@ -467,9 +435,6 @@ def fetch_product_page(asin, marketplace):
         raise ValueError(f"Unknown marketplace: {marketplace}")
 
     session = get_session(marketplace)
-    if session.blocked:
-        raise ScraperBlockedError(
-            f"{marketplace} 出口 IP 已被亚马逊持续限流，请休息一段时间后再试")
     warm_up_session(marketplace)
 
     if marketplace == "US":
@@ -1371,10 +1336,6 @@ def scrape_product(asin, marketplace, with_reviews=False):
         html_text = fetch_product_page(asin, marketplace)
     except ProductNotFoundError as e:
         return _empty_product(asin, marketplace, str(e))
-    except ScraperBlockedError:
-        # 出口 IP 被持续限流：不能降级成「这一个 ASIN 失败」，
-        # 否则会继续把剩下几百个 ASIN 挨个空跑一遍，必须让上层中止整个任务
-        raise
     except Exception as e:
         return _empty_product(asin, marketplace, str(e) or "抓取失败")
 
@@ -1457,7 +1418,7 @@ def scrape_products(asins, marketplace, with_reviews=False, on_progress=None):
                         if on_progress:
                             on_progress(completed, len(asins), product)
         except BaseException:
-            # 回调要求中断（用户取消）或 IP 被判定为持续限流：不要再等剩下没跑完的 ASIN，
+            # 回调要求中断（用户取消）：不要再等剩下没跑完的 ASIN，
             # 丢弃队列里尚未开始的任务，把控制权尽快交回上层。
             # 已经在跑的那几个 worker 没法打断，它们跑完后结果会被丢弃。
             executor.shutdown(wait=False, cancel_futures=True)

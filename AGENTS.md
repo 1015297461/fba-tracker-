@@ -82,9 +82,8 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
     rank.py                     # /api/rank/*，含 run_rank_task()/start_scheduler()
     scrape.py                   # /api/scrape/*，产品采集。执行权在服务端：start_scrape_task() 起后台
                               #   线程并立即返回 taskId，前端只轮询 /progress；结果经 on_progress
-                              #   **逐条落库**（进度不会长时间停在 0/总数），取消也在回调里即时生效；
-                              #   支持断点续跑；同一时间只允许一个采集任务；限流止损见 ScraperBlockedError；
-                              #   recover_stale_tasks() 处理服务重启
+                              #   逐条落库（进度不会长时间停在 0/总数）；支持断点续跑；
+                              #   同一时间只允许一个采集任务；recover_stale_tasks() 处理服务重启
     review.py                   # /api/review/*，含 run_review_task()
     sif_keywords.py              # /api/sif/*，SIF 爆品关键词监控：任务 CRUD + 三档频率调度器（daily/every_n/weekly）
                               #   + 分层抓取编排 execute_task() + 看板/趋势/信号/入池/设置/点查路由
@@ -306,15 +305,10 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
   - `SCRAPER_BATCH_SIZE=40`（每批提交多少个 ASIN，与并发数解耦）。
     批太小会反复重建线程池、频繁触发失败重试轮等待；`stagger` 只对「同时启动的那一批」生效，
     排队任务不会再叠加位置延迟。
-  - **自适应降速与止损**：`SCRAPER_BAD_STREAK=8`（连续坏响应阈值）、`SCRAPER_COOLDOWN_SEC=30`
-    （首档冷却秒数）、`SCRAPER_COOLDOWN_MAX_SEC=300`（冷却上限）、
-    `SCRAPER_OK_STREAK_RESET=5`（连续成功多少次撤销退避等级）、
-    `SCRAPER_MAX_COOLDOWNS=4`（连续冷却多少档判定 IP 被限流）。
+  - **自适应降速**：`SCRAPER_BAD_STREAK=8`（连续坏响应阈值）、`SCRAPER_COOLDOWN_SEC=30`（冷却秒数）。
     达阈值即轮换指纹 + 清 cookie + 阻塞全部 worker 直到冷却结束。
-    **冷却走指数退避**（30→60→120→240→300s）：固定时长在「持续被限流」时会退化成
-    「每 8 个请求停 30 秒」的慢性空转。连续 `SCRAPER_MAX_COOLDOWNS` 档后仍全是坏响应，
-    置 `SessionState.blocked` → `fetch_product_page` 抛 `ScraperBlockedError` →
-    `routes/scrape.py` 中止任务并标记 error，不再挨个空跑剩余 ASIN。
+    **冷却只负责「歇一会儿再继续」，不会中止任务**——被限流时的表现是变慢，而不是失败。
+    阈值取 8 是因为实测 IP 被高频挑战时坏响应会成簇出现，阈值 5 会让任务长时间卡在冷却里。
   - `SCRAPER_RETRY_PAUSE_SEC=2.0`（失败重试轮前的固定等待，原为 `max(5+失败数, 15)`）
 
 ## 暂时隐藏的功能（注释保留，可随时恢复）

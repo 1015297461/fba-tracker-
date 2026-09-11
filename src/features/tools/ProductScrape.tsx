@@ -442,14 +442,6 @@ async function apiGetProgress(taskId: string): Promise<ScrapeTask> {
   if (!r.ok) throw new Error('读取采集进度失败');
   return (await r.json()).task;
 }
-async function apiCancelScrape(taskId: string): Promise<boolean> {
-  const r = await fetch('/api/scrape/cancel', {
-    method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ taskId }),
-  });
-  if (!r.ok) return false;
-  return !!(await r.json()).cancelled;
-}
 async function apiDeleteTask(id: string): Promise<void> {
   const r = await fetch('/api/scrape/tasks?id=' + encodeURIComponent(id), { method: 'DELETE', headers: authHeaders() });
   if (!r.ok) {
@@ -474,18 +466,6 @@ async function apiResetSession(marketplace: string): Promise<void> {
 }
 
 // ---- Utilities ----
-// 任务卡上的状态文案（completed 是常态，不显示）
-function taskStatusText(t: ScrapeTask): string {
-  switch (t.status) {
-    case 'running':   return `采集中 ${t.success + t.failed}/${t.total}`;
-    case 'paused':    return '已暂停（服务重启）';
-    case 'partial':   return '有失败项';
-    case 'cancelled': return '已取消';
-    case 'error':     return '出错中断';
-    default:          return '';
-  }
-}
-
 function fmtDateTime(iso: string): string {
   const m = iso.match(/\d{4}-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
   return m ? `${m[1]}-${m[2]} ${m[3]}:${m[4]}` : iso;
@@ -711,12 +691,6 @@ export function ProductScrape() {
     } catch (e: any) { setErr(e.message || '继续采集失败'); }
   }
 
-  async function handleCancelScrape() {
-    if (!activeTaskId) return;
-    try { await apiCancelScrape(activeTaskId); }
-    catch (e: any) { setErr(e.message || '取消失败'); }
-  }
-
   function clearResults() {
     setProducts([]); setAsinInput(''); setActiveTaskId(null); setErr('');
     setPage(1); setSearchQuery(''); setSelectedAsins(new Set()); setSortKey(null);
@@ -864,13 +838,10 @@ export function ProductScrape() {
         {(running) && progress.total > 0 && (
           <div className="ps-progress">
             <div className="ps-progress-row">
-              <span>服务端采集中，可安全刷新页面</span>
+              <span>采集中</span>
               <span>{progress.completed}/{progress.total}（{progressPct}%）</span>
             </div>
             <div className="ps-progress-bar"><div className="ps-progress-fill" style={{ width: progressPct + '%' }} /></div>
-            <div style={{ marginTop: 6 }}>
-              <button className="btn btn-sm" onClick={handleCancelScrape}>取消采集</button>
-            </div>
           </div>
         )}
 
@@ -903,11 +874,6 @@ export function ProductScrape() {
                   <span>共 {t.total}</span>
                   <span className="ps-ok">成功 {t.success}</span>
                   {t.failed > 0 && <span className="ps-fail">失败 {t.failed}</span>}
-                  {taskStatusText(t) && (
-                    <span className={t.status === 'running' ? 'ps-ok' : 'ps-warn'}>
-                      {taskStatusText(t)}
-                    </span>
-                  )}
                   {t.withReviews && <span>含评论</span>}
                 </div>
               </button>

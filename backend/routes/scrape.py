@@ -39,7 +39,7 @@ def _cancel_event(task_id):
 
 
 def _run_scrape(state, task_id, marketplace, with_reviews, cancel):
-    """后台线程：按断点续跑，**逐条落库**，支持即时取消与限流止损。"""
+    """后台线程：按断点续跑，逐条落库，支持即时取消。"""
     try:
         state.set_scrape_task_status(task_id, "running", started_at=_now_iso())
         task = state.get_scrape_task(task_id) or {}
@@ -74,7 +74,7 @@ def _run_scrape(state, task_id, marketplace, with_reviews, cancel):
             try:
                 results = product_fetcher.scrape_products(
                     chunk, marketplace, with_reviews, on_progress=on_progress)
-            except (_Cancelled, product_fetcher.ScraperBlockedError):
+            except _Cancelled:
                 raise
             except Exception as e:
                 # 单块异常不该让整个任务停摆：标记这一块失败后继续跑下一块
@@ -98,10 +98,6 @@ def _run_scrape(state, task_id, marketplace, with_reviews, cancel):
         state.refresh_scrape_task_counts(task_id)
         state.set_scrape_task_status(task_id, "cancelled", error="已取消", ended_at=_now_iso())
         print(f"  [scrape] 任务 {task_id} 已取消（已采集的部分保留，可点「继续」续跑）")
-    except product_fetcher.ScraperBlockedError as e:
-        state.refresh_scrape_task_counts(task_id)
-        state.set_scrape_task_status(task_id, "error", error=str(e), ended_at=_now_iso())
-        print(f"  [scrape] 任务 {task_id} 已中止：{e}")
     except Exception as e:
         print(f"  [scrape] 任务 {task_id} 异常: {e}")
         try:
