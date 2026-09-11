@@ -912,7 +912,7 @@ export function ProductScrape() {
                 </div>
               </button>
               <div className="ps-task-actions">
-                {(t.status === 'paused' || t.status === 'cancelled') && (
+                {(t.status === 'paused' || t.status === 'cancelled' || t.status === 'error') && (
                   <button className="btn btn-sm" onClick={() => resumeTask(t)} disabled={running}>继续</button>
                 )}
                 <button className="btn btn-sm" onClick={() => startRename(t)} title="重命名">✎</button>

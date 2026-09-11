@@ -15,9 +15,17 @@ from ..utils import _extract_token, _now_iso
 _running = {}
 _running_lock = threading.Lock()
 
-# 外层分块大小：每跑完这么多 ASIN 就写一次库、检查一次取消信号。
-# product_fetcher 内部另有自己的并发与分批，这里只负责「定期落库 + 可中断」。
+# 外层分块大小。注意：结果**不再**按块落库（那样整块没跑完时进度会一直停在 0/500），
+# 而是交给 on_progress 逐条写库；块只用来兜底收尾（把失败重试轮的结果补写一次）。
 CHUNK_SIZE = 50
+
+# 每落库这么多条才重算一次 success/failed 计数：重算是全表 COUNT，
+# 逐条都算的话 500 个 ASIN 就是 500 次统计，没必要。
+COUNT_REFRESH_EVERY = 5
+
+
+class _Cancelled(Exception):
+    """内部信号：用户取消时将抓取回调就地打断，不必等整块跑完。"""
 
 
 def _active_task_id():
@@ -31,7 +39,7 @@ def _cancel_event(task_id):
 
 
 def _run_scrape(state, task_id, marketplace, with_reviews, cancel):
-    """后台线程：按断点续跑，分块抓取并写库。"""
+    """后台线程：按断点续跑，**逐条落库**，支持即时取消与限流止损。"""
     try:
         state.set_scrape_task_status(task_id, "running", started_at=_now_iso())
         task = state.get_scrape_task(task_id) or {}
@@ -42,20 +50,38 @@ def _run_scrape(state, task_id, marketplace, with_reviews, cancel):
         print(f"  [scrape] 任务 {task_id} 开始：待采集 {len(pending)} 个"
               f"（总 {len(asins)}，已成功 {len(done)}）")
 
+        since_refresh = 0
+
+        def on_progress(_completed, _total, product):
+            """每抓完一个 ASIN 就落库，进度条才不会长时间停在 0/500。
+
+            取消信号也在这里检查——挂在抓取回调上，点了取消最多再等
+            当前同时在飞的那几个 ASIN，而不是等整块 50 个跑完。
+            """
+            nonlocal since_refresh
+            if cancel.is_set():
+                raise _Cancelled()
+            state.save_scrape_products(task_id, [product])
+            since_refresh += 1
+            if since_refresh >= COUNT_REFRESH_EVERY:
+                since_refresh = 0
+                state.refresh_scrape_task_counts(task_id)
+
         for start in range(0, len(pending), CHUNK_SIZE):
             if cancel.is_set():
-                state.set_scrape_task_status(task_id, "cancelled",
-                                             error="已取消", ended_at=_now_iso())
-                print(f"  [scrape] 任务 {task_id} 已取消")
-                return
+                raise _Cancelled()
             chunk = pending[start:start + CHUNK_SIZE]
             try:
-                results = product_fetcher.scrape_products(chunk, marketplace, with_reviews)
+                results = product_fetcher.scrape_products(
+                    chunk, marketplace, with_reviews, on_progress=on_progress)
+            except (_Cancelled, product_fetcher.ScraperBlockedError):
+                raise
             except Exception as e:
                 # 单块异常不该让整个任务停摆：标记这一块失败后继续跑下一块
                 print(f"  [scrape] 任务 {task_id} 第 {start // CHUNK_SIZE + 1} 块异常: {e}")
                 results = [{**product_fetcher._empty_product(
                     a, marketplace, f"fetch_exc:{type(e).__name__}")} for a in chunk]
+            # 兜底再写一次：失败重试轮的结果不走 on_progress，靠这里落库（UPSERT 幂等）
             state.save_scrape_products(task_id, results)
             state.refresh_scrape_task_counts(task_id)
 
@@ -67,6 +93,15 @@ def _run_scrape(state, task_id, marketplace, with_reviews, cancel):
             error=f"{failed} 个 ASIN 采集失败，可点「重试失败项」" if failed else None,
             ended_at=_now_iso())
         print(f"  [scrape] 任务 {task_id} 结束：成功 {t.get('success')}，失败 {failed}")
+
+    except _Cancelled:
+        state.refresh_scrape_task_counts(task_id)
+        state.set_scrape_task_status(task_id, "cancelled", error="已取消", ended_at=_now_iso())
+        print(f"  [scrape] 任务 {task_id} 已取消（已采集的部分保留，可点「继续」续跑）")
+    except product_fetcher.ScraperBlockedError as e:
+        state.refresh_scrape_task_counts(task_id)
+        state.set_scrape_task_status(task_id, "error", error=str(e), ended_at=_now_iso())
+        print(f"  [scrape] 任务 {task_id} 已中止：{e}")
     except Exception as e:
         print(f"  [scrape] 任务 {task_id} 异常: {e}")
         try:
