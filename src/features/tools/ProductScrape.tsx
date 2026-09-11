@@ -32,10 +32,8 @@ function mkInfo(code: string) {
   return MARKETPLACES.find(m => m.code === code) || { code, flag: '', name: code, domain: 'www.amazon.com' };
 }
 
-// 每次 POST 提交给后端的 ASIN 数。后端真正的速率闸门是令牌桶（默认 40 请求/分钟），
-// 与批大小无关；这里调大只是减少 HTTP 往返与「每次调用一次的失败重试等待」。
-// 原来的 3 会让 500 个 ASIN 变成 167 次串行 POST，批与批之间后端完全空闲。
-const BATCH_SIZE = 50;
+// 前端不再自己分批：采集由服务端后台执行器驱动，一次提交全部 ASIN，
+// 分批与并发由 product_fetcher 的 SCRAPER_BATCH_SIZE / SCRAPER_CONCURRENCY 决定。
 const PAGE_SIZE_OPTIONS = [50, 100, 150];
 
 // ============================================================
@@ -408,9 +406,12 @@ interface ScrapedProduct {
   bestSellerRank: BestSellerRank; customerReviews: CustomerReviews;
   status: string; errorMessage: string | null; scrapedAt?: string;
 }
+// status 取值（由服务端后台执行器维护）：
+//   running / paused / completed / partial / cancelled / error
 interface ScrapeTask {
   id: string; marketplace: string; name: string | null; total: number; success: number; failed: number;
   withReviews: boolean; status: string; createdAt: string;
+  asins: string[]; startedAt: string | null; endedAt: string | null; error: string | null;
 }
 
 // ---- API ----
@@ -424,20 +425,55 @@ async function apiGetProducts(taskId: string): Promise<ScrapedProduct[]> {
   if (!r.ok) throw new Error('加载采集结果失败');
   return (await r.json()).products || [];
 }
-async function apiRunScrape(asins: string[], marketplace: string, withReviews: boolean, taskId?: string, total?: number): Promise<{ taskId: string; products: ScrapedProduct[] }> {
-  const r = await fetch('/api/scrape/run', {
+// 提交即返回 taskId，真正的抓取在服务端后台线程里跑——所以刷新页面不会中断任务
+async function apiStartScrape(asins: string[], marketplace: string, withReviews: boolean, taskId?: string): Promise<string> {
+  const r = await fetch('/api/scrape/start', {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ asins, marketplace, withReviews, ...(taskId ? { taskId } : {}), ...(total != null ? { total } : {}) }),
+    body: JSON.stringify({ asins, marketplace, withReviews, ...(taskId ? { taskId } : {}) }),
   });
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
-    throw new Error(e.error || '采集失败');
+    throw new Error(e.error || '提交采集失败');
   }
-  const data = await r.json();
-  return { taskId: data.taskId, products: (data.results || []).map(normalizeRunResult) };
+  return (await r.json()).taskId;
+}
+async function apiGetProgress(taskId: string): Promise<{ task: ScrapeTask; stopping: boolean }> {
+  const r = await fetch('/api/scrape/progress?taskId=' + encodeURIComponent(taskId), { headers: authHeaders() });
+  if (!r.ok) throw new Error('读取采集进度失败');
+  const d = await r.json();
+  // stopping：停止信号已发出、线程还没退出。用来把按钮显示成「正在暂停…」，
+  // 避免用户以为没点上而反复点。
+  return { task: d.task, stopping: !!d.stopping };
+}
+// 暂停与取消都只是给服务端线程一个停止信号，线程在检查点退出，已抓到的结果一条不丢。
+// 暂停停在断点、可随时「继续」；取消是终止本次执行，结果同样保留、也能再「继续」。
+async function apiStopScrape(action: 'pause' | 'cancel', taskId: string): Promise<void> {
+  const r = await fetch(`/api/scrape/${action}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ taskId }),
+  });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || (action === 'pause' ? '暂停失败' : '取消失败'));
+  }
+}
+// 继续：服务端按 task_id 起重线程，待跑 = 全部 ASIN − 已成功，自动跳过跑过的
+async function apiResumeScrape(taskId: string): Promise<void> {
+  const r = await fetch('/api/scrape/resume', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ taskId }),
+  });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || '继续采集失败');
+  }
 }
 async function apiDeleteTask(id: string): Promise<void> {
-  await fetch('/api/scrape/tasks?id=' + encodeURIComponent(id), { method: 'DELETE', headers: authHeaders() });
+  const r = await fetch('/api/scrape/tasks?id=' + encodeURIComponent(id), { method: 'DELETE', headers: authHeaders() });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || '删除失败');
+  }
 }
 async function apiUpdateTaskName(id: string, name: string): Promise<void> {
   const r = await fetch('/api/scrape/tasks', {
@@ -455,29 +491,6 @@ async function apiResetSession(marketplace: string): Promise<void> {
   });
 }
 
-// 把 /api/scrape/run 直接返回的 snake_case 结果，转换为与历史任务一致的 camelCase 结构
-function normalizeRunResult(r: any): ScrapedProduct {
-  return {
-    asin: r.asin, marketplace: r.marketplace,
-    title: r.title, brand: r.brand, price: r.price,
-    rating: r.rating, reviewCount: r.review_count, availability: r.availability,
-    bulletPoints: r.bullet_points || [], description: r.description,
-    mainImage: r.main_image, images: r.images || [], aplusImages: r.aplus_images || [],
-    specifications: r.specifications || {}, productDetails: r.product_details || {},
-    categories: r.categories, seller: r.seller,
-    bestSellerRank: {
-      mainCategory: r.bsr_main_category, mainRank: r.bsr_main_rank,
-      subCategory: r.bsr_sub_category, subRank: r.bsr_sub_rank, rawText: r.bsr_raw_text,
-    },
-    customerReviews: {
-      customersSay: r.customers_say,
-      reviewImages: r.review_images || [],
-      selectToLearnMore: r.select_to_learn_more || [],
-    },
-    status: r.status, errorMessage: r.error_message,
-  };
-}
-
 // ---- Utilities ----
 function fmtDateTime(iso: string): string {
   const m = iso.match(/\d{4}-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
@@ -485,6 +498,18 @@ function fmtDateTime(iso: string): string {
 }
 function productUrl(asin: string, marketplace: string): string {
   return `https://${mkInfo(marketplace).domain}/dp/${asin}`;
+}
+// 任务状态 → 中文文案（历史任务卡副行展示）
+function taskStatusText(t: ScrapeTask): string {
+  switch (t.status) {
+    case 'running':   return '采集中';
+    case 'paused':    return '已暂停';
+    case 'completed': return '已完成';
+    case 'partial':   return '部分完成';
+    case 'cancelled': return '已取消';
+    case 'error':     return '错误';
+    default:          return '';
+  }
 }
 function exportCSV(products: ScrapedProduct[], marketplace: string) {
   const headers = [
@@ -562,7 +587,10 @@ export function ProductScrape() {
   const [withReviews, setWithReviews] = React.useState(false);
   const [products, setProducts]       = React.useState<ScrapedProduct[]>([]);
   const [running, setRunning]         = React.useState(false);
-  const [progress, setProgress]       = React.useState({ completed: 0, total: 0, batch: 0, totalBatches: 0 });
+  // 进度直接取自服务端（success + failed / total），前端不再自己数批次
+  const [progress, setProgress]       = React.useState({ completed: 0, total: 0 });
+  // 已发出暂停/取消信号、等待服务端线程退出——用于把按钮显示成「正在暂停…」
+  const [stopping, setStopping]       = React.useState(false);
   const [tasks, setTasks]             = React.useState<ScrapeTask[]>([]);
   const [activeTaskId, setActiveTaskId] = React.useState<string | null>(null);
   const [err, setErr]                 = React.useState('');
@@ -597,9 +625,76 @@ export function ProductScrape() {
     [asinInput]);
   const validAsins = React.useMemo(() => asins.filter(a => /^[A-Z0-9]{10}$/.test(a)), [asins]);
 
-  // Retry failed products
+  // 失败项（「重试失败项」按钮用）
   const failedProducts = React.useMemo(() => products.filter(p => p.status === 'failed'), [products]);
-  const [retrying, setRetrying] = React.useState(false);
+
+  // ---- 采集任务轮询 ----
+  // 执行权在服务端：提交后前端只负责按秒读进度。刷新页面时组件重建，
+  // 下面的挂载逻辑会重新发现 running 任务并接上，所以刷新不再丢任务。
+  const pollRef = React.useRef<number | null>(null);
+  const stopPolling = React.useCallback(() => {
+    if (pollRef.current != null) { window.clearInterval(pollRef.current); pollRef.current = null; }
+  }, []);
+
+  const reloadTasks = React.useCallback(async () => {
+    try { setTasks(await apiGetTasks()); setLoadErr(''); }
+    catch (e: any) { setLoadErr(e.message || '加载失败'); }
+  }, []);
+
+  // 跟踪用户当前在看哪个任务：轮询结束时不要覆盖用户主动切过去查看的历史任务
+  const activeTaskRef = React.useRef<string | null>(null);
+  React.useEffect(() => { activeTaskRef.current = activeTaskId; }, [activeTaskId]);
+
+  const startPolling = React.useCallback((taskId: string) => {
+    stopPolling();
+    setRunning(true);
+    setStopping(false);
+    setActiveTaskId(taskId);
+    const tick = async () => {
+      try {
+        const { task: t, stopping: isStopping } = await apiGetProgress(taskId);
+        setStopping(isStopping);
+        setProgress({ completed: t.success + t.failed, total: t.total });
+        // 只有 running 才算还在跑：paused / cancelled / completed / partial / error
+        // 都是终态或待续跑状态，轮询到此为止（暂停后用户可点「继续」再起一轮）。
+        if (t.status !== 'running') {
+          stopPolling();
+          setRunning(false);
+          setStopping(false);
+          await reloadTasks();
+          const viewing = activeTaskRef.current;
+          if (viewing === null || viewing === taskId) {
+            setProducts(await apiGetProducts(taskId));
+          }
+        }
+      } catch (e: any) {
+        stopPolling();
+        setRunning(false);
+        setStopping(false);
+        setErr(e.message || '读取采集进度失败');
+      }
+    };
+    tick();
+    pollRef.current = window.setInterval(tick, 2000);
+  }, [stopPolling, reloadTasks]);
+
+  // 进入页面：拉任务列表；若有正在跑的任务就自动接上（「刷新不丢」的关键一步）
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const list = await apiGetTasks();
+        setTasks(list);
+        setLoadErr('');
+        const live = list.find(t => t.status === 'running');
+        if (live) {
+          try { setProducts(await apiGetProducts(live.id)); } catch { /* 结果稍后轮询会补上 */ }
+          startPolling(live.id);
+        }
+      } catch (e: any) { setLoadErr(e.message || '加载失败'); }
+    })();
+  }, [startPolling]);
+
+  React.useEffect(() => () => stopPolling(), [stopPolling]);
 
   async function handleResetSession() {
     if (!confirm('确定刷新会话？将清空当前站点Cookie和浏览器指纹。')) return;
@@ -607,74 +702,56 @@ export function ProductScrape() {
     catch (e: any) { setErr(e.message || '刷新失败'); }
   }
 
+  // 重试失败项：本质是「往同一个任务里补跑没成功的 ASIN」，服务端会自动跳过已成功项
   async function handleRetryFailed() {
-    if (failedProducts.length === 0) return;
-    if (!confirm(`确定重试 ${failedProducts.length} 个失败的ASIN？\n\n系统将：\n1. 刷新会话\n2. 重新采集失败项\n3. 合并到现有结果`)) return;
-
-    setRetrying(true);
+    if (failedProducts.length === 0 || !activeTaskId) return;
+    if (!confirm(`确定重试 ${failedProducts.length} 个失败的 ASIN？\n\n系统将刷新会话，然后只补跑这些失败项，已成功的不会重复采集。`)) return;
     setErr('');
     try {
       await apiResetSession(marketplace);
-      const failedAsins = failedProducts.map(p => p.asin);
-
-      const batches: string[][] = [];
-      for (let i = 0; i < failedAsins.length; i += BATCH_SIZE) batches.push(failedAsins.slice(i, i + BATCH_SIZE));
-      setProgress({ completed: 0, total: failedAsins.length, batch: 0, totalBatches: batches.length });
-
-      let retryTaskId: string | undefined;
-      for (let i = 0; i < batches.length; i++) {
-        setProgress(p => ({ ...p, batch: i + 1 }));
-        const { taskId, products: batchProducts } = await apiRunScrape(batches[i], marketplace, withReviews, retryTaskId, failedAsins.length);
-        retryTaskId = taskId;
-        setProducts(prev => {
-          const merged = [...prev];
-          for (const np of batchProducts) {
-            const idx = merged.findIndex(p => p.asin === np.asin);
-            if (idx >= 0) merged[idx] = np; else merged.push(np);
-          }
-          return merged;
-        });
-        setProgress(p => ({ ...p, completed: p.completed + batches[i].length }));
-      }
-
-      await reloadTasks();
-    } catch (e: any) { setErr(e.message || '重试失败'); }
-    finally { setRetrying(false); setProgress({ completed: 0, total: 0, batch: 0, totalBatches: 0 }); }
+      await apiStartScrape(failedProducts.map(p => p.asin), marketplace, withReviews, activeTaskId);
+      startPolling(activeTaskId);
+    } catch (e: any) { setErr(e.message || '提交重试失败'); }
   }
-
-  async function reloadTasks() {
-    try { setTasks(await apiGetTasks()); setLoadErr(''); }
-    catch (e: any) { setLoadErr(e.message || '加载失败'); }
-  }
-  React.useEffect(() => { reloadTasks(); }, []);
 
   async function runScrape() {
     if (!validAsins.length) { setErr('请输入有效的 ASIN（10 位字母数字）'); return; }
-    setErr(''); setRunning(true); setProducts([]); setActiveTaskId(null); setPage(1);
-
-    const batches: string[][] = [];
-    for (let i = 0; i < validAsins.length; i += BATCH_SIZE) batches.push(validAsins.slice(i, i + BATCH_SIZE));
-    setProgress({ completed: 0, total: validAsins.length, batch: 0, totalBatches: batches.length });
-
-    const all: ScrapedProduct[] = [];
-    let taskId: string | undefined;
+    setErr(''); setProducts([]); setActiveTaskId(null); setPage(1);
+    setProgress({ completed: 0, total: validAsins.length });
     try {
-      for (let i = 0; i < batches.length; i++) {
-        setProgress(p => ({ ...p, batch: i + 1 }));
-        const res = await apiRunScrape(batches[i], marketplace, withReviews, taskId, validAsins.length);
-        taskId = res.taskId;
-        all.push(...res.products);
-        setProducts([...all]);
-        setProgress(p => ({ ...p, completed: p.completed + batches[i].length }));
-      }
-      if (taskId) setActiveTaskId(taskId);
+      const taskId = await apiStartScrape(validAsins, marketplace, withReviews);
+      startPolling(taskId);
     } catch (e: any) {
-      setErr(e.message || '采集失败');
-    } finally {
-      await reloadTasks();
+      setErr(e.message || '提交采集失败');
       setRunning(false);
-      setProgress({ completed: 0, total: 0, batch: 0, totalBatches: 0 });
     }
+  }
+
+  // 继续：服务端按 task_id 起重线程，只补没跑完的（断点续跑）
+  async function resumeTask(t: ScrapeTask) {
+    if (!t.asins?.length) { setErr('该任务没有记录 ASIN 列表，无法继续'); return; }
+    setErr(''); setPage(1);
+    try {
+      await apiResumeScrape(t.id);
+      startPolling(t.id);
+    } catch (e: any) { setErr(e.message || '继续采集失败'); }
+  }
+
+  // 暂停：线程在检查点退出并落成 paused，已抓到的结果保留，之后可点「继续」
+  async function handlePause() {
+    if (!activeTaskId || stopping) return;
+    setStopping(true); setErr('');
+    try { await apiStopScrape('pause', activeTaskId); }
+    catch (e: any) { setStopping(false); setErr(e.message || '暂停失败'); }
+  }
+
+  // 取消：终止本次执行。结果同样保留，任务卡上仍可点「继续」接着跑
+  async function handleCancelScrape() {
+    if (!activeTaskId || stopping) return;
+    if (!confirm('确定取消当前采集？\n\n已采集的结果会保留，之后可在任务卡上点「继续」从断点接着跑。')) return;
+    setStopping(true); setErr('');
+    try { await apiStopScrape('cancel', activeTaskId); }
+    catch (e: any) { setStopping(false); setErr(e.message || '取消失败'); }
   }
 
   function clearResults() {
@@ -690,7 +767,8 @@ export function ProductScrape() {
 
   async function removeTask(t: ScrapeTask) {
     if (!confirm(`删除任务（${mkInfo(t.marketplace).flag} ${mkInfo(t.marketplace).name} · ${t.total} 个 ASIN）及其结果？`)) return;
-    await apiDeleteTask(t.id);
+    try { await apiDeleteTask(t.id); }
+    catch (e: any) { setErr(e.message || '删除失败'); return; }
     setTasks(ts => ts.filter(x => x.id !== t.id));
     if (activeTaskId === t.id) { setProducts([]); setActiveTaskId(null); setSelectedAsins(new Set()); }
   }
@@ -789,7 +867,7 @@ export function ProductScrape() {
       <div className="ps-side">
         <div className="ps-field">
           <label className="ps-label">站点</label>
-          <select className="ps-select" value={marketplace} onChange={e => setMarketplace(e.target.value)} disabled={running || retrying}>
+          <select className="ps-select" value={marketplace} onChange={e => setMarketplace(e.target.value)} disabled={running}>
             {MARKETPLACES.map(m => <option key={m.code} value={m.code}>{m.flag} {m.name}</option>)}
           </select>
         </div>
@@ -798,7 +876,7 @@ export function ProductScrape() {
           <label className="ps-label">ASIN（每行一个，支持逗号/空格分隔）</label>
           <textarea className="ps-textarea" rows={8} value={asinInput}
             onChange={e => setAsinInput(e.target.value)}
-            placeholder={'B0XXXXXXXXX\nB0YYYYYYYYY'} disabled={running || retrying} />
+            placeholder={'B0XXXXXXXXX\nB0YYYYYYYYY'} disabled={running} />
           <div className="ps-asin-count">
             已输入 {asins.length} 个，有效 {validAsins.length} 个
             {asins.length > validAsins.length && <span className="ps-asin-bad"> · {asins.length - validAsins.length} 个无效</span>}
@@ -806,27 +884,33 @@ export function ProductScrape() {
         </div>
 
         <label className="ps-check">
-          <input type="checkbox" checked={withReviews} onChange={e => setWithReviews(e.target.checked)} disabled={running || retrying} />
+          <input type="checkbox" checked={withReviews} onChange={e => setWithReviews(e.target.checked)} disabled={running} />
           <span>抓取评论数据（速度较慢）</span>
         </label>
 
         {err && <div className="ps-err">{err}</div>}
 
         <div className="ps-actions">
-          <button className="btn btn-primary btn-sm" onClick={runScrape} disabled={running || retrying || !validAsins.length}>
+          <button className="btn btn-primary btn-sm" onClick={runScrape} disabled={running || !validAsins.length}>
             {running ? '采集中…' : '开始采集'}
           </button>
-          <button className="btn btn-sm" onClick={clearResults} disabled={running || retrying}>清空</button>
-          <button className="btn btn-sm" onClick={handleResetSession} disabled={running || retrying}>刷新会话</button>
+          <button className="btn btn-sm" onClick={clearResults} disabled={running}>清空</button>
+          <button className="btn btn-sm" onClick={handleResetSession} disabled={running}>刷新会话</button>
         </div>
 
-        {(running || retrying) && progress.total > 0 && (
+        {running && (
           <div className="ps-progress">
             <div className="ps-progress-row">
-              <span>第 {progress.batch}/{progress.totalBatches} 批</span>
-              <span>{progress.completed}/{progress.total}（{progressPct}%）</span>
+              <span>{stopping ? '正在停止…' : '采集中'}</span>
+              <span>{progress.total > 0 ? `${progress.completed}/${progress.total}（${progressPct}%）` : ''}</span>
             </div>
-            <div className="ps-progress-bar"><div className="ps-progress-fill" style={{ width: progressPct + '%' }} /></div>
+            {progress.total > 0 && (
+              <div className="ps-progress-bar"><div className="ps-progress-fill" style={{ width: progressPct + '%' }} /></div>
+            )}
+            <div className="ps-progress-actions">
+              <button className="btn btn-sm" onClick={handlePause} disabled={stopping}>暂停</button>
+              <button className="btn btn-sm" onClick={handleCancelScrape} disabled={stopping}>取消采集</button>
+            </div>
           </div>
         )}
 
@@ -859,10 +943,20 @@ export function ProductScrape() {
                   <span>共 {t.total}</span>
                   <span className="ps-ok">成功 {t.success}</span>
                   {t.failed > 0 && <span className="ps-fail">失败 {t.failed}</span>}
+                  {taskStatusText(t) && (
+                    <span className={
+                      t.status === 'running' || t.status === 'completed' ? 'ps-ok'
+                      : t.status === 'error' ? 'ps-fail'
+                      : 'ps-warn'
+                    }>{taskStatusText(t)}</span>
+                  )}
                   {t.withReviews && <span>含评论</span>}
                 </div>
               </button>
               <div className="ps-task-actions">
+                {(t.status === 'paused' || t.status === 'cancelled' || t.status === 'error') && (
+                  <button className="btn btn-sm" onClick={() => resumeTask(t)} disabled={running}>继续</button>
+                )}
                 <button className="btn btn-sm" onClick={() => startRename(t)} title="重命名">✎</button>
                 <button className="btn btn-sm ps-del" onClick={() => removeTask(t)}>删除</button>
               </div>
@@ -898,8 +992,8 @@ export function ProductScrape() {
                 onChange={e => setSearchQuery(e.target.value)}
               />
               {failedCount > 0 && (
-                <button className="btn btn-sm" onClick={handleRetryFailed} disabled={running || retrying}>
-                  {retrying ? '重试中…' : `重试失败 (${failedCount})`}
+                <button className="btn btn-sm" onClick={handleRetryFailed} disabled={running}>
+                  重试失败 ({failedCount})
                 </button>
               )}
               <button className="btn btn-sm" onClick={() => exportCSV(

@@ -5,13 +5,54 @@ import sqlite3
 import secrets
 import threading
 
-from .utils import _now_iso
+from .utils import _now_iso, PROJECT_ROOT
 
 # SIF 任务失败退避策略：第 n 次失败后等待对应分钟数再重试；当天失败次数达到
 # 上限即熔断（次日计划时刻自动重置）。目的是让「每天最多浪费 3 次配额」，
 # 而不是像早期版本那样每分钟重试一整天（单次 daily 层约 25 次 SIF 调用）。
 SIF_RETRY_BACKOFF_MIN = (5, 30, 120)
 SIF_MAX_RETRIES_PER_DAY = len(SIF_RETRY_BACKOFF_MIN) + 1
+
+
+def _dedupe_scrape_products(conn):
+    """清理 scrape_products 中重复的 (task_id, asin)，并建立唯一索引。
+
+    重复来源：早期「重试失败项」走 INSERT 而非 UPSERT，同一 ASIN 会被反复写入，
+    库里曾出现同一任务同一 ASIN 最多 3 条。清理前先把要删的行导出到 data/ 备查，
+    每对 (task_id, asin) 只保留 id 最大的一条（即最近一次采集结果）。
+    已有唯一索引时直接跳过，因此本函数是幂等的。
+    """
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' "
+                    "AND name='idx_scrape_prod_task_asin'").fetchone():
+        return
+
+    dups = conn.execute(
+        """SELECT * FROM scrape_products
+           WHERE id NOT IN (SELECT MAX(id) FROM scrape_products GROUP BY task_id, asin)
+           ORDER BY task_id, asin, id"""
+    ).fetchall()
+
+    if dups:
+        cols = [d[0] for d in conn.execute("SELECT * FROM scrape_products LIMIT 0").description]
+        rows = [dict(zip(cols, r)) for r in dups]
+        stamp = _now_iso().replace("-", "").replace(":", "")
+        backup = os.path.join(PROJECT_ROOT, "data", f"scrape_products_dups_{stamp}.json")
+        try:
+            with open(backup, "w", encoding="utf-8") as f:
+                json.dump(rows, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            # 备份失败就不动数据：宁可保留重复，也不要丢掉可追溯性
+            print(f"[warn] 采集结果去重已跳过：备份写入失败（{e}）")
+            return
+        conn.execute(
+            "DELETE FROM scrape_products WHERE id NOT IN "
+            "(SELECT MAX(id) FROM scrape_products GROUP BY task_id, asin)"
+        )
+        print(f"[info] 采集结果去重：删除 {len(rows)} 条重复行，原数据已备份到 "
+              f"data/{os.path.basename(backup)}")
+
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_scrape_prod_task_asin "
+                 "ON scrape_products(task_id, asin)")
 
 
 class DbState:
@@ -111,7 +152,11 @@ class DbState:
                     failed       INTEGER DEFAULT 0,
                     with_reviews INTEGER DEFAULT 0,
                     status       TEXT DEFAULT 'completed',
-                    created_at   TEXT
+                    created_at   TEXT,
+                    asins        TEXT DEFAULT '[]',
+                    started_at   TEXT,
+                    ended_at     TEXT,
+                    error        TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS scrape_products (
@@ -394,6 +439,21 @@ class DbState:
             existing_scrape = {row[1] for row in conn.execute("PRAGMA table_info(scrape_tasks)")}
             if "name" not in existing_scrape:
                 conn.execute("ALTER TABLE scrape_tasks ADD COLUMN name TEXT")
+
+            # 采集任务改为服务端后台执行后，任务需要自己记住「原始 ASIN 列表」才能断点续跑，
+            # 并记录运行窗口与失败原因。新表已含这四列，这里只为老库补列。
+            _scrape_cols = {r[1] for r in conn.execute("PRAGMA table_info(scrape_tasks)")}
+            for col, ddl in (("asins", "TEXT DEFAULT '[]'"),
+                             ("started_at", "TEXT"),
+                             ("ended_at", "TEXT"),
+                             ("error", "TEXT")):
+                if col not in _scrape_cols:
+                    conn.execute(f"ALTER TABLE scrape_tasks ADD COLUMN {col} {ddl}")
+
+            # 采集结果去重：早期「重试失败项」走 INSERT 而非 UPSERT，同一 (task_id, asin)
+            # 会累积多行。先导出备份再清理（每对只保留最新一次），随后建唯一索引，
+            # 之后 save_scrape_products 用 ON CONFLICT DO UPDATE 收敛到一行。
+            _dedupe_scrape_products(conn)
 
             # SIF v1 → v2：旧版结构（单表快照 + detail 冗余存 60 周历史）与新「爆品关键词
             # 监控」不兼容，按确认「旧架构与历史数据全部丢弃」直接重建为 v2。
@@ -780,6 +840,13 @@ class DbState:
 
     # ---- 产品采集：任务与明细 ----
 
+    # 采集任务状态（服务端后台执行，见 routes/scrape.py）：
+    #   running   后台线程正在跑
+    #   paused    服务重启中断，可从断点继续
+    #   completed 全部 ASIN 成功
+    #   partial   跑完了但有失败项（可重试失败项）
+    #   cancelled 用户主动取消
+    #   error     执行过程抛异常
     def _row_to_scrape_task(self, row):
         return {
             "id":          row["id"],
@@ -791,29 +858,99 @@ class DbState:
             "withReviews": bool(row["with_reviews"]),
             "status":      row["status"],
             "createdAt":   row["created_at"],
+            "asins":       json.loads(row["asins"] or "[]"),
+            "startedAt":   row["started_at"],
+            "endedAt":     row["ended_at"],
+            "error":       row["error"],
         }
 
-    def create_scrape_task(self, marketplace, total, with_reviews):
+    def create_scrape_task(self, marketplace, asins, with_reviews, name=None):
+        """建任务并把完整 ASIN 列表落库——这是断点续跑的唯一依据。"""
         tid = "st" + secrets.token_hex(6)
+        now = _now_iso()
         with self.lock:
             with self._conn() as conn:
                 conn.execute(
                     """INSERT INTO scrape_tasks
-                       (id, marketplace, total, success, failed, with_reviews, status, created_at)
-                       VALUES (?,?,?,?,?,?,?,?)""",
-                    [tid, marketplace, total, 0, 0, 1 if with_reviews else 0, "running", _now_iso()],
+                       (id, marketplace, name, total, success, failed, with_reviews,
+                        status, created_at, asins, started_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    [tid, marketplace, name, len(asins), 0, 0, 1 if with_reviews else 0,
+                     "running", now, json.dumps(list(asins), ensure_ascii=False), now],
                 )
                 conn.commit()
         return tid
 
-    def accumulate_scrape_task(self, task_id, success_delta, failed_delta):
+    def get_scrape_task(self, task_id):
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM scrape_tasks WHERE id=?", [task_id]).fetchone()
+            return self._row_to_scrape_task(row) if row else None
+
+    def set_scrape_task_status(self, task_id, status, error=None,
+                               started_at=None, ended_at=None):
+        """显式设置任务状态与运行窗口。
+
+        刻意与进度计数分开：早期版本每次写结果都顺手把 status 改成 completed，
+        结果任务刚跑完第一批就显示「已完成」，完全看不出只跑了不到三成。
+        error 每次都写（允许清空），时间戳只在传入时更新。
+        """
         with self.lock:
             with self._conn() as conn:
                 conn.execute(
-                    "UPDATE scrape_tasks SET success=success+?, failed=failed+?, status='completed' WHERE id=?",
-                    [success_delta, failed_delta, task_id],
+                    "UPDATE scrape_tasks SET status=?, error=?, "
+                    "started_at=COALESCE(?, started_at), ended_at=COALESCE(?, ended_at) "
+                    "WHERE id=?",
+                    [status, error, started_at, ended_at, task_id],
                 )
                 conn.commit()
+
+    def refresh_scrape_task_counts(self, task_id):
+        """按已落库结果重算 success / failed，而不是累加。
+
+        累加会把「失败后重试成功」的 ASIN 同时计进两边，导致 success + failed > total；
+        重算则始终等于结果表里的真实分布。
+        """
+        with self.lock:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) n, SUM(status='success') s "
+                    "FROM scrape_products WHERE task_id=?", [task_id]
+                ).fetchone()
+                done = row[0] or 0
+                ok = row[1] or 0
+                conn.execute("UPDATE scrape_tasks SET success=?, failed=? WHERE id=?",
+                             [ok, done - ok, task_id])
+                conn.commit()
+
+    def update_scrape_task_asins(self, task_id, asins):
+        """合并 ASIN 列表（重试失败项时复用同一任务），total 随之对齐。"""
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE scrape_tasks SET asins=?, total=? WHERE id=?",
+                    [json.dumps(list(asins), ensure_ascii=False), len(asins), task_id],
+                )
+                conn.commit()
+
+    def get_scrape_done_asins(self, task_id):
+        """已成功采集的 ASIN 集合——续跑时与原始列表做差集，跳过跑过的。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT asin FROM scrape_products WHERE task_id=? AND status='success'",
+                [task_id]
+            ).fetchall()
+            return {r[0] for r in rows}
+
+    def mark_running_scrape_tasks_paused(self):
+        """服务启动时把残留的 running 标记为 paused（可续跑），返回受影响条数。"""
+        with self.lock:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    "UPDATE scrape_tasks SET status='paused', "
+                    "error='服务重启导致中断，可点击继续' WHERE status='running'"
+                )
+                conn.commit()
+                return cur.rowcount
 
     def update_scrape_task_name(self, task_id, name):
         with self.lock:
@@ -829,6 +966,11 @@ class DbState:
             return [self._row_to_scrape_task(r) for r in rows]
 
     def save_scrape_products(self, task_id, products):
+        """写入采集结果，按 (task_id, asin) 收敛为一行。
+
+        重试某个 ASIN 时直接覆盖旧结果，不会像早期版本那样累积重复行
+        （那时同一任务同一 ASIN 最多出现 3 条，列表里也是重复展示）。
+        """
         now = _now_iso()
         with self.lock:
             with self._conn() as conn:
@@ -841,7 +983,29 @@ class DbState:
                             categories, seller, bsr_main_category, bsr_main_rank,
                             bsr_sub_category, bsr_sub_rank, bsr_raw_text, customers_say,
                             review_images, select_to_learn_more, status, error_message, scraped_at)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                           ON CONFLICT(task_id, asin) DO UPDATE SET
+                               marketplace=excluded.marketplace, title=excluded.title,
+                               brand=excluded.brand, price=excluded.price,
+                               rating=excluded.rating, review_count=excluded.review_count,
+                               availability=excluded.availability,
+                               bullet_points=excluded.bullet_points,
+                               description=excluded.description,
+                               main_image=excluded.main_image, images=excluded.images,
+                               aplus_images=excluded.aplus_images,
+                               specifications=excluded.specifications,
+                               product_details=excluded.product_details,
+                               categories=excluded.categories, seller=excluded.seller,
+                               bsr_main_category=excluded.bsr_main_category,
+                               bsr_main_rank=excluded.bsr_main_rank,
+                               bsr_sub_category=excluded.bsr_sub_category,
+                               bsr_sub_rank=excluded.bsr_sub_rank,
+                               bsr_raw_text=excluded.bsr_raw_text,
+                               customers_say=excluded.customers_say,
+                               review_images=excluded.review_images,
+                               select_to_learn_more=excluded.select_to_learn_more,
+                               status=excluded.status, error_message=excluded.error_message,
+                               scraped_at=excluded.scraped_at""",
                         [
                             task_id, p.get("asin"), p.get("marketplace"),
                             p.get("title"), p.get("brand"), p.get("price"), p.get("rating"),

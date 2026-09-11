@@ -1,6 +1,6 @@
 # 产品采集模块优化方案
 
-> **状态：B 档已实施（分支 `feat/scrape-optimize`，2026-09-11）；A 档与 C 档待决策。**
+> **状态：A 档、B 档、运行时「暂停/取消」均已实施（分支 `feat/scrape-optimize`，2026-09-11）；C 档待决策。**
 > 本文档记录 2026-09-11 的诊断结论与分级方案，供后续参考。
 > 实施前请先核对代码现状（下方标注的行号会随改动漂移）。
 
@@ -32,25 +32,30 @@
 
 ## 3. 分级方案
 
-### A 档：缺陷修复（不改变任何操作方式）
+### A 档：缺陷修复（不改变任何操作方式）— 已实施（2026-09-11）
 
-**A1. 结果表存在重复行**
+**A1. 结果表存在重复行 — 已修复**
 
 - 现状：`scrape_products` 只有 `idx_scrape_prod_task` 索引，**没有唯一约束**；
   `db.py` 的 `save_scrape_products` 用普通 `INSERT`。
 - 后果：「重试失败项」对同一 ASIN 会再插一行，同一任务同一 ASIN 最多 3 条。
   实测现有 **106 组重复**。`get_scrape_products` 也不去重 → 结果列表出现重复行，
   成功/失败统计虚高。
-- 修法：导出备份 → 清理重复（每对 `(task_id, asin)` 保留 id 最大的一条）→
-  建 `UNIQUE INDEX (task_id, asin)` → 写入改 `ON CONFLICT DO UPDATE`。
-- 风险：**无**。清理前先备份到 `data/`。
+- 修法：导出备份到 `data/scrape_products_dups_*.json` → 清理重复（每对 `(task_id, asin)`
+  保留 id 最大的一条）→ 建 `UNIQUE INDEX idx_scrape_prod_task_asin (task_id, asin)` →
+  写入改 `ON CONFLICT DO UPDATE`（UPSERT，幂等）。
+- 实施结果：重复 106 组 → 0；UPSERT 收敛、可重复执行无新增重复。
+- 风险：**无**。清理前已先备份。
 
-**A2. 任务状态语义失真**
+**A2. 任务状态语义失真 — 已修复**
 
-- 现状：`db.py` 的 `accumulate_scrape_task` 每次写入都执行
-  `UPDATE ... status='completed'`。
+- 现状：`db.py` 的 `accumulate_scrape_task` 每次写入都执行 `UPDATE ... status='completed'`。
 - 后果：任务还在跑，任务列表里已经显示为已完成。
-- 修法：拆成「累加计数」与「显式设置状态」两个方法。
+- 修法：`accumulate_scrape_task` 拆成 `set_scrape_task_status()`（显式设状态）与
+  `refresh_scrape_task_counts()`（仅重算 success/failed 计数）。新增
+  `get_scrape_task / get_scrape_done_asins / update_scrape_task_asins /
+  mark_running_scrape_tasks_paused` 支撑断点续跑与重启恢复。
+- 实施结果：运行中状态不再被提前写成 completed；续跑差集、重启恢复均验证通过。
 - 风险：**无**。
 
 ### B 档：消除空转（不动任何限流参数）⭐ 收益最大
@@ -81,6 +86,42 @@
 > ⚠️ 只做 B 档时，**新瓶颈会变成并发数**：3 并发 ÷ 8 秒/请求 ≈ 22.5 请求/分钟，
 > 仍然填不满 40 的闸门。要再往下压需要 C1。
 
+### D 档：运行时暂停/取消（用户 2026-09-11 明确要求）— 已实施
+
+用户要求采集任务在运行时可**手动**暂停、取消（明确不要任何「自动中止/智能判定」）。
+
+**为什么需要服务端后台执行器**：要让「暂停/取消」在刷新页面、关标签页后依然有效，
+执行权必须在服务端。`POST /api/scrape/start` 只建任务、起线程、立刻返回 `taskId`，
+抓取在后台 `daemon` 线程里跑；前端改为轮询 `/api/scrape/progress`（2 秒一次）。
+这顺带解决了「刷新页面就白跑一轮」的问题（原 C4 的诉求）。
+
+**接口与行为**
+
+| 接口 | 行为 |
+|---|---|
+| `POST /api/scrape/start` | 建任务 + 起线程，同步落 `running` 后立刻返回 taskId |
+| `POST /api/scrape/pause` | 给线程停止信号，检查点退出并落 `paused`，已抓结果保留 |
+| `POST /api/scrape/cancel` | 给线程停止信号，检查点退出并落 `cancelled`，已抓结果保留 |
+| `POST /api/scrape/resume` | 按同一 task_id 起重线程，待跑 = 全部 ASIN − 已成功，断点续跑 |
+| `GET  /api/scrape/progress` | 返回 task + `stopping`（信号已发、线程未退出），用于显示「正在暂停…」 |
+
+**关键设计**
+
+- **停在断点、可从断点重起**：暂停/取消都不阻塞线程挂起，线程在 `should_stop` 检查点
+  退出；`resume` 用 `get_scrape_done_asins` 算差集，天然跳过已成功项。
+- **暂停门在 worker 级**：`product_fetcher` 加 `set_paused()/_wait_while_paused()`，
+  不仅在结果层停消费，还要真正截断 worker 发车的检查点。
+- **重启恢复**：`recover_stale_tasks()` 在服务启动时把残留 `running` 标 `paused`，
+  可在界面点「继续」。
+- **并发保护**：同一时间只允许一个采集任务（避免争抢同一站点的令牌桶），冲突返回 409。
+- **不丢结果**：逐条 `on_progress` 落库；`ScrapeInterrupted` 在清理前只刷新计数。
+
+**验证**：提交 0.000s 返回；暂停 0.05s 生效且零额外抓取；继续只补未完成项；取消即时；
+并发保护 409；结果表精确无重复。
+
+**注意**：此档与第 4 节「不推荐服务端后台执行」的既往结论相悖——但属于用户为
+「运行时可暂停/取消」这一明确诉求而要求的例外，仍严守「不做任何自动中止」的底线。
+
 ### C 档：可选项（会改变行为，需明确同意）
 
 **C1. 并发 3 → 6**
@@ -110,14 +151,16 @@
 ## 4. 不建议做的
 
 - **异步化 / 服务端后台执行**：2026-09-11 曾实现并验证通过，随后应要求整体回滚。
-  在用户没有明确要求前不再推进。
+  **例外**：2026-09-11 用户明确要求「运行时可暂停/取消」，该能力必须建立在服务端后台
+  执行之上，故已在分支 `feat/scrape-optimize` 重新落地后台执行器（见 D 档）。
+  除此之外，不要再做任何会改变执行模型的改造。
 - **任何会自动中止任务的「智能」判定**（例如判定 IP 被限流后主动停止）：
-  同一日已验证，用户明确表示不要这类会替他拿主意的逻辑。
+  用户明确表示不要这类会替他拿主意的逻辑。暂停/取消**只**响应手动按钮，绝不自动触发。
 - **提高令牌桶速率上限**：这是唯一真正改变封禁风险的参数，保持现状。
 
 ## 5. 实施注意事项
 
 - A1 涉及数据清理，务必先导出备份到 `data/`，并保证迁移幂等。
-- 若只实施 A + B，`compiled/bundle.js` 属于构建产物（已被 `.gitignore` 忽略），
+- 若实施 A + B + D，`compiled/bundle.js` 属于构建产物（已被 `.gitignore` 忽略），
   改完前端源码必须重新 `npm run build`，否则界面与后端对不上。
 - B 档改完后建议先跑 50~100 个 ASIN 的小任务复核耗时，再上大批量。

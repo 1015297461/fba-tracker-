@@ -240,6 +240,9 @@ def main():
     print(bar)
     rank.start_scheduler(db_state)
     sif_keywords.start_scheduler(db_state)
+    # 采集任务的执行线程在服务重启后会消失，这里把残留的 running 标成 paused，
+    # 用户可在界面点「继续」从断点接着跑（已成功的 ASIN 会被自动跳过）
+    scrape.recover_stale_tasks(db_state)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -155,6 +155,14 @@ class ProductNotFoundError(Exception):
     pass
 
 
+class ScrapeInterrupted(Exception):
+    """调用方的 should_stop() 要求中断（用户暂停或取消采集）。
+
+    单独一个异常类型，是为了让「用户主动停」和「抓取真的失败」分开：
+    前者不该被降级成「这个 ASIN 失败」，否则剩下的几百个 ASIN 会被挨个空跑一遍。
+    """
+
+
 # ============================================================
 # 会话状态：每个站点一个 Cookie 池 + 浏览器指纹 + 令牌桶
 # ============================================================
@@ -1300,12 +1308,18 @@ def scrape_product(asin, marketplace, with_reviews=False):
     return product
 
 
-def scrape_products(asins, marketplace, with_reviews=False, on_progress=None):
+def scrape_products(asins, marketplace, with_reviews=False, on_progress=None,
+                    should_stop=None):
     """批量抓取，返回与 asins 等长的结果列表；失败项会自动重试一轮。
 
     batch_size（每批提交几个）与 concurrency（同时几个 worker）是两件事：
     批大、并发小 → worker 一直有活干；批小 → 反复重建线程池、批间空等，吞吐反而更低。
     真正的速率上限由令牌桶决定（默认 40 请求/分钟），这里调多大都不会突破。
+
+    should_stop：可选的「是否该停」回调，由调用方（采集路由）传入，用于响应用户的
+    暂停/取消。检查点放在 worker 发车前与每批起始处，所以最多再放行当前同时在飞的
+    那几个请求；放在这一层而不是只挂在结果回调上，是因为重试轮不走 on_progress，
+    只挂回调的话重试轮期间点了暂停也不会生效。
     """
     concurrency = max(1, int(os.environ.get("SCRAPER_CONCURRENCY", "3")))
     batch_size = max(1, int(os.environ.get("SCRAPER_BATCH_SIZE", "40")))
@@ -1314,9 +1328,14 @@ def scrape_products(asins, marketplace, with_reviews=False, on_progress=None):
     completed = 0
     completed_lock = threading.Lock()
 
+    def _stop_requested():
+        return should_stop is not None and should_stop()
+
     def _run_one(idx, asin, stagger_sec):
         if stagger_sec > 0:
             time.sleep(stagger_sec)
+        if _stop_requested():
+            raise ScrapeInterrupted()
         return idx, scrape_product(asin, marketplace, with_reviews)
 
     def _stagger_for(pos, stagger_base, jitter):
@@ -1333,7 +1352,10 @@ def scrape_products(asins, marketplace, with_reviews=False, on_progress=None):
 
     def _process(indices, stagger_base, jitter, count_progress):
         nonlocal completed
-        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        # 不用 `with ThreadPoolExecutor(...)`：中途被中断时 with 会走 shutdown(wait=True)，
+        # 把队列里还没跑的 ASIN 全部跑完才返回——点了暂停/取消却要等一整批，正是要避免的。
+        executor = ThreadPoolExecutor(max_workers=concurrency)
+        try:
             futures = [
                 executor.submit(_run_one, idx, asins[idx], _stagger_for(pos, stagger_base, jitter))
                 for pos, idx in enumerate(indices)
@@ -1346,9 +1368,18 @@ def scrape_products(asins, marketplace, with_reviews=False, on_progress=None):
                         completed += 1
                         if on_progress:
                             on_progress(completed, len(asins), product)
+        except BaseException:
+            # 丢弃尚未开始的排队任务，把控制权尽快交回上层；已经在飞的那几个请求
+            # 没法打断，它们跑完后结果会被忽略（下次续跑时重抓）。
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            executor.shutdown(wait=True)
 
     # 第一轮
     for start in range(0, len(asins), batch_size):
+        if _stop_requested():
+            raise ScrapeInterrupted()
         batch = list(range(start, min(start + batch_size, len(asins))))
         _process(batch, 0.4, 0.2, count_progress=True)
         if start + batch_size < len(asins):
@@ -1371,6 +1402,8 @@ def scrape_products(asins, marketplace, with_reviews=False, on_progress=None):
         time.sleep(2.0 + random.random())
 
         for start in range(0, len(failed_indices), batch_size):
+            if _stop_requested():
+                raise ScrapeInterrupted()
             chunk = failed_indices[start:start + batch_size]
             _process(chunk, 0.8, 0.4, count_progress=False)
             if start + batch_size < len(failed_indices):
