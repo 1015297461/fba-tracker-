@@ -48,6 +48,16 @@ except ImportError:
     _HAS_BS4 = False
     Tag = None
 
+try:
+    from .utils import _log
+except ImportError:
+    # 直接作为脚本运行（CLI 自测 python3 product_fetcher.py）时没有包上下文，
+    # 退化为带时间前缀的裸 print，保证两种运行方式都不报错。
+    import datetime as _dt
+
+    def _log(msg):
+        print(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+
 
 # ============================================================
 # 站点配置：域名 + 中文名 + 国旗 + Accept-Language + 货币（i18n-prefs cookie）
@@ -399,7 +409,10 @@ def fetch_product_page(asin, marketplace):
     for attempt in range(MAX_RETRIES + 1):
         if attempt > 0:
             session.profile = random.choice(BROWSER_PROFILES)
-            time.sleep(RETRY_DELAYS[min(attempt - 1, len(RETRY_DELAYS) - 1)] + random.random() * 2)
+            delay = RETRY_DELAYS[min(attempt - 1, len(RETRY_DELAYS) - 1)] + random.random() * 2
+            _log(f"[scrape] {asin} 第 {attempt} 次重试，退避 {delay:.0f}s"
+                 f"{('（' + str(last_error)[:60] + '）') if last_error else ''}")
+            time.sleep(delay)
 
         session.acquire_rate_limit()
 
@@ -1396,6 +1409,7 @@ def scrape_products(asins, marketplace, with_reviews=False, on_progress=None,
     if failed_indices:
         session = get_session(marketplace)
         session.profile = random.choice(BROWSER_PROFILES)
+        _log(f"[scrape] 进入失败项重试轮：{len(failed_indices)} 个（第一轮未成功的会再抓一次）")
         # 原实现是 sleep(min(5 + 失败数, 15))，每次 scrape_products 调用都会执行一次，
         # 前端每批只带几个 ASIN 时等于每批白等 6 秒起。失败项在 fetch_product_page
         # 内部已经退避过 2/5/10 秒，这里只留一个短间隔。

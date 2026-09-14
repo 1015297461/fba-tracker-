@@ -13,7 +13,7 @@ import threading
 from urllib.parse import urlparse, parse_qs
 
 from .. import product_fetcher
-from ..utils import _extract_token, _now_iso
+from ..utils import _extract_token, _now_iso, _log
 
 # 正在执行的采集任务：task_id -> _TaskCtl。
 # 同一时间只允许一个采集任务，避免多个任务争抢同一站点的令牌桶。
@@ -27,6 +27,9 @@ CHUNK_SIZE = 50
 # 每落库这么多条才重算一次 success/failed 计数：重算是全表 COUNT，
 # 逐条都算的话 500 个 ASIN 就是 500 次统计，没必要。
 COUNT_REFRESH_EVERY = 5
+
+# 每完成这么多条 ASIN 打一行进度日志：既能实时看到推进，又不会刷屏。
+PROGRESS_LOG_EVERY = 25
 
 
 class _TaskCtl:
@@ -56,22 +59,28 @@ def _run_scrape(state, task_id, marketplace, with_reviews, ctl):
         # 待跑 = 全部 ASIN − 已成功的。这就是断点续跑：跳过跑过的，只补没跑的和失败的。
         done = state.get_scrape_done_asins(task_id)
         pending = [a for a in asins if a not in done]
-        print(f"  [scrape] 任务 {task_id} 开始：待采集 {len(pending)} 个"
-              f"（总 {len(asins)}，已成功 {len(done)}）")
+        _log(f"[scrape] 任务 {task_id} 开始：待采集 {len(pending)} 个"
+             f"（总 {len(asins)}，已成功 {len(done)}）")
 
         since_refresh = 0
+        scraped = 0
 
         def on_progress(_completed, _total, product):
             """每抓完一个 ASIN 就落库，进度条才不会长时间停在 0/500。"""
-            nonlocal since_refresh
+            nonlocal since_refresh, scraped
             state.save_scrape_products(task_id, [product])
             since_refresh += 1
+            scraped += 1
+            if scraped % PROGRESS_LOG_EVERY == 0:
+                _log(f"[scrape] 进度 {scraped}/{len(asins)}（已落库，成功/失败见任务计数）")
             if since_refresh >= COUNT_REFRESH_EVERY:
                 since_refresh = 0
                 state.refresh_scrape_task_counts(task_id)
 
         for start in range(0, len(pending), CHUNK_SIZE):
             chunk = pending[start:start + CHUNK_SIZE]
+            _log(f"[scrape] 第 {start // CHUNK_SIZE + 1} 块：提交 {len(chunk)} 个 ASIN"
+                 f"（待跑还剩 {len(pending) - start - len(chunk)}）")
             try:
                 results = product_fetcher.scrape_products(
                     chunk, marketplace, with_reviews,
@@ -80,7 +89,7 @@ def _run_scrape(state, task_id, marketplace, with_reviews, ctl):
                 raise
             except Exception as e:
                 # 单块异常不该让整个任务停摆：标记这一块失败后继续跑下一块
-                print(f"  [scrape] 任务 {task_id} 第 {start // CHUNK_SIZE + 1} 块异常: {e}")
+                _log(f"[scrape] 任务 {task_id} 第 {start // CHUNK_SIZE + 1} 块异常: {e}")
                 results = [{**product_fetcher._empty_product(
                     a, marketplace, f"fetch_exc:{type(e).__name__}")} for a in chunk]
             # 兜底再写一次：失败重试轮的结果不走 on_progress，靠这里落库（UPSERT 幂等）
@@ -94,20 +103,20 @@ def _run_scrape(state, task_id, marketplace, with_reviews, ctl):
             task_id, "partial" if failed else "completed",
             error=f"{failed} 个 ASIN 采集失败，可点「重试失败项」" if failed else None,
             ended_at=_now_iso())
-        print(f"  [scrape] 任务 {task_id} 结束：成功 {t.get('success')}，失败 {failed}")
+        _log(f"[scrape] 任务 {task_id} 结束：成功 {t.get('success')}，失败 {failed}")
 
     except product_fetcher.ScrapeInterrupted:
         state.refresh_scrape_task_counts(task_id)
         if ctl.reason == "paused":
             # 暂停不算结束，不写 ended_at；续跑时 started_at 也用 COALESCE 保留首次时间
             state.set_scrape_task_status(task_id, "paused", error="已暂停，可点「继续」")
-            print(f"  [scrape] 任务 {task_id} 已暂停（已采集的部分保留，点「继续」接着跑）")
+            _log(f"[scrape] 任务 {task_id} 已暂停（已采集的部分保留，点「继续」接着跑）")
         else:
             state.set_scrape_task_status(task_id, "cancelled", error="已取消",
                                          ended_at=_now_iso())
-            print(f"  [scrape] 任务 {task_id} 已取消（已采集的部分保留，可点「继续」续跑）")
+            _log(f"[scrape] 任务 {task_id} 已取消（已采集的部分保留，可点「继续」续跑）")
     except Exception as e:
-        print(f"  [scrape] 任务 {task_id} 异常: {e}")
+        _log(f"[scrape] 任务 {task_id} 异常: {e}")
         try:
             state.set_scrape_task_status(task_id, "error", error=str(e)[:500],
                                          ended_at=_now_iso())
@@ -153,7 +162,7 @@ def recover_stale_tasks(state):
     """服务启动时把残留的 running 任务标为 paused，让它可以从断点继续。"""
     n = state.mark_running_scrape_tasks_paused()
     if n:
-        print(f"  [scrape] {n} 个采集任务因服务重启被标记为已暂停，可在界面点「继续」")
+        _log(f"[scrape] {n} 个采集任务因服务重启被标记为已暂停，可在界面点「继续」")
 
 
 def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
@@ -234,8 +243,8 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         except ValueError as e:
             self._send_json(404, {"error": str(e)})
             return
-        print(f"  [scrape] 已提交 {len(asins)} 个 ASIN @ {marketplace}"
-              f"{' (含评论)' if with_reviews else ''} -> {task_id}")
+        _log(f"[scrape] 已提交 {len(asins)} 个 ASIN @ {marketplace}"
+             f"{' (含评论)' if with_reviews else ''} -> {task_id}")
         self._send_json(200, {"taskId": task_id})
     POST["/api/scrape/start"] = post_start
 
@@ -251,7 +260,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         if ctl:
             ctl.reason = "paused"
             ctl.stop.set()
-            print(f"  [scrape] 收到暂停请求: {task_id}")
+            _log(f"[scrape] 收到暂停请求: {task_id}")
         self._send_json(200, {"ok": True, "pausing": bool(ctl)})
     POST["/api/scrape/pause"] = post_pause
 
@@ -273,7 +282,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         except RuntimeError as e:
             self._send_json(409, {"error": str(e)})
             return
-        print(f"  [scrape] 继续任务 {task_id}")
+        _log(f"[scrape] 继续任务 {task_id}")
         self._send_json(200, {"ok": True, "taskId": task_id})
     POST["/api/scrape/resume"] = post_resume
 
@@ -288,7 +297,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         if ctl:
             ctl.reason = "cancelled"
             ctl.stop.set()
-            print(f"  [scrape] 收到取消请求: {task_id}")
+            _log(f"[scrape] 收到取消请求: {task_id}")
             self._send_json(200, {"ok": True, "cancelled": True})
             return
         # 线程已经不在了（例如任务处于「已暂停」）→ 直接落终态，不必再起线程
@@ -296,7 +305,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         if task and task["status"] in ("paused", "running"):
             state.set_scrape_task_status(task_id, "cancelled", error="已取消",
                                          ended_at=_now_iso())
-            print(f"  [scrape] 已取消暂停中的任务: {task_id}")
+            _log(f"[scrape] 已取消暂停中的任务: {task_id}")
             self._send_json(200, {"ok": True, "cancelled": True})
             return
         self._send_json(200, {"ok": True, "cancelled": False})

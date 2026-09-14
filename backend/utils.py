@@ -10,6 +10,15 @@ def _now_iso():
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
+def _log(msg):
+    """统一日志输出：带本地时间前缀并立即刷新，便于实时观察长任务进度。
+
+    服务端是长驻进程，stdout 默认块缓冲，长任务跑几分钟才刷出来会误判「卡死」。
+    这里用 flush=True 保证每条日志立刻可见。
+    """
+    print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+
+
 def _extract_token(handler):
     auth = handler.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
