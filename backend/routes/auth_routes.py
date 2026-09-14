@@ -1,4 +1,4 @@
-from ..utils import _extract_token
+from ..utils import _extract_token, _log
 
 
 def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
@@ -11,7 +11,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         password = str(payload.get("password", ""))
         token, user_info = auth.login(username, password)
         if token:
-            print(f"  [auth] {username} 登录成功")
+            _log(f"[auth] {username} 登录成功")
             self._send_json(200, {"token": token, "user": user_info})
         else:
             self._send_json(401, {"error": "用户名或密码错误"})

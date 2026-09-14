@@ -1,7 +1,7 @@
 from urllib.parse import urlparse, parse_qs
 
 from .. import product_fetcher
-from ..utils import _extract_token
+from ..utils import _extract_token, _log
 
 
 def run_review_task(state, asins, marketplace, sort_by, filter_star, verified_only, max_pages, task_id=None):
@@ -100,8 +100,8 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         task_id_in = payload.get("taskId")
         if not isinstance(task_id_in, str) or not task_id_in:
             task_id_in = None
-        print(f"  [review] 采集 {len(asins)} 个 ASIN 评论 @ {marketplace}"
-              f" (sortBy={sort_by}, maxPages={max_pages})")
+        _log(f"[review] 采集 {len(asins)} 个 ASIN 评论 @ {marketplace}"
+             f" (sortBy={sort_by}, maxPages={max_pages})")
         task_id, results = run_review_task(
             state, asins, marketplace, sort_by, filter_star, verified_only, max_pages,
             task_id=task_id_in,

@@ -3,6 +3,8 @@ import os
 import secrets
 import threading
 
+from .utils import _log
+
 
 class AuthManager:
     """
@@ -29,8 +31,8 @@ class AuthManager:
             }
             with open(self.users_path, "w", encoding="utf-8") as f:
                 json.dump(default, f, ensure_ascii=False, indent=2)
-            print(f"[info] 已创建用户配置: {self.users_path}")
-            print("  默认账号: admin / fba2025  ← 请尽快修改密码")
+            _log(f"[info] 已创建用户配置: {self.users_path}")
+            _log("  默认账号: admin / fba2025  ← 请尽快修改密码")
             return
         # 幂等补充 root 账号：AI分析模块暂时只对 root 开放，不动已有的 admin/editor
         users = self._load_users()
@@ -38,7 +40,7 @@ class AuthManager:
             users.append({"username": "root", "password": "fba2026root", "name": "Root", "role": "root"})
             with open(self.users_path, "w", encoding="utf-8") as f:
                 json.dump({"users": users}, f, ensure_ascii=False, indent=2)
-            print(f"[info] 已补充 root 账号到 {self.users_path}")
+            _log(f"[info] 已补充 root 账号到 {self.users_path}")
 
     def _load_users(self):
         try:

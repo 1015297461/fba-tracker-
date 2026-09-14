@@ -28,6 +28,8 @@ ASIN 信号（基于 SIF 真日粒度数据）：
 
 import datetime
 
+from .utils import _log
+
 
 # ---------------------------------------------------------------------------
 # 小工具
@@ -303,7 +305,7 @@ def run_engine(state, task_id: str, run_date: str, thresholds: dict = None,
 
     def _err(where, e):
         msg = f"{where}计算异常: {type(e).__name__}: {str(e)[:150]}"
-        print(f"  [sif] {msg}")
+        _log(f"[sif] {msg}")
         local_errs.append(msg)
 
     try:
@@ -317,7 +319,7 @@ def run_engine(state, task_id: str, run_date: str, thresholds: dict = None,
 
     if rows:
         state.save_signals(rows)
-        print(f"  [sif] {run_date} 产出 {len(rows)} 条信号")
+        _log(f"[sif] {run_date} 产出 {len(rows)} 条信号")
     if errors_out is not None:
         errors_out.extend(local_errs)
     return len(rows)

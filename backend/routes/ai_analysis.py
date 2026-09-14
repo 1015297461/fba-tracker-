@@ -5,7 +5,7 @@ import subprocess
 import threading
 from urllib.parse import urlparse, parse_qs
 
-from ..utils import _extract_token, _now_iso
+from ..utils import _extract_token, _now_iso, _log
 from ..workers.ai_analysis_worker import (
     AI_SKILLS, _check_login_state, _login_lock, _login_in_progress,
 )
@@ -100,7 +100,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             return
         params = payload.get("params") or {}
         tid = state.create_ai_task(skill_id, asin, user["username"], params)
-        print(f"  [ai] 创建分析任务 {tid}：{skill_id} / {asin} / {user['username']}")
+        _log(f"[ai] 创建分析任务 {tid}：{skill_id} / {asin} / {user['username']}")
         self._send_json(200, {"taskId": tid})
     POST["/api/ai/run"] = post_run
 
@@ -136,7 +136,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
                     timeout=330,
                 )
             except Exception as e:
-                print(f"[ai-login] {skill_id}/{user['username']} 登录脚本异常: {e}")
+                _log(f"[ai-login] {skill_id}/{user['username']} 登录脚本异常: {e}")
             finally:
                 with _login_lock:
                     _login_in_progress.discard(dedup_key)

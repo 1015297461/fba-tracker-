@@ -42,7 +42,7 @@ from urllib.parse import urlparse, parse_qs
 
 from .. import sif_fetcher, sif_signals
 from ..db import SIF_MAX_RETRIES_PER_DAY
-from ..utils import _extract_token, _now_iso
+from ..utils import _extract_token, _now_iso, _log
 
 # 正在执行的任务 id 集合（调度器与手动触发共用，避免同一任务并发跑）
 _running: set = set()
@@ -265,7 +265,7 @@ def execute_task(state, task: dict) -> dict:
         state.set_sif_task_status(tid, "error", error=msg[:500], run_at=_now_iso())
         state.update_sif_task(tid, {"enabled": False})
         stats["disabled"] = True
-        print(f"  [sif] 任务 {task['name']} {msg}")
+        _log(f"[sif] 任务 {task['name']} {msg}")
         return stats
 
     err = (f"{stats['errors']} 次调用失败：" + "; ".join(stats["error_detail"][:3])
@@ -273,21 +273,21 @@ def execute_task(state, task: dict) -> dict:
     state.set_sif_task_status(tid, "done" if not stats["errors"] else "partial", error=err,
                               run_at=_now_iso(), daily_at=run_date,
                               weekly_at=(run_date if weekly_due else None))
-    print(f"  [sif] 任务 {task['name']} 完成[{stats['tiers']}]: 词 {stats['discovered']} / "
+    _log(f"[sif] 任务 {task['name']} 完成[{stats['tiers']}]: 词 {stats['discovered']} / "
           f"ASIN {stats['asin_monitored']}(新{stats['asin_new']}) / 调用 {stats['calls']} / 信号 {signals}")
     return stats
 
 
 def _note_failure(state, tid: str, task: dict, error: str):
     """记录一次硬失败：累计当日次数，按指数退避排下次重试，到上限即熔断。"""
-    print(f"  [sif] 任务 {task['name']} 失败: {str(error)[:200]}")
+    _log(f"[sif] 任务 {task['name']} 失败: {str(error)[:200]}")
     try:
         r = state.mark_sif_task_failed(tid, str(error)[:500])
         state.log_sif_run(tid, _today(), "daily", None, _now_iso(), "error", {}, str(error)[:500])
         if r["tripped"]:
-            print(f"  [sif] 任务 {task['name']} 当天第 {r['failCount']} 次失败，已熔断，次日自动恢复")
+            _log(f"[sif] 任务 {task['name']} 当天第 {r['failCount']} 次失败，已熔断，次日自动恢复")
         elif r["nextRetryAt"]:
-            print(f"  [sif] 任务 {task['name']} 将在 {r['nextRetryAt'][11:]} 重试"
+            _log(f"[sif] 任务 {task['name']} 将在 {r['nextRetryAt'][11:]} 重试"
                   f"（当天第 {r['failCount']} 次失败）")
     except Exception:
         pass
@@ -298,7 +298,7 @@ def _disable_task(state, tid: str, task: dict, reason: str):
 
     这类错误重试多少次都不会成功，继续跑只是白烧配额，所以要人工确认后手动启用。
     """
-    print(f"  [sif] 任务 {task['name']} 遇到不可恢复错误，已停用: {str(reason)[:200]}")
+    _log(f"[sif] 任务 {task['name']} 遇到不可恢复错误，已停用: {str(reason)[:200]}")
     try:
         state.set_sif_task_status(tid, "error", error=f"[已停用] {str(reason)[:480]}",
                                   run_at=_now_iso())
@@ -325,7 +325,7 @@ def _launch(state, task: dict):
             else:
                 _note_failure(state, tid, task, str(e))
         except Exception as e:
-            print(f"  [sif] 任务 {task['name']} 异常: {e}")
+            _log(f"[sif] 任务 {task['name']} 异常: {e}")
             _note_failure(state, tid, task, str(e))
         finally:
             _mark(tid, False)
@@ -385,10 +385,10 @@ def start_scheduler(state):
                     continue
                 if (t.get("lastRunAt") or "")[:16] > stale:
                     continue
-                print(f"  [sif] 任务 {t['name']} 上次运行被中断，已标记失败")
+                _log(f"[sif] 任务 {t['name']} 上次运行被中断，已标记失败")
                 _note_failure(state, t["id"], t, "上次运行被中断（服务重启）")
         except Exception as e:
-            print(f"  [sif] 启动恢复检查异常: {e}")
+            _log(f"[sif] 启动恢复检查异常: {e}")
 
         while True:
             try:
@@ -400,15 +400,15 @@ def start_scheduler(state):
                         continue
                     if not _freq_hit(t, today, weekday, now_hm, now_iso):
                         continue
-                    print(f"  [sif] 定时触发 {t['name']}（{t.get('freqType')} {t.get('scheduleTime')}）@ {now_hm}")
+                    _log(f"[sif] 定时触发 {t['name']}（{t.get('freqType')} {t.get('scheduleTime')}）@ {now_hm}")
                     _launch(state, t)
             except Exception as e:
-                print(f"  [sif] 调度循环异常: {e}")
+                _log(f"[sif] 调度循环异常: {e}")
             time.sleep(60)
 
     th = threading.Thread(target=loop, daemon=True, name="SifScheduler")
     th.start()
-    print("[sif] 爆品关键词监控调度线程已启动（每天 / 每 N 天 / 每周周几 + 自定义时刻，分层抓取）")
+    _log("[sif] 爆品关键词监控调度线程已启动（每天 / 每 N 天 / 每周周几 + 自定义时刻，分层抓取）")
 
 
 # ---------------------------------------------------------------------------
@@ -859,7 +859,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
                                        state.get_sif_settings().get("thresholds", {}),
                                        task.get("direction") or "")
             except Exception as e:
-                print(f"  [sif] 入池信号计算失败: {e}")
+                _log(f"[sif] 入池信号计算失败: {e}")
         self._send_json(200, {"ok": True, "added": added, "calls": stats["calls"],
                               "errors": stats["error_detail"][:3]})
     POST["/api/sif/pool/add"] = post_pool_add

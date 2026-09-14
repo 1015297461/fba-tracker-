@@ -30,13 +30,34 @@ import argparse
 import socketserver
 from urllib.parse import urlparse
 
-from .utils import PROJECT_ROOT
+from .utils import PROJECT_ROOT, _log
 from .db import DbState
 from .auth import AuthManager
 from .workers.export_worker import ExportWorker
 from .workers.ai_analysis_worker import AiAnalysisWorker
 from . import pdf_splitter
 from .routes import auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis, sif_keywords
+
+
+# 正常 HTTP 请求行的起始标记。用 HTTPS 打到 HTTP 端口时，服务端读到的其实是
+# TLS 握手二进制包，按 iso-8859-1 解码后会变成一堆带控制字符的乱码；命中这个
+# 白名单之外的请求行一律不做原样打印，避免终端刷屏乱码。
+_HTTP_METHOD_PREFIXES = (
+    "GET ", "POST ", "PUT ", "DELETE ", "HEAD ",
+    "OPTIONS ", "PATCH ", "CONNECT ", "TRACE ",
+)
+
+
+def _sanitize_log(raw):
+    """把访问日志里的请求行清洗成可读文本。
+
+    正常请求行（"GET /x HTTP/1.1"）与状态码（"404"/"400"）原样返回；
+    其余（含二进制/非 ASCII 字节的异常请求）返回一句提示，不再打印乱码。
+    """
+    s = str(raw)
+    if s.startswith(_HTTP_METHOD_PREFIXES) or s.isdigit():
+        return s[:200]
+    return "[非文本/非 HTTP 请求，可能是 HTTPS 打到了 HTTP 端口]"
 
 
 def get_lan_ip():
@@ -86,10 +107,11 @@ def make_handler(state, auth, ai_worker):
             super().end_headers()
 
         def log_message(self, fmt, *args):
-            path = args[0] if args else ""
-            if "/api/" in str(path):
+            raw = str(args[0]) if args else ""
+            # /api/ 请求（尤其是前端 2 秒一次的进度轮询）不打日志，避免刷屏。
+            if "/api/" in raw:
                 return
-            print(f"  {self.address_string()} — {path}")
+            _log(f"{self.address_string()} — {_sanitize_log(raw)}")
 
         # ---- GET ----
 
@@ -246,7 +268,8 @@ def main():
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n已停止")
+        print()  # 空行分隔，避免和上一条日志挤在一起
+        _log("已停止")
 
 
 if __name__ == "__main__":

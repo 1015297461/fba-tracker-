@@ -5,7 +5,7 @@ import time
 from urllib.parse import urlparse, parse_qs
 
 from .. import rank_fetcher
-from ..utils import _extract_token, _now_iso
+from ..utils import _extract_token, _now_iso, _log
 
 
 def run_rank_task(state, task, delay_between_kw=(3.0, 7.0)):
@@ -52,21 +52,21 @@ def start_scheduler(state):
                     if key in done:
                         continue
                     done.add(key)
-                    print(f"[rank] 定时执行 {task['asin']}/{task['marketplace']} "
+                    _log(f"[rank] 定时执行 {task['asin']}/{task['marketplace']} "
                           f"({len(task['keywords'])} 词) @ {slot}")
                     try:
                         run_rank_task(state, task)
                     except Exception as e:
-                        print(f"[rank] 任务异常: {e}")
+                        _log(f"[rank] 任务异常: {e}")
                 if len(done) > 800:
                     done = {k for k in done if k[1] >= today}
             except Exception as e:
-                print(f"[rank] 调度异常: {e}")
+                _log(f"[rank] 调度异常: {e}")
             time.sleep(60)
 
     th = threading.Thread(target=loop, daemon=True)
     th.start()
-    print("[rank] 排名调度线程已启动（每分钟检查 0/6/12/18 档位）")
+    _log("[rank] 排名调度线程已启动（每分钟检查 0/6/12/18 档位）")
 
 
 def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
@@ -121,7 +121,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             return
         if not task.get("id"):
             task = state.upsert_rank_task(task)
-        print(f"  [rank] 手动执行 {task['asin']}/{task['marketplace']}")
+        _log(f"[rank] 手动执行 {task['asin']}/{task['marketplace']}")
         results = run_rank_task(state, task)
         self._send_json(200, {"taskId": task["id"], "results": results})
     POST["/api/rank/run"] = post_run

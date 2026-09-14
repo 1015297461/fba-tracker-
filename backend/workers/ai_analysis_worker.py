@@ -4,7 +4,7 @@ import subprocess
 import threading
 import time
 
-from ..utils import _now_iso, PROJECT_ROOT
+from ..utils import _now_iso, PROJECT_ROOT, _log
 
 # 无人值守跑 `claude -p` 时收窄到 SKILL.md 自己声明允许使用的工具，
 # 不用 --dangerously-skip-permissions / bypassPermissions 整体放开。
@@ -91,7 +91,7 @@ class AiAnalysisWorker:
             try:
                 self._tick()
             except Exception as e:
-                print(f"[ai-worker] tick error: {e}")
+                _log(f"[ai-worker] tick error: {e}")
             threading.Event().wait(3.0)
 
     def _tick(self):
@@ -175,12 +175,12 @@ class AiAnalysisWorker:
             self._state.update_ai_task(
                 tid, status="cancelled", error="用户手动结束", completed_at=_now_iso(),
             )
-            print(f"[ai-worker] task {tid} cancelled by user")
+            _log(f"[ai-worker] task {tid} cancelled by user")
             return
 
         if error_msg:
             self._state.update_ai_task(tid, status="failed", error=error_msg, completed_at=_now_iso())
-            print(f"[ai-worker] task {tid} failed: {error_msg}")
+            _log(f"[ai-worker] task {tid} failed: {error_msg}")
             return
 
         files = []
@@ -204,7 +204,7 @@ class AiAnalysisWorker:
             self._state.update_ai_task(
                 tid, status="failed", error=err[:2000], files=files, completed_at=_now_iso(),
             )
-            print(f"[ai-worker] task {tid} failed, returncode={returncode}")
+            _log(f"[ai-worker] task {tid} failed, returncode={returncode}")
             return
 
         summary = ((result_obj or {}).get("result") or "")[:500]
@@ -215,4 +215,4 @@ class AiAnalysisWorker:
         self._state.update_ai_task(
             tid, status="done", summary=summary, files=files, completed_at=_now_iso(),
         )
-        print(f"[ai-worker] task {tid} done, {len(files)} files, cost=${cost:.4f}")
+        _log(f"[ai-worker] task {tid} done, {len(files)} files, cost=${cost:.4f}")

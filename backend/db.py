@@ -5,7 +5,7 @@ import sqlite3
 import secrets
 import threading
 
-from .utils import _now_iso, PROJECT_ROOT
+from .utils import _now_iso, PROJECT_ROOT, _log
 
 # SIF 任务失败退避策略：第 n 次失败后等待对应分钟数再重试；当天失败次数达到
 # 上限即熔断（次日计划时刻自动重置）。目的是让「每天最多浪费 3 次配额」，
@@ -42,14 +42,14 @@ def _dedupe_scrape_products(conn):
                 json.dump(rows, f, ensure_ascii=False, indent=2)
         except Exception as e:
             # 备份失败就不动数据：宁可保留重复，也不要丢掉可追溯性
-            print(f"[warn] 采集结果去重已跳过：备份写入失败（{e}）")
+            _log(f"[warn] 采集结果去重已跳过：备份写入失败（{e}）")
             return
         conn.execute(
             "DELETE FROM scrape_products WHERE id NOT IN "
             "(SELECT MAX(id) FROM scrape_products GROUP BY task_id, asin)"
         )
-        print(f"[info] 采集结果去重：删除 {len(rows)} 条重复行，原数据已备份到 "
-              f"data/{os.path.basename(backup)}")
+        _log(f"[info] 采集结果去重：删除 {len(rows)} 条重复行，原数据已备份到 "
+             f"data/{os.path.basename(backup)}")
 
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_scrape_prod_task_asin "
                  "ON scrape_products(task_id, asin)")
@@ -491,7 +491,7 @@ class DbState:
                     )
                 """)
                 conn.commit()
-                print("[info] SIF 模块已迁移到 v2（爆品关键词监控），旧任务与快照数据已清空")
+                _log("[info] SIF 模块已迁移到 v2（爆品关键词监控），旧任务与快照数据已清空")
 
             # SIF v2.1：失败退避 / 熔断字段。新表已含这三列，这里只为老库补列，
             # 所以重建之后重新读一次列信息，避免重复 ADD COLUMN。
@@ -2190,10 +2190,10 @@ class DbState:
                     [str(orig_version)],
                 )
                 conn.commit()
-            print(f"[info] 已从 {json_path} 迁移 {len(products)} 条产品 (v{orig_version})")
+            _log(f"[info] 已从 {json_path} 迁移 {len(products)} 条产品 (v{orig_version})")
             return True
         except Exception as e:
-            print(f"[warn] JSON 迁移失败: {e}")
+            _log(f"[warn] JSON 迁移失败: {e}")
             return False
 
     @property

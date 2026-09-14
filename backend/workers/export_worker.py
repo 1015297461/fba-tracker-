@@ -3,7 +3,7 @@ import os
 import threading
 
 from .. import pdf_splitter
-from ..utils import _now_iso, PROJECT_ROOT
+from ..utils import _now_iso, PROJECT_ROOT, _log
 
 
 def _build_products_xlsx(products: list, progress_cb=None) -> bytes:
@@ -171,7 +171,7 @@ class ExportWorker:
             try:
                 self._tick()
             except Exception as e:
-                print(f"[export-worker] tick error: {e}")
+                _log(f"[export-worker] tick error: {e}")
             threading.Event().wait(2.0)
 
     def _tick(self):
@@ -242,4 +242,4 @@ class ExportWorker:
                 error=str(e),
                 completed_at=_now_iso(),
             )
-            print(f"[export-worker] job {jid} failed: {e}")
+            _log(f"[export-worker] job {jid} failed: {e}")

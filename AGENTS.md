@@ -67,7 +67,9 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   ThreadingServer、get_lan_ip()
   utils.py                    # 全局共用：PROJECT_ROOT（=backend/ 的上一级，data/、skills/ 等
                               #   资源路径都锚定在这里，不用各模块自己的 __file__）、
-                              #   _now_iso()、_extract_token()
+                              #   _now_iso()、_extract_token()、
+                              #   _log()（统一日志出口：带 [YYYY-MM-DD HH:MM:SS] 前缀 + flush，
+                              #   所有后端运行时日志都应走它，别用裸 print）
   db.py                       # DbState 类：SQLite 建表/迁移 + 所有表的读写方法（乐观锁核心）
   auth.py                     # AuthManager 类：Token 登录/登出，fba-users.json 读写
   workers/
@@ -80,7 +82,10 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
     auth_routes.py             # /api/login /api/logout /api/me
     products.py                 # /api/products (GET/PUT) + /api/trash/*（回收站）
     rank.py                     # /api/rank/*，含 run_rank_task()/start_scheduler()
-    scrape.py                   # /api/scrape/*，含 run_scrape_task()
+    scrape.py                   # /api/scrape/*：start_scrape_task()/_run_scrape() 服务端后台
+                                #   执行器（POST /start 立即返回 taskId，前端轮询 /progress，
+                                #   刷新不丢任务）+ 运行时暂停/取消/继续（/pause /resume /cancel，
+                                #   断点续跑）+ recover_stale_tasks() 重启自动恢复
     review.py                   # /api/review/*，含 run_review_task()
     sif_keywords.py              # /api/sif/*，SIF 爆品关键词监控：任务 CRUD + 三档频率调度器（daily/every_n/weekly）
                               #   + 分层抓取编排 execute_task() + 看板/趋势/信号/入池/设置/点查路由
