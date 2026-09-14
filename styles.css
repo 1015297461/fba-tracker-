@@ -2232,6 +2232,7 @@ select.meta-edit { cursor: pointer; }
 
 .ps-progress { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card-bg); }
 .ps-progress-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--ink-3); }
+.ps-progress-sub { margin-left: 8px; opacity: 0.7; }
 .ps-progress-bar { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; }
 .ps-progress-fill { height: 100%; background: var(--blue); transition: width 0.2s; }
 

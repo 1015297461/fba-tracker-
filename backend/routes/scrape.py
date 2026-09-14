@@ -33,11 +33,18 @@ PROGRESS_LOG_EVERY = 25
 
 
 class _TaskCtl:
-    """一次执行的停止信号。reason 区分「暂停」与「取消」，决定线程退出时落哪个状态。"""
+    """一次执行的停止信号 + 本轮进度基线。reason 区分「暂停」与「取消」。"""
 
     def __init__(self):
         self.stop = threading.Event()
         self.reason = "cancelled"
+        # 本轮进度基线（提交时同步算好，供 /progress 返回「本轮」口径）：
+        #   base_success 本轮开跑前已成功的 ASIN 数
+        #   run_total    本轮待跑的 ASIN 数（= 全部 − 已成功）
+        #   first_run    是否该任务的首次执行（库里还没有任何结果行）
+        self.base_success = 0
+        self.run_total = 0
+        self.first_run = True
 
 
 def _active_task_id():
@@ -48,6 +55,25 @@ def _active_task_id():
 def _ctl(task_id):
     with _running_lock:
         return _running.get(task_id)
+
+
+def _run_progress(ctl, task):
+    """按「本轮」口径算进度；无活跃执行时返回 None。
+
+    分母 = 本轮工作集（全量 ASIN − 本轮开跑前已成功的）；分子分两种：
+      - 首次执行：已处理数（成功 + 失败）
+      - 重试 / 续跑：本轮重新成功的数量（success − base_success）
+
+    为什么重试不能用「成功 + 失败」：失败项早已在结果表里（有行=已处理），
+    重试时它们正被重新抓，若仍算作「已完成」→ success + failed 恒等于 total，
+    进度条会一开跑就 100% 且全程不动。
+    """
+    if ctl is None:
+        return None
+    success = task.get("success") or 0
+    failed = task.get("failed") or 0
+    done = (success + failed) if ctl.first_run else (success - ctl.base_success)
+    return {"done": max(0, done), "total": ctl.run_total}
 
 
 def _run_scrape(state, task_id, marketplace, with_reviews, ctl):
@@ -147,10 +173,19 @@ def start_scrape_task(state, asins, marketplace, with_reviews, task_id=None):
             state.update_scrape_task_asins(task_id, merged)
         else:
             task_id = state.create_scrape_task(marketplace, asins, with_reviews)
+            merged = asins
         _running[task_id] = ctl
         # 同步落状态再返回：否则 start 一返回、后台线程还没调度起来时，任务状态仍是
         # 上一轮的终态（partial/completed），前端轮询会误判成「已结束」。
         state.set_scrape_task_status(task_id, "running", error=None)
+        # 同步算「本轮」进度基线：start 返回后前端第一次轮询就能读到正确基数，
+        # 不会先闪现一次按任务累计口径算的 100%（重试场景尤其明显）。
+        done = state.get_scrape_done_asins(task_id)
+        snapshot = state.get_scrape_task(task_id) or {}
+        ctl.base_success = len(done)
+        ctl.run_total = sum(1 for a in merged if a not in done)
+        ctl.first_run = ((snapshot.get("success") or 0)
+                         + (snapshot.get("failed") or 0)) == 0
 
     threading.Thread(target=_run_scrape,
                      args=(state, task_id, marketplace, with_reviews, ctl),
@@ -212,6 +247,8 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             "live": ctl is not None,
             # 停止信号已发出但线程还没退出：前端可显示「正在暂停…」
             "stopping": bool(ctl and ctl.stop.is_set()),
+            # 「本轮」进度：分母是本轮工作集（首次=全部 ASIN；重试/续跑=未成功的那些）
+            "run": _run_progress(ctl, task),
         })
     GET["/api/scrape/progress"] = get_progress
 

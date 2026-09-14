@@ -85,7 +85,11 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
     scrape.py                   # /api/scrape/*：start_scrape_task()/_run_scrape() 服务端后台
                                 #   执行器（POST /start 立即返回 taskId，前端轮询 /progress，
                                 #   刷新不丢任务）+ 运行时暂停/取消/继续（/pause /resume /cancel，
-                                #   断点续跑）+ recover_stale_tasks() 重启自动恢复
+                                #   断点续跑）+ recover_stale_tasks() 重启自动恢复。
+                                #   /progress 除 task 外还返回 run{done,total}＝「本轮」口径
+                                #   （分母=本轮工作集）；重试用它，否则任务累计口径
+                                #   (success+failed) 会把待重试项算成已完成 → 一开跑就 100%
+                                #   且不动。计算见 _run_progress()
     review.py                   # /api/review/*，含 run_review_task()
     sif_keywords.py              # /api/sif/*，SIF 爆品关键词监控：任务 CRUD + 三档频率调度器（daily/every_n/weekly）
                               #   + 分层抓取编排 execute_task() + 看板/趋势/信号/入池/设置/点查路由

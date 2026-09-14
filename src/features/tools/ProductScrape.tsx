@@ -437,13 +437,15 @@ async function apiStartScrape(asins: string[], marketplace: string, withReviews:
   }
   return (await r.json()).taskId;
 }
-async function apiGetProgress(taskId: string): Promise<{ task: ScrapeTask; stopping: boolean }> {
+async function apiGetProgress(taskId: string): Promise<{ task: ScrapeTask; stopping: boolean; run: { done: number; total: number } | null }> {
   const r = await fetch('/api/scrape/progress?taskId=' + encodeURIComponent(taskId), { headers: authHeaders() });
   if (!r.ok) throw new Error('读取采集进度失败');
   const d = await r.json();
   // stopping：停止信号已发出、线程还没退出。用来把按钮显示成「正在暂停…」，
   // 避免用户以为没点上而反复点。
-  return { task: d.task, stopping: !!d.stopping };
+  // run：「本轮」进度（分母=本轮工作集，首次=全部 ASIN、重试=未成功的那些）。
+  // 重试失败项时任务累计口径（success+failed）会一开跑就 100%，只有 run 才准确。
+  return { task: d.task, stopping: !!d.stopping, run: d.run || null };
 }
 // 暂停与取消都只是给服务端线程一个停止信号，线程在检查点退出，已抓到的结果一条不丢。
 // 暂停停在断点、可随时「继续」；取消是终止本次执行，结果同样保留、也能再「继续」。
@@ -587,8 +589,11 @@ export function ProductScrape() {
   const [withReviews, setWithReviews] = React.useState(false);
   const [products, setProducts]       = React.useState<ScrapedProduct[]>([]);
   const [running, setRunning]         = React.useState(false);
-  // 进度直接取自服务端（success + failed / total），前端不再自己数批次
+  // 「本轮」进度：进度条用它。分母=本轮工作集（首次=全部 ASIN；重试/续跑=未成功的那些），
+  // 取自服务端 /progress 的 run 字段——重试时用任务累计口径会一开跑就 100% 且不动。
   const [progress, setProgress]       = React.useState({ completed: 0, total: 0 });
+  // 任务累计进度（次要显示）：成功 success / 总数 total
+  const [taskProgress, setTaskProgress] = React.useState({ success: 0, total: 0 });
   // 已发出暂停/取消信号、等待服务端线程退出——用于把按钮显示成「正在暂停…」
   const [stopping, setStopping]       = React.useState(false);
   const [tasks, setTasks]             = React.useState<ScrapeTask[]>([]);
@@ -652,9 +657,16 @@ export function ProductScrape() {
     setActiveTaskId(taskId);
     const tick = async () => {
       try {
-        const { task: t, stopping: isStopping } = await apiGetProgress(taskId);
+        const { task: t, stopping: isStopping, run } = await apiGetProgress(taskId);
         setStopping(isStopping);
-        setProgress({ completed: t.success + t.failed, total: t.total });
+        setTaskProgress({ success: t.success, total: t.total });
+        if (run && run.total > 0) {
+          // 本轮进度：首次=已处理/全部；重试=本轮已成功/待重试数
+          setProgress({ completed: run.done, total: run.total });
+        } else {
+          // 基线未就绪（start 刚返回的瞬间）或无活跃执行：回退到任务累计口径
+          setProgress({ completed: t.success + t.failed, total: t.total });
+        }
         // 只有 running 才算还在跑：paused / cancelled / completed / partial / error
         // 都是终态或待续跑状态，轮询到此为止（暂停后用户可点「继续」再起一轮）。
         if (t.status !== 'running') {
@@ -710,6 +722,8 @@ export function ProductScrape() {
     try {
       await apiResetSession(marketplace);
       await apiStartScrape(failedProducts.map(p => p.asin), marketplace, withReviews, activeTaskId);
+      // 立即切到本轮口径（待重试数），避免闪现上一轮残留的 100%
+      setProgress({ completed: 0, total: failedProducts.length });
       startPolling(activeTaskId);
     } catch (e: any) { setErr(e.message || '提交重试失败'); }
   }
@@ -902,7 +916,12 @@ export function ProductScrape() {
           <div className="ps-progress">
             <div className="ps-progress-row">
               <span>{stopping ? '正在停止…' : '采集中'}</span>
-              <span>{progress.total > 0 ? `${progress.completed}/${progress.total}（${progressPct}%）` : ''}</span>
+              <span>
+                {progress.total > 0 ? `${progress.completed}/${progress.total}（${progressPct}%）` : ''}
+                {taskProgress.total > 0 && (
+                  <span className="ps-progress-sub">成功 {taskProgress.success}/{taskProgress.total}</span>
+                )}
+              </span>
             </div>
             {progress.total > 0 && (
               <div className="ps-progress-bar"><div className="ps-progress-fill" style={{ width: progressPct + '%' }} /></div>
