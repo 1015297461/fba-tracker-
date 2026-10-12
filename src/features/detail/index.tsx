@@ -596,10 +596,10 @@ function TabProd({ p }: { p: any }) {
     }
   }
 
-  // 产品层聚合：合同承诺、已履约结算与当前待付各自独立，避免一个金额承担多种口径。
+  // 产品层聚合：合同承诺与已履约结算各自独立，避免一个金额承担多种口径。
+  // （原「当前待付」汇总已按要求隐藏；computeBatch 仍计算该口径，便于随时恢复。）
   const totalContractAmount = allBatches.reduce((sum, b) => sum + computeBatch(b, hasVariants).contractTotal, 0);
   const totalShippedSettlement = allBatches.reduce((sum, b) => sum + computeBatch(b, hasVariants).shippedSettlement, 0);
-  const totalCurrentOutstanding = allBatches.reduce((sum, b) => sum + computeBatch(b, hasVariants).currentOutstanding, 0);
 
   const skuEntries = Object.values(skuQtyMap).filter(e => e.qty > 0);
   const prodHeaderExtra = totalOrderQty > 0 ? (
@@ -629,7 +629,6 @@ function TabProd({ p }: { p: any }) {
         </span>
       )}
       {totalShippedSettlement > 0 && <span className="shs-item"><span className="shs-lbl">已出货结算</span><span className="shs-val mono">¥{totalShippedSettlement.toFixed(2)}</span></span>}
-      {totalCurrentOutstanding > 0 && <span className="shs-item"><span className="shs-lbl">当前待付</span><span className="shs-val mono" style={{color:'var(--orange)'}}>¥{totalCurrentOutstanding.toFixed(2)}</span></span>}
     </div>
   ) : null;
 
@@ -643,7 +642,6 @@ function TabProd({ p }: { p: any }) {
           {allBatches.map((b, idx) => {
             const c = computeBatch(b, hasVariants);
             const pendingClass = c.pendingQty < 0 ? 'rmc-warn' : c.pendingQty === 0 && c.orderQty > 0 ? 'rmc-done' : 'rmc-pending';
-            const paidClass = c.currentOutstanding === 0 ? 'rmc-done' : c.actualTotalPaid > 0 ? 'rmc-pending' : 'rmc-warn';
             const depositActualVal = Number(b.depositActual) || 0;
             const tailPaidVal = c.actualTotalPaid - depositActualVal;
             const batchMeta = (
@@ -660,9 +658,12 @@ function TabProd({ p }: { p: any }) {
                   </span>
                   <span className="rmc-val">{c.pendingQty > 0 ? c.pendingQty + ' pcs' : c.pendingQty < 0 ? '超出' + Math.abs(c.pendingQty) : '✓'}</span>
                 </span>}
-                {c.contractTotal > 0 && c.orderQty > 0 && <span className={"record-meta-chip " + paidClass}>
-                  <span className="rmc-val">{c.currentOutstanding > 0 ? '当前待付 ¥' + c.currentOutstanding.toFixed(2) : c.prepaymentBalance > 0 ? '预付 ¥' + c.prepaymentBalance.toFixed(2) : c.contractPaidComplete ? '合同已付清' : '当前无待付'}</span>
-                </span>}
+                {/* 「当前待付」「预付」两个口径已按要求隐藏，此处仅保留「合同已付清」这一确定状态 */}
+                {c.contractTotal > 0 && c.orderQty > 0 && c.contractPaidComplete && (
+                  <span className="record-meta-chip rmc-done">
+                    <span className="rmc-val">合同已付清</span>
+                  </span>
+                )}
                 {c.actualTotalPaid > 0 && (
                   <span className="record-meta-chip"><span className="rmc-lbl">
                     <FieldHint label="已付" hint={`= 实际预付款(¥${depositActualVal.toFixed(2)}) + 尾款支付记录合计(¥${tailPaidVal.toFixed(2)}) = ¥${c.actualTotalPaid.toFixed(2)}`} />
@@ -832,10 +833,7 @@ function TabProd({ p }: { p: any }) {
                       <span className="payment-hdr-summary" style={{marginLeft:12, fontSize:11.5, fontFamily:'var(--font-mono)'}}>
                         合同已付 <strong style={c.contractPaidComplete ? {color:'var(--green)'} : {color:'var(--orange)'}}>¥{c.actualTotalPaid.toFixed(2)}</strong>
                         &nbsp;/&nbsp;¥{c.contractTotal.toFixed(2)}
-                        {c.currentOutstanding > 0 ? <>&nbsp;·&nbsp;当前待付 <strong style={{color:'var(--orange)'}}>¥{c.currentOutstanding.toFixed(2)}</strong></>
-                          : c.prepaymentBalance > 0 ? <>&nbsp;·&nbsp;<strong style={{color:'var(--blue)'}}>预付 ¥{c.prepaymentBalance.toFixed(2)}</strong></>
-                          : c.contractPaidComplete ? <>&nbsp;·&nbsp;<strong style={{color:'var(--green)'}}>✓ 合同已付清</strong></>
-                          : <>&nbsp;·&nbsp;<span style={{color:'var(--ink-4)'}}>当前无待付</span></>}
+                        {c.contractPaidComplete && <>&nbsp;·&nbsp;<strong style={{color:'var(--green)'}}>✓ 合同已付清</strong></>}
                       </span>
                     )}
                   </div>
@@ -855,10 +853,7 @@ function TabProd({ p }: { p: any }) {
                       <span className="calc-field-label"><FieldHint label="未履约合同承诺" placement="right" hint={`= 采购合同总额(¥${c.contractTotal.toFixed(2)}) − 累计已出货结算(¥${c.shippedSettlement.toFixed(2)}) = ¥${c.unfulfilledCommitment.toFixed(2)}`} /></span>
                       <span className="calc-field-value mono">¥{c.unfulfilledCommitment.toFixed(2)}</span>
                     </div>
-                    <div className="calc-field">
-                      <span className="calc-field-label"><FieldHint label="当前待付" placement="right" hint={`= max(0, 累计已出货结算 ¥${c.shippedSettlement.toFixed(2)} − 累计已付 ¥${c.actualTotalPaid.toFixed(2)}) = ¥${c.currentOutstanding.toFixed(2)}；仅代表已履约部分尚未覆盖的付款。`} /></span>
-                      <span className="calc-field-value mono" style={c.currentOutstanding > 0 ? {color:'var(--orange)',fontWeight:600} : {color:'var(--green)'}}>¥{c.currentOutstanding.toFixed(2)}</span>
-                    </div>
+                    {/* 「当前待付」（= 累计已出货结算 − 累计已付）已按要求隐藏；口径仍在 computeBatch 里计算，可随时恢复 */}
                     <EditField label="预付款比例" type="number" mono suffix="%" value={b.depositPct}
                       hint="手动填写，用于计算「理论预付款」= 采购合同总额 × 该比例" hintPlacement="right"
                       onChange={v => updateRecord(p.id, 'production', 'batches', b.id, { depositPct:v })} />
@@ -881,7 +876,7 @@ function TabProd({ p }: { p: any }) {
                       </span>
                       <span className="calc-field-value mono" style={c.contractPaidComplete ? {color:'var(--green)',fontWeight:600} : {color:'var(--orange)',fontWeight:600}}>¥{c.actualTotalPaid.toFixed(2)}</span>
                     </div>
-                    <div className="calc-field"><span className="calc-field-label"><FieldHint label="预付余额" placement="right" hint={`= max(0, 已付总金额 ¥${c.actualTotalPaid.toFixed(2)} − 累计已出货结算 ¥${c.shippedSettlement.toFixed(2)}) = ¥${c.prepaymentBalance.toFixed(2)}`} /></span><span className="calc-field-value mono" style={{color:'var(--blue)'}}>¥{c.prepaymentBalance.toFixed(2)}</span></div>
+                    {/* 「预付余额」（= 已付总金额 − 累计已出货结算）已按要求隐藏；口径仍在 computeBatch 里计算，可随时恢复 */}
                     <div className="calc-field"><span className="calc-field-label"><FieldHint label="合同未付余额" placement="right" hint={`= max(0, 采购合同总额 ¥${c.contractTotal.toFixed(2)} − 已付总金额 ¥${c.actualTotalPaid.toFixed(2)}) = ¥${c.contractOutstanding.toFixed(2)}`} /></span><span className="calc-field-value mono">¥{c.contractOutstanding.toFixed(2)}</span></div>
                   </div>
 
@@ -988,6 +983,9 @@ function TabProd({ p }: { p: any }) {
                         const settled = c.shipmentSettlements[sh.id];
                         const extraAllocated = settled?.extraAmount || 0;
                         const currentSettlement = settled?.total || 0;
+                        // 待付尾款 = 本次应结 × 尾款比例（尾款比例 = c.balancePct，默认 100% − 预付款比例，可手动覆盖）。
+                        // 仅对「已实际出货」的记录有意义（计划记录没有应结），所以 settled 为空时按 0 处理。
+                        const tailDue = +((settled ? currentSettlement : 0) * (Number(c.balancePct) || 0) / 100).toFixed(2);
                         const settlementHintWithExtra = settled
                           ? `${settlementHint} + 本次归属费用(¥${extraAllocated.toFixed(2)}) = ¥${currentSettlement.toFixed(2)}`
                           : `${settlementHint}；尚未填写实际出货日期，仅作计划货值，不计入当前应付。`;
@@ -997,7 +995,7 @@ function TabProd({ p }: { p: any }) {
                               <button className="sec-toggle" onClick={e => { e.stopPropagation(); toggleSection(b.id+'|sh|'+sh.id); }}>{isExpanded(b.id+'|sh|'+sh.id) ? '▾' : '▸'}</button>
                               <span className="batch-ship-no">#{shIdx + 1}</span>
                               <span className="batch-ship-info">
-                                {(sh.shipDate || sh.expectedShip) || '日期未填'}{shVariantNames ? ' · ' + shVariantNames : ''} · {shQty} pcs{shSettlement !== 0 ? <>&nbsp;·&nbsp;<FieldHint label={<span>{settled ? '本次应结' : '计划货值'} <strong>¥{(settled ? currentSettlement : shSettlement).toFixed(2)}</strong></span>} placement="bottom" hint={settlementHintWithExtra} /></> : ''} · {sh.method || '—'}{sh.carrier ? ' · ' + sh.carrier : ''}
+                                {(sh.shipDate || sh.expectedShip) || '日期未填'}{shVariantNames ? ' · ' + shVariantNames : ''} · {shQty} pcs{shSettlement !== 0 ? <>&nbsp;·&nbsp;<FieldHint label={<span>{settled ? '本次应结' : '计划货值'} <strong>¥{(settled ? currentSettlement : shSettlement).toFixed(2)}</strong></span>} placement="bottom" hint={settlementHintWithExtra} /></> : ''}{settled && tailDue > 0 ? <>&nbsp;·&nbsp;<FieldHint label={<span style={{color:'var(--orange)'}}>待付尾款 <strong>¥{tailDue.toFixed(2)}</strong></span>} placement="bottom" hint={`= 本次应结(¥${currentSettlement.toFixed(2)}) × 尾款比例(${c.balancePct}%) = ¥${tailDue.toFixed(2)}`} /></> : ''} · {sh.method || '—'}{sh.carrier ? ' · ' + sh.carrier : ''}
                               </span>
                               <StatusSelect value={sh.status} size="sm"
                                 onChange={v => updateBatchShipment(p.id, b.id, sh.id, { status: v })} />
