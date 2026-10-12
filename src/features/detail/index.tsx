@@ -983,8 +983,8 @@ function TabProd({ p }: { p: any }) {
                         const settled = c.shipmentSettlements[sh.id];
                         const extraAllocated = settled?.extraAmount || 0;
                         const currentSettlement = settled?.total || 0;
-                        // 待付尾款 = 本次应结 × 尾款比例（尾款比例 = c.balancePct，默认 100% − 预付款比例，可手动覆盖）。
-                        // 仅对「已实际出货」的记录有意义（计划记录没有应结），所以 settled 为空时按 0 处理。
+                        // 应付尾款 = 本次应结 × 尾款比例（尾款比例 = c.balancePct，默认 100% − 预付款比例，可手动覆盖）。
+                        // 展示在出货明细的展开体里；仅对「已实际出货」的记录有意义（计划记录没有应结），settled 为空时按 0 处理。
                         const tailDue = +((settled ? currentSettlement : 0) * (Number(c.balancePct) || 0) / 100).toFixed(2);
                         const settlementHintWithExtra = settled
                           ? `${settlementHint} + 本次归属费用(¥${extraAllocated.toFixed(2)}) = ¥${currentSettlement.toFixed(2)}`
@@ -995,7 +995,7 @@ function TabProd({ p }: { p: any }) {
                               <button className="sec-toggle" onClick={e => { e.stopPropagation(); toggleSection(b.id+'|sh|'+sh.id); }}>{isExpanded(b.id+'|sh|'+sh.id) ? '▾' : '▸'}</button>
                               <span className="batch-ship-no">#{shIdx + 1}</span>
                               <span className="batch-ship-info">
-                                {(sh.shipDate || sh.expectedShip) || '日期未填'}{shVariantNames ? ' · ' + shVariantNames : ''} · {shQty} pcs{shSettlement !== 0 ? <>&nbsp;·&nbsp;<FieldHint label={<span>{settled ? '本次应结' : '计划货值'} <strong>¥{(settled ? currentSettlement : shSettlement).toFixed(2)}</strong></span>} placement="bottom" hint={settlementHintWithExtra} /></> : ''}{settled && tailDue > 0 ? <>&nbsp;·&nbsp;<FieldHint label={<span style={{color:'var(--orange)'}}>待付尾款 <strong>¥{tailDue.toFixed(2)}</strong></span>} placement="bottom" hint={`= 本次应结(¥${currentSettlement.toFixed(2)}) × 尾款比例(${c.balancePct}%) = ¥${tailDue.toFixed(2)}`} /></> : ''} · {sh.method || '—'}{sh.carrier ? ' · ' + sh.carrier : ''}
+                                {(sh.shipDate || sh.expectedShip) || '日期未填'}{shVariantNames ? ' · ' + shVariantNames : ''} · {shQty} pcs{shSettlement !== 0 ? <>&nbsp;·&nbsp;<FieldHint label={<span>{settled ? '本次应结' : '计划货值'} <strong>¥{(settled ? currentSettlement : shSettlement).toFixed(2)}</strong></span>} placement="bottom" hint={settlementHintWithExtra} /></> : ''} · {sh.method || '—'}{sh.carrier ? ' · ' + sh.carrier : ''}
                               </span>
                               <StatusSelect value={sh.status} size="sm"
                                 onChange={v => updateBatchShipment(p.id, b.id, sh.id, { status: v })} />
@@ -1076,6 +1076,16 @@ function TabProd({ p }: { p: any }) {
                                       })}
                                     </tbody>
                                   </table>
+                                </div>
+                              )}
+                              {settled && tailDue > 0 && (
+                                <div className="fieldgrid cols-4" style={{marginTop:10}}>
+                                  <div className="calc-field">
+                                    <span className="calc-field-label">
+                                      <FieldHint label="应付尾款" placement="right" hint={`= 本次应结(¥${currentSettlement.toFixed(2)}) × 尾款比例(${c.balancePct}%) = ¥${tailDue.toFixed(2)}`} />
+                                    </span>
+                                    <span className="calc-field-value mono" style={{fontWeight:600, color:'var(--orange)'}}>¥{tailDue.toFixed(2)}</span>
+                                  </div>
                                 </div>
                               )}
                             </div>}
