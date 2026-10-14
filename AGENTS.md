@@ -144,7 +144,14 @@ src/
     tweaks/TweaksPanel.tsx     # 右侧"Tweaks"调试面板（主题/布局微调，开发用）
     tools/
       KeywordRank.tsx           # 工具：关键词排名监控
-      ProductScrape.tsx         # 工具：产品采集（含详情预览弹窗 + 图片 Lightbox + ASIN搜索过滤 + 列头排序 + 多选导出 + 每页50/100/150条分页跳转）
+      ProductScrape.tsx         # 工具：产品采集（含详情预览弹窗 + 图片 Lightbox + ASIN搜索过滤 + 列头排序；
+                                #   结果表列见 findDateFirstAvailable()——「上架时间」取亚马逊详情的
+                                #   Date First Available（productDetails 优先、回退 specifications）；
+                                #   多选导出 + 每页50/100/150条分页跳转）
+                                #   左栏「历史任务」为紧凑单行列表：今天/昨天/更早分组 + 名称/站点检索
+                                #   + 全部/进行中/有失败筛选 + 每页 10/15/25/50 翻页；
+                                #   输入区常驻不随列表滚动（.ps-history flex:1 + .ps-hist-list 独立滚动），
+                                #   操作按钮悬停/选中才出现，避免挤压任务名
                                 #   顶部 BATCH_SIZE 决定每次 POST 带多少个 ASIN（现为 50）；
                                 #   后端速率闸门与批大小无关，改小它只会增加 HTTP 往返与后端空等
       ReviewFetch.tsx           # 工具：评论采集（多ASIN批量抓取，按评分/排序/是否验证购买过滤）

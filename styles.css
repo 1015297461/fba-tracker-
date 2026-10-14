@@ -2211,7 +2211,7 @@ select.meta-edit { cursor: pointer; }
 .kr-tip-val { color: var(--ink); font-weight: 600; font-family: var(--font-mono); margin-left: auto; padding-left: 12px; }
 
 /* ===== PRODUCT SCRAPE ===== */
-.ps-root { display: grid; grid-template-columns: 300px 1fr; height: 100%; overflow: hidden; }
+.ps-root { display: grid; grid-template-columns: 320px 1fr; height: 100%; overflow: hidden; }
 
 /* --- Left: input + history --- */
 .ps-side { border-right: 1px solid var(--border); background: var(--bg-2); overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
@@ -2236,20 +2236,55 @@ select.meta-edit { cursor: pointer; }
 .ps-progress-bar { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; }
 .ps-progress-fill { height: 100%; background: var(--blue); transition: width 0.2s; }
 
-/* --- History tasks --- */
-.ps-history { display: flex; flex-direction: column; gap: 8px; }
-.ps-history-head { font-weight: 600; font-size: 13px; color: var(--ink); }
-.ps-task { display: flex; align-items: center; gap: 6px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
-.ps-task[data-active="true"] { border-color: var(--blue); box-shadow: 0 0 0 2px var(--blue-soft); }
-.ps-task-main { flex: 1; min-width: 0; text-align: left; background: none; border: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; cursor: pointer; color: inherit; }
-.ps-task-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--ink); min-width: 0; }
-.ps-task-time { font-weight: 400; color: var(--ink-4); font-size: 11px; }
-.ps-task-sub { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--ink-3); }
-.ps-task-actions { display: flex; gap: 4px; flex-shrink: 0; }
-.ps-task-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ps-task-rename-input { flex: 1; min-width: 0; font: inherit; font-size: 12px; font-weight: 600; padding: 2px 4px; border: 1px solid var(--blue); border-radius: 4px; outline: none; background: var(--bg-2); color: var(--ink); }
+/* --- History tasks（紧凑列表：独立滚动 + 检索/筛选/分页） --- */
+/* flex:1 + min-height 让历史区自己滚动，输入区常驻不再被顶走；min-height 兜底，
+   窗口过矮时退化为整栏滚动，而不是把列表压成 0 高。 */
+.ps-history { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 180px; }
+.ps-hist-head { display: flex; align-items: center; justify-content: space-between; }
+.ps-hist-title { font-weight: 600; font-size: 13px; color: var(--ink); }
+.ps-hist-count { font-size: 11px; color: var(--ink-3); }
+
+.ps-hist-search { height: 28px; padding: 0 9px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--card-bg); color: var(--ink); font-size: 12px; outline: none; flex-shrink: 0; }
+.ps-hist-search:focus { border-color: var(--accent); }
+.ps-hist-search::placeholder { color: var(--ink-3); }
+.ps-hist-filters { display: flex; gap: 6px; flex-shrink: 0; }
+.ps-hist-chip { font-size: 11px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--ink-3); cursor: pointer; }
+.ps-hist-chip[data-on="true"] { background: var(--blue-soft); border-color: var(--blue); color: var(--blue); }
+
+.ps-hist-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.ps-hist-group { position: sticky; top: 0; z-index: 1; background: var(--bg-2); font-size: 11px; color: var(--ink-4); padding: 8px 4px 3px; }
+
+.ps-task { position: relative; display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 12px; border-radius: 6px; }
+.ps-task::before { content: ""; position: absolute; left: 2px; top: 50%; transform: translateY(-50%); width: 3px; height: 15px; border-radius: 2px; background: transparent; }
+.ps-task:hover { background: var(--bg-2); }
+.ps-task[data-active="true"] { background: var(--blue-soft); }
+.ps-task[data-active="true"]::before { background: var(--blue); }
+
+.ps-task-dot { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--ink-4); }
+.ps-task-dot[data-st="running"]   { background: var(--blue); }
+.ps-task-dot[data-st="completed"] { background: var(--green); }
+.ps-task-dot[data-st="partial"]   { background: var(--orange); }
+.ps-task-dot[data-st="error"]     { background: var(--red); }
+
+.ps-task-main { flex: 1; min-width: 0; text-align: left; background: none; border: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; cursor: pointer; color: inherit; }
+.ps-task-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.ps-task-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 500; color: var(--ink); }
+.ps-task-stats { flex: 0 0 auto; font-size: 11px; color: var(--ink-3); font-family: var(--font-mono); }
+.ps-task-stats[data-warn="true"] { color: var(--orange); }
+.ps-task-hint { font-size: 11px; color: var(--orange); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-task-rename-input { flex: 1; min-width: 0; font: inherit; font-size: 12px; font-weight: 500; padding: 2px 4px; border: 1px solid var(--blue); border-radius: 4px; outline: none; background: var(--bg-2); color: var(--ink); }
+
+/* 操作按钮叠加在行右端，悬停/选中/键盘聚焦时才出现，不再挤压任务名 */
+.ps-task-actions { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 4px; padding-left: 10px; background: inherit; opacity: 0; pointer-events: none; transition: opacity .12s; }
+.ps-task:hover .ps-task-actions,
+.ps-task:focus-within .ps-task-actions,
+.ps-task[data-active="true"] .ps-task-actions { opacity: 1; pointer-events: auto; }
 .ps-del { flex-shrink: 0; color: var(--ink-3); }
 .ps-del:hover { color: var(--red) !important; border-color: var(--red) !important; }
+
+.ps-hist-pager { display: flex; align-items: center; justify-content: center; gap: 6px; padding-top: 6px; border-top: 1px solid var(--border); flex-shrink: 0; }
+.ps-hist-size { font-size: 11px; padding: 2px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); color: var(--ink); cursor: pointer; }
+.ps-hist-pagenum { font-size: 11px; color: var(--ink-2); white-space: nowrap; font-family: var(--font-mono); }
 
 .ps-ok { color: var(--green); }
 .ps-fail { color: var(--red); }

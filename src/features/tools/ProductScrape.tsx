@@ -513,6 +513,24 @@ function taskStatusText(t: ScrapeTask): string {
     default:          return '';
   }
 }
+
+// 历史任务的每页条数档位
+const HIST_PAGE_SIZES = [10, 15, 25, 50];
+// 任务数超过这个阈值才显示搜索/筛选（少量任务时不必堆控件）
+const HIST_CHROME_MIN = 8;
+
+// 历史任务按「今天 / 昨天 / 更早」分组，用于列表里的小标题。
+// createdAt 是服务端 ISO 字符串（_now_iso），按本地自然日切分。
+function dayGroup(iso?: string): string {
+  const d = iso ? new Date(iso) : null;
+  if (!d || isNaN(d.getTime())) return '更早';
+  const now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const t = d.getTime();
+  if (t >= startToday) return '今天';
+  if (t >= startToday - 86400000) return '昨天';
+  return '更早';
+}
 // 亚马逊详情页的「Date First Available」（上架时间）。
 // 落点不固定：多数站点在 productDetails、个别在 specifications；键名大小写不一，
 // 值前后常夹带 RTL 控制符（‏ ‎ 等），所以按「包含 date first available」匹配并清洗。
@@ -632,6 +650,11 @@ export function ProductScrape() {
   const [editingTaskId, setEditingTaskId] = React.useState<string | null>(null);
   const [editingName, setEditingName] = React.useState('');
   const [exportQueued, setExportQueued] = React.useState(false);
+  // 历史任务列表：检索 / 筛选 / 分页（纯前端，tasks 一次全量拉回，最多 100 条）
+  const [histQuery, setHistQuery] = React.useState('');
+  const [histFilter, setHistFilter] = React.useState<'all' | 'active' | 'failed'>('all');
+  const [histPage, setHistPage] = React.useState(1);
+  const [histPageSize, setHistPageSize] = React.useState(15);
 
   function showThumbPreview(e: React.MouseEvent<HTMLImageElement>, src: string) {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -651,6 +674,33 @@ export function ProductScrape() {
 
   // 失败项（「重试失败项」按钮用）
   const failedProducts = React.useMemo(() => products.filter(p => p.status === 'failed'), [products]);
+
+  // ---- 历史任务：筛选 + 检索 + 分页（全在前端算，tasks 已在内存）----
+  const histFiltered = React.useMemo(() => {
+    let arr = tasks;
+    if (histFilter === 'active') arr = arr.filter(t => t.status === 'running' || t.status === 'paused');
+    else if (histFilter === 'failed') arr = arr.filter(t => (t.failed || 0) > 0);
+    const q = histQuery.trim().toLowerCase();
+    if (q) {
+      arr = arr.filter(t => {
+        const info = mkInfo(t.marketplace);
+        const name = t.name || `${info.flag} ${info.name} · ${fmtDateTime(t.createdAt)}`;
+        return [name, info.name, t.marketplace || '', t.createdAt || '']
+          .some(s => String(s).toLowerCase().includes(q));
+      });
+    }
+    return arr;
+  }, [tasks, histFilter, histQuery]);
+
+  const histTotalPages = Math.max(1, Math.ceil(histFiltered.length / histPageSize));
+  // 页码可能因筛选/检索后结果变少而越界：先夹到有效范围再切片，避免「越界 → 列表空白一帧」的闪烁，
+  // 随后再把 state 同步回来（见下方 effect）。
+  const histSafePage = Math.min(histPage, histTotalPages);
+  const histPaged = React.useMemo(
+    () => histFiltered.slice((histSafePage - 1) * histPageSize, histSafePage * histPageSize),
+    [histFiltered, histSafePage, histPageSize]);
+  React.useEffect(() => { setHistPage(1); }, [histQuery, histFilter, histPageSize]);
+  React.useEffect(() => { if (histPage !== histSafePage) setHistPage(histSafePage); }, [histPage, histSafePage]);
 
   // ---- 采集任务轮询 ----
   // 执行权在服务端：提交后前端只负责按秒读进度。刷新页面时组件重建，
@@ -962,53 +1012,88 @@ export function ProductScrape() {
         )}
 
         <div className="ps-history">
-          <div className="ps-history-head">历史任务</div>
+          <div className="ps-hist-head">
+            <span className="ps-hist-title">历史任务</span>
+            <span className="ps-hist-count">
+              {histFiltered.length}{histFiltered.length !== tasks.length ? ` / ${tasks.length}` : ''} 条
+            </span>
+          </div>
           {loadErr && <div className="ps-err">{loadErr}</div>}
           {!tasks.length && !loadErr && <div className="ps-empty">暂无历史任务</div>}
-          {tasks.map(t => (
-            <div key={t.id} className="ps-task" data-active={t.id === activeTaskId}>
-              <button className="ps-task-main" onClick={() => { if (editingTaskId !== t.id) viewTask(t); }}>
-                <div className="ps-task-top">
-                  {editingTaskId === t.id ? (
-                    <input
-                      className="ps-task-rename-input"
-                      value={editingName}
-                      onChange={e => setEditingName(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditingTaskId(null); }}
-                      onBlur={commitRename}
-                      onClick={e => e.stopPropagation()}
-                      autoFocus
-                    />
-                  ) : (
-                    <span className="ps-task-name">
-                      {t.name || `${mkInfo(t.marketplace).flag} ${mkInfo(t.marketplace).name} · ${fmtDateTime(t.createdAt)}`}
-                    </span>
-                  )}
-                  <span className="ps-task-time">{fmtDateTime(t.createdAt)}</span>
-                </div>
-                <div className="ps-task-sub">
-                  <span>共 {t.total}</span>
-                  <span className="ps-ok">成功 {t.success}</span>
-                  {t.failed > 0 && <span className="ps-fail">失败 {t.failed}</span>}
-                  {taskStatusText(t) && (
-                    <span className={
-                      t.status === 'running' || t.status === 'completed' ? 'ps-ok'
-                      : t.status === 'error' ? 'ps-fail'
-                      : 'ps-warn'
-                    }>{taskStatusText(t)}</span>
-                  )}
-                  {t.withReviews && <span>含评论</span>}
-                </div>
-              </button>
-              <div className="ps-task-actions">
-                {(t.status === 'paused' || t.status === 'cancelled' || t.status === 'error') && (
-                  <button className="btn btn-sm" onClick={() => resumeTask(t)} disabled={running}>继续</button>
-                )}
-                <button className="btn btn-sm" onClick={() => startRename(t)} title="重命名">✎</button>
-                <button className="btn btn-sm ps-del" onClick={() => removeTask(t)}>删除</button>
+
+          {tasks.length > HIST_CHROME_MIN && (
+            <>
+              <input className="ps-hist-search" placeholder="搜索名称 / 站点 / 日期…"
+                value={histQuery} onChange={e => setHistQuery(e.target.value)} />
+              <div className="ps-hist-filters">
+                {([['all', '全部'], ['active', '进行中'], ['failed', '有失败']] as const).map(([k, label]) => (
+                  <button key={k} className="ps-hist-chip" data-on={histFilter === k}
+                    onClick={() => setHistFilter(k)}>{label}</button>
+                ))}
               </div>
+            </>
+          )}
+
+          <div className="ps-hist-list">
+            {tasks.length > 0 && histFiltered.length === 0 && <div className="ps-empty">没有匹配的任务</div>}
+            {histPaged.map((t, i) => {
+              const g = dayGroup(t.createdAt);
+              const prevG = i > 0 ? dayGroup(histPaged[i - 1].createdAt) : null;
+              const hint = t.error || '';
+              const info = mkInfo(t.marketplace);
+              const displayName = t.name || `${info.flag} ${info.name} · ${fmtDateTime(t.createdAt)}`;
+              const fullTip = `${displayName}\n创建 ${fmtDateTime(t.createdAt)} · 共 ${t.total} · 成功 ${t.success} · 失败 ${t.failed}`
+                + `${taskStatusText(t) ? ` · ${taskStatusText(t)}` : ''}${t.withReviews ? ' · 含评论' : ''}`;
+              return (
+                <React.Fragment key={t.id}>
+                  {g !== prevG && <div className="ps-hist-group">{g}</div>}
+                  <div className="ps-task" data-active={t.id === activeTaskId} title={fullTip}>
+                    <span className="ps-task-dot" data-st={t.status} />
+                    <button className="ps-task-main" onClick={() => { if (editingTaskId !== t.id) viewTask(t); }}>
+                      <span className="ps-task-line">
+                        {editingTaskId === t.id ? (
+                          <input
+                            className="ps-task-rename-input"
+                            value={editingName}
+                            onChange={e => setEditingName(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditingTaskId(null); }}
+                            onBlur={commitRename}
+                            onClick={e => e.stopPropagation()}
+                            autoFocus
+                          />
+                        ) : (
+                          <span className="ps-task-name">{displayName}</span>
+                        )}
+                        <span className="ps-task-stats" data-warn={t.failed > 0}>{t.total}/{t.success}</span>
+                      </span>
+                      {hint && <span className="ps-task-hint">{hint}</span>}
+                    </button>
+                    <div className="ps-task-actions">
+                      {(t.status === 'paused' || t.status === 'cancelled' || t.status === 'error') && (
+                        <button className="btn btn-sm" onClick={() => resumeTask(t)} disabled={running}>继续</button>
+                      )}
+                      <button className="btn btn-sm" onClick={() => startRename(t)} title="重命名">✎</button>
+                      <button className="btn btn-sm ps-del" onClick={() => removeTask(t)} title="删除">删除</button>
+                    </div>
+                  </div>
+                </React.Fragment>
+              );
+            })}
+          </div>
+
+          {histTotalPages > 1 && (
+            <div className="ps-hist-pager">
+              <select className="ps-hist-size" value={histPageSize} title="每页条数"
+                onChange={e => setHistPageSize(Number(e.target.value))}>
+                {HIST_PAGE_SIZES.map(n => <option key={n} value={n}>{n}/页</option>)}
+              </select>
+              <button className="btn btn-sm" title="上一页" disabled={histSafePage <= 1}
+                onClick={() => setHistPage(Math.max(1, histSafePage - 1))}>‹</button>
+              <span className="ps-hist-pagenum">{histSafePage} / {histTotalPages}</span>
+              <button className="btn btn-sm" title="下一页" disabled={histSafePage >= histTotalPages}
+                onClick={() => setHistPage(Math.min(histTotalPages, histSafePage + 1))}>›</button>
             </div>
-          ))}
+          )}
         </div>
       </div>
 
