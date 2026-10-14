@@ -513,6 +513,25 @@ function taskStatusText(t: ScrapeTask): string {
     default:          return '';
   }
 }
+// 亚马逊详情页的「Date First Available」（上架时间）。
+// 落点不固定：多数站点在 productDetails、个别在 specifications；键名大小写不一，
+// 值前后常夹带 RTL 控制符（‏ ‎ 等），所以按「包含 date first available」匹配并清洗。
+function findDateFirstAvailable(p: ScrapedProduct): string {
+  const pick = (obj?: Record<string, string>): string => {
+    if (!obj) return '';
+    const key = Object.keys(obj).find(k => /date\s*first\s*available/i.test(k));
+    const val = key ? obj[key] : '';
+    return String(val || '').replace(/[\u200e\u200f\u202a-\u202e]/g, '').trim();
+  };
+  return pick(p.productDetails) || pick(p.specifications);
+}
+// 上架时间排序用时间戳；解析不了给 Infinity（排序逻辑里按「缺值恒沉底」处理）。
+function dateFirstAvailableTs(p: ScrapedProduct): number {
+  const s = findDateFirstAvailable(p);
+  const t = s ? Date.parse(s) : NaN;
+  return isNaN(t) ? Infinity : t;
+}
+
 function exportCSV(products: ScrapedProduct[], marketplace: string) {
   const headers = [
     'ASIN', '站点', '标题', '品牌', '价格', '评分', '评论数', '可用性',
@@ -608,7 +627,7 @@ export function ProductScrape() {
   const [searchQuery, setSearchQuery] = React.useState('');
   const [selectedAsins, setSelectedAsins] = React.useState<Set<string>>(new Set());
   const [hoverPreview, setHoverPreview] = React.useState<{ src: string; top: number; left: number } | null>(null);
-  const [sortKey, setSortKey] = React.useState<'asin' | 'price' | 'rating' | 'mainRank' | 'subRank' | null>(null);
+  const [sortKey, setSortKey] = React.useState<'asin' | 'price' | 'rating' | 'mainRank' | 'subRank' | 'launch' | null>(null);
   const [sortAsc, setSortAsc] = React.useState(true);
   const [editingTaskId, setEditingTaskId] = React.useState<string | null>(null);
   const [editingName, setEditingName] = React.useState('');
@@ -835,8 +854,17 @@ export function ProductScrape() {
         va = parseRating(a.rating); vb = parseRating(b.rating);
       } else if (sortKey === 'mainRank') {
         va = a.bestSellerRank.mainRank ?? Infinity; vb = b.bestSellerRank.mainRank ?? Infinity;
+      } else if (sortKey === 'launch') {
+        va = dateFirstAvailableTs(a); vb = dateFirstAvailableTs(b);
       } else {
         va = a.bestSellerRank.subRank ?? Infinity; vb = b.bestSellerRank.subRank ?? Infinity;
+      }
+      // 缺上架时间的恒沉底（不随升降序翻转）：否则默认「最新在前」（降序）时，
+      // x - Infinity = -Infinity 会把空值顶到最上面。
+      if (sortKey === 'launch') {
+        const aMissing = va === Infinity, bMissing = vb === Infinity;
+        if (aMissing !== bMissing) return aMissing ? 1 : -1;
+        if (aMissing && bMissing) return 0;
       }
       return sortAsc ? va - vb : vb - va;
     });
@@ -1078,6 +1106,9 @@ export function ProductScrape() {
                   <th className="ps-sortable" onClick={() => { if (sortKey === 'rating') setSortAsc(v => !v); else { setSortKey('rating'); setSortAsc(false); } }} data-active={sortKey === 'rating'}>
                     评分{sortKey === 'rating' && <span className="ps-sort-arrow">{sortAsc ? '↑' : '↓'}</span>}
                   </th>
+                  <th className="ps-col-launch ps-sortable" onClick={() => { if (sortKey === 'launch') setSortAsc(v => !v); else { setSortKey('launch'); setSortAsc(false); } }} data-active={sortKey === 'launch'}>
+                    上架时间{sortKey === 'launch' && <span className="ps-sort-arrow">{sortAsc ? '↑' : '↓'}</span>}
+                  </th>
                   <th className="ps-col-cat">分类路径</th>
                   <th className="ps-sortable" onClick={() => { if (sortKey === 'mainRank') setSortAsc(v => !v); else { setSortKey('mainRank'); setSortAsc(true); } }} data-active={sortKey === 'mainRank'}>
                     大类排名{sortKey === 'mainRank' && <span className="ps-sort-arrow">{sortAsc ? '↑' : '↓'}</span>}
@@ -1115,6 +1146,7 @@ export function ProductScrape() {
                     <td>{p.brand || '—'}</td>
                     <td>{p.price || '—'}</td>
                     <td>{p.rating ? p.rating.replace(/ out of.*/i, '') : '—'}</td>
+                    <td className="ps-col-launch" title={findDateFirstAvailable(p)}>{findDateFirstAvailable(p) || '—'}</td>
                     <td className="ps-col-cat" title={p.categories || ''}>{p.categories || '—'}</td>
                     <td>
                       {p.bestSellerRank.mainRank != null
