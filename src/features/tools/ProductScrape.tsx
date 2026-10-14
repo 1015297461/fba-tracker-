@@ -1039,7 +1039,6 @@ export function ProductScrape() {
             {histPaged.map((t, i) => {
               const g = dayGroup(t.createdAt);
               const prevG = i > 0 ? dayGroup(histPaged[i - 1].createdAt) : null;
-              const hint = t.error || '';
               const info = mkInfo(t.marketplace);
               const displayName = t.name || `${info.flag} ${info.name} · ${fmtDateTime(t.createdAt)}`;
               const fullTip = `${displayName}\n创建 ${fmtDateTime(t.createdAt)} · 共 ${t.total} · 成功 ${t.success} · 失败 ${t.failed}`
@@ -1066,7 +1065,6 @@ export function ProductScrape() {
                         )}
                         <span className="ps-task-stats" data-warn={t.failed > 0}>{t.total}/{t.success}</span>
                       </span>
-                      {hint && <span className="ps-task-hint">{hint}</span>}
                     </button>
                     <div className="ps-task-actions">
                       {(t.status === 'paused' || t.status === 'cancelled' || t.status === 'error') && (

@@ -2271,7 +2271,6 @@ select.meta-edit { cursor: pointer; }
 .ps-task-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 500; color: var(--ink); }
 .ps-task-stats { flex: 0 0 auto; font-size: 11px; color: var(--ink-3); font-family: var(--font-mono); }
 .ps-task-stats[data-warn="true"] { color: var(--orange); }
-.ps-task-hint { font-size: 11px; color: var(--orange); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ps-task-rename-input { flex: 1; min-width: 0; font: inherit; font-size: 12px; font-weight: 500; padding: 2px 4px; border: 1px solid var(--blue); border-radius: 4px; outline: none; background: var(--bg-2); color: var(--ink); }
 
 /* 操作按钮叠加在行右端，悬停/选中/键盘聚焦时才出现，不再挤压任务名 */
