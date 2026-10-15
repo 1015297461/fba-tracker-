@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { useProducts } from '../../context/ProductContext';
 
 const AUTH_TOKEN_KEY = 'fba-auth-v1';
 function authHeaders(): Record<string, string> {
@@ -43,6 +44,7 @@ interface ProductDetailProps {
   product: ScrapedProduct | null;
   open: boolean;
   onClose: () => void;
+  taskId: string;   // 评论媒体接口需要（缓存按 task+asin 定位）
 }
 // Customers say 单个关注点：默认折叠（只显示名称+提及数），点击展开明细
 function CsAspectRow({ aspect }: { aspect: CsAspect }) {
@@ -87,10 +89,135 @@ function CsAspectRow({ aspect }: { aspect: CsAspect }) {
   );
 }
 
-function ProductDetailDialog({ product, open, onClose }: ProductDetailProps) {
+// 评论媒体的查看层：图片直接展示；视频是 HLS(m3u8)，给缩略图 + 打开链接
+// （评论正文端点返回 403，拿不到原文，所以这里只提供「在 Amazon 打开评论」）
+function MediaLightbox({ items, index, onIndex, onClose, marketplace }: {
+  items: ReviewMediaItem[]; index: number;
+  onIndex: (i: number) => void; onClose: () => void; marketplace: string;
+}) {
+  const cur = items[index];
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.stopPropagation(); onClose(); }
+      if (e.key === 'ArrowLeft') onIndex((index - 1 + items.length) % items.length);
+      if (e.key === 'ArrowRight') onIndex((index + 1) % items.length);
+    };
+    window.addEventListener('keydown', h, true);
+    return () => window.removeEventListener('keydown', h, true);
+  }, [index, items.length, onIndex, onClose]);
+  if (!cur) return null;
+  const isVideo = cur.type === 'VIDEO';
+  return (
+    <div className="ps-media-lb-backdrop" onClick={onClose}>
+      <div className="ps-media-lb" onClick={e => e.stopPropagation()}>
+        <div className="ps-media-lb-stage">
+          <img src={isVideo ? (cur.thumb || cur.url) : cur.url} alt="" />
+          {isVideo && (
+            <div className="ps-media-lb-vbadge">视频{cur.duration ? ` · ${cur.duration}` : ''}（HLS 格式）</div>
+          )}
+          {items.length > 1 && (
+            <>
+              <button className="ps-media-lb-nav prev" type="button"
+                onClick={() => onIndex((index - 1 + items.length) % items.length)}>‹</button>
+              <button className="ps-media-lb-nav next" type="button"
+                onClick={() => onIndex((index + 1) % items.length)}>›</button>
+            </>
+          )}
+        </div>
+        <div className="ps-media-lb-bar">
+          <span className="ps-media-lb-idx">{index + 1} / {items.length}</span>
+          <span className="ps-media-lb-tag">{isVideo ? '视频' : '图片'}</span>
+          <a href={cur.url} target="_blank" rel="noopener noreferrer">打开媒体 ↗</a>
+          {cur.reviewId && (
+            <a href={reviewUrl(cur.reviewId, marketplace)} target="_blank" rel="noopener noreferrer">
+              在 Amazon 打开评论 ↗
+            </a>
+          )}
+          <button className="btn btn-sm" type="button" onClick={onClose}>关闭</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 评论媒体面板（详情弹窗的第二个 tab）
+//
+// 懒加载：只有真正切到该 tab 时组件才挂载、才发请求——不在采集主链路里，
+// 所以不会拖慢采集，也不会在无人查看时白消耗抓取额度。
+function ReviewMediaPanel({ product, taskId }: { product: ScrapedProduct; taskId: string }) {
+  const cr = product.customerReviews;
+  const [items, setItems] = React.useState<ReviewMediaItem[] | null>(
+    cr?.reviewMediaFetched ? (cr.reviewMedia || []) : null);
+  const [state, setState] = React.useState<'loading' | 'ready' | 'error'>('ready');
+  const [msg, setMsg] = React.useState('');
+  const [lb, setLb] = React.useState<number | null>(null);
+  const did = React.useRef(false);
+
+  React.useEffect(() => {
+    if (cr?.reviewMediaFetched) return;          // 已有缓存结论，直接用
+    if (did.current) return;                     // 防重复请求（StrictMode / 重渲染）
+    did.current = true;
+    setState('loading');
+    apiGetReviewMedia(taskId, product.asin)
+      .then(r => {
+        setItems(r.items || []);
+        if (r.needsFetch) setMsg(r.hint || '该产品的评论媒体尚未采集');
+        else if (r.fetchError) { setState('error'); setMsg(r.hint || '抓取失败，请稍后重试'); }
+        else setState('ready');
+      })
+      .catch(e => { setState('error'); setMsg(e.message || '读取评论媒体失败'); });
+  }, []);
+
+  if (state === 'loading') {
+    return (
+      <div className="ps-detail-section">
+        <div className="ps-media-skeleton">{[0, 1, 2, 3, 4, 5].map(i => <div key={i} />)}</div>
+        <p className="ps-media-note">正在抓取评论媒体…（首次需要几秒钟，结果会缓存）</p>
+      </div>
+    );
+  }
+  if (state === 'error') {
+    return <div className="ps-detail-section"><p className="ps-media-note ps-media-err">{msg}</p></div>;
+  }
+  const list = items || [];
+  if (!list.length) {
+    return <div className="ps-detail-section"><p className="ps-media-note">{msg || '该产品暂无评论图片或视频'}</p></div>;
+  }
+  const nImg = list.filter(m => m.type === 'IMAGE').length;
+  const nVid = list.filter(m => m.type === 'VIDEO').length;
+  return (
+    <div className="ps-detail-section">
+      <div className="ps-detail-section-head">
+        <h4>Customer photos and videos ({list.length})</h4>
+        <span className="ps-media-sub">{nImg} 张图片 · {nVid} 个视频</span>
+      </div>
+      <div className="ps-media-grid">
+        {list.map((m, i) => (
+          <button key={(m.id || 'm') + i} className="ps-media-item" type="button" onClick={() => setLb(i)}>
+            <img src={m.thumb || m.url} alt="" loading="lazy" />
+            {m.type === 'VIDEO' && (
+              <span className="ps-media-badge">
+                <span className="ps-media-play" />
+                {m.duration && <span className="ps-media-dur">{m.duration}</span>}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+      {lb !== null && (
+        <MediaLightbox items={list} index={lb} onIndex={setLb}
+          onClose={() => setLb(null)} marketplace={product.marketplace} />
+      )}
+    </div>
+  );
+}
+
+function ProductDetailDialog({ product, open, onClose, taskId }: ProductDetailProps) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxImages, setLightboxImages] = useState<string[]>([]);
   const [lightboxIndex, setLightboxIndex] = useState(0);
+  // 详情弹窗的 tab：商品信息 / 评论媒体（后者切过去才挂载 → 才发请求）
+  const [tab, setTab] = useState<'info' | 'media'>('info');
 
   if (!product) return null;
 
@@ -132,7 +259,16 @@ function ProductDetailDialog({ product, open, onClose }: ProductDetailProps) {
               </a>
             </div>
 
+            <div className="ps-detail-tabs">
+              <button type="button" className="ps-detail-tab"
+                data-active={tab === 'info'} onClick={() => setTab('info')}>商品信息</button>
+              <button type="button" className="ps-detail-tab"
+                data-active={tab === 'media'} onClick={() => setTab('media')}>Customer photos and videos</button>
+            </div>
+
             <div className="ps-detail-body">
+              {tab === 'info' ? (
+              <>
               {/* Images */}
               {productImages.length > 0 && (
                 <div className="ps-detail-section">
@@ -281,6 +417,10 @@ function ProductDetailDialog({ product, open, onClose }: ProductDetailProps) {
                     ))}
                   </div>
                 </div>
+              )}
+              </>
+              ) : (
+                <ReviewMediaPanel key={product.asin} product={product} taskId={taskId} />
               )}
             </div>
           </div>
@@ -446,11 +586,24 @@ interface CsAspect {
   sentiment: string | null; summary: string | null;
   quotes: { text: string; truncated: boolean }[];
 }
+// 评论媒体（Customer photos and videos）：按需抓取后缓存，与 Amazon 弹窗里的项一一对应
+interface ReviewMediaItem {
+  type: 'IMAGE' | 'VIDEO';
+  id: string;         // data-physicalid（图片/视频 ID）
+  reviewId: string;   // 关联评论 ID
+  url: string;        // 图片=原图；视频=HLS(m3u8) 地址
+  thumb: string;      // 缩略图
+  ext: string;
+  duration?: string;  // 视频时长，如 "0:51"
+}
 interface CustomerReviews {
   customersSay: string | null;
   customersSayTags: string | null;
   customersSayAspects: CsAspect[];
   reviewImages: string[]; selectToLearnMore: string[];
+  reviewMedia?: ReviewMediaItem[];
+  // 区分「从未抓过」与「抓过但该产品确实没有媒体」，避免反复重抓
+  reviewMediaFetched?: boolean;
 }
 interface ScrapedProduct {
   id?: number;
@@ -553,6 +706,43 @@ async function apiResetSession(marketplace: string): Promise<void> {
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ marketplace }),
   });
+}
+
+// 评论媒体（Customer photos and videos）
+// 后端语义：有缓存直接返回（cached=true，秒开）；无缓存时只有 root 会真正去抓，
+// 其它账号拿到 needsFetch=true + 一句提示。
+interface ReviewMediaResp {
+  items: ReviewMediaItem[];
+  cached?: boolean; fetched?: boolean; note?: string;
+  needsFetch?: boolean; hint?: string; fetchError?: string;
+}
+async function apiGetReviewMedia(taskId: string, asin: string): Promise<ReviewMediaResp> {
+  const q = new URLSearchParams({ taskId, asin }).toString();
+  const r = await fetch('/api/scrape/review-media?' + q, { headers: authHeaders() });
+  if (!r.ok) throw new Error('读取评论媒体失败');
+  return await r.json();
+}
+async function apiStartMediaBatch(taskId: string, asins?: string[]): Promise<any> {
+  const r = await fetch('/api/scrape/review-media/batch', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ taskId, ...(asins && asins.length ? { asins } : {}) }),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || '启动批量抓取失败');
+  return await r.json();
+}
+async function apiCancelMediaBatch(): Promise<void> {
+  await fetch('/api/scrape/review-media/batch/cancel', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+  });
+}
+async function apiGetMediaBatch(): Promise<any> {
+  const r = await fetch('/api/scrape/review-media/batch', { headers: authHeaders() });
+  if (!r.ok) throw new Error('读取批量进度失败');
+  return await r.json();
+}
+// 评论媒体里「点击图片看详情」：跳 Amazon 对应评论页（正文端点 403，拿不到原文）
+function reviewUrl(reviewId: string, marketplace: string): string {
+  return `https://${mkInfo(marketplace).domain}/gp/customer-reviews/${reviewId}`;
 }
 
 // ---- Utilities ----
@@ -743,6 +933,43 @@ export function ProductScrape() {
   const [exportQueued, setExportQueued] = React.useState(false);
   // 「重采」下拉浮层开合（替换当前记录 / 新增一条记录）
   const [rescrapeMenuOpen, setRescrapeMenuOpen] = React.useState(false);
+
+  // 评论媒体批量预热：进度快照 + 浮层开合。整个入口只对 root 显示——
+  // 抓取走的是「管理员本机浏览器」，不能让其他同事误触。
+  const [mediaBatch, setMediaBatch] = React.useState<any>(null);
+  const [mediaPanelOpen, setMediaPanelOpen] = React.useState(false);
+  const ctx = useProducts() as any;
+  const isRoot = ctx?.currentUser?.role === 'root';
+
+  // 批量抓取在跑时，每 2 秒拉一次进度（含实时日志）
+  React.useEffect(() => {
+    if (!mediaBatch?.running) return;
+    const t = setInterval(async () => {
+      try { setMediaBatch(await apiGetMediaBatch()); } catch { /* 忽略瞬时失败 */ }
+    }, 2000);
+    return () => clearInterval(t);
+  }, [mediaBatch?.running]);
+
+  async function refreshMediaBatch() {
+    try { setMediaBatch(await apiGetMediaBatch()); } catch { /* 忽略 */ }
+  }
+
+  async function startMediaBatch(useSelected: boolean) {
+    if (!activeTaskId) return;
+    const asins = useSelected && selectedAsins.size > 0 ? [...selectedAsins] : undefined;
+    try {
+      const r = await apiStartMediaBatch(activeTaskId, asins);
+      setMediaPanelOpen(true);
+      await refreshMediaBatch();
+      if (r && r.started === false) setErr(r.hint || '无法启动批量抓取');
+    } catch (e: any) {
+      setErr(e.message || '启动批量抓取失败');
+    }
+  }
+
+  async function cancelMediaBatch() {
+    try { await apiCancelMediaBatch(); await refreshMediaBatch(); } catch { /* 忽略 */ }
+  }
   // 历史任务列表：检索 / 筛选 / 分页（纯前端，tasks 一次全量拉回，最多 100 条）
   const [histQuery, setHistQuery] = React.useState('');
   const [histFilter, setHistFilter] = React.useState<'all' | 'active' | 'failed'>('all');
@@ -1278,6 +1505,17 @@ export function ProductScrape() {
                   </>
                 )}
               </div>
+              {/* 评论媒体批量预热：仅 root 可见——抓取走的是管理员本机浏览器 */}
+              {isRoot && (
+                <button
+                  className="btn btn-sm"
+                  disabled={running || !activeTaskId || !products.length}
+                  title="批量抓取评论图片/视频（经本机浏览器，随机限速，仅管理员可用）"
+                  onClick={() => startMediaBatch(selectedAsins.size > 0)}
+                >
+                  抓取评论媒体{selectedAsins.size > 0 ? `（已选 ${selectedAsins.size}）` : ''}
+                </button>
+              )}
               {/* 暂时隐藏「导出 Excel（含主图）」按钮（2026-10-15 用户要求）——恢复时去掉这圈注释
               <button
                 className="btn btn-sm"
@@ -1448,11 +1686,36 @@ export function ProductScrape() {
         )}
       </div>
 
+      {/* 批量抓取进度浮层（仅 root）：实时日志 + 停止 */}
+      {isRoot && mediaPanelOpen && mediaBatch && (
+        <div className="ps-media-batch">
+          <div className="ps-media-batch-head">
+            <strong>评论媒体批量抓取</strong>
+            <span className="ps-media-batch-stat">
+              {mediaBatch.done}/{mediaBatch.total} · 成功 {mediaBatch.ok} · 失败 {mediaBatch.fail}
+            </span>
+            <span className="ps-media-batch-daily">今日 {mediaBatch.dailyUsed}/{mediaBatch.dailyMax}</span>
+            {mediaBatch.running ? (
+              <button className="btn btn-sm" type="button" onClick={cancelMediaBatch}>停止</button>
+            ) : (
+              <button className="btn btn-sm" type="button" onClick={() => setMediaPanelOpen(false)}>关闭</button>
+            )}
+          </div>
+          {mediaBatch.running && mediaBatch.current && (
+            <div className="ps-media-batch-cur">正在抓取 {mediaBatch.current}…</div>
+          )}
+          <div className="ps-media-batch-log">
+            {(mediaBatch.log || []).slice().reverse().map((l: string, i: number) => <div key={i}>{l}</div>)}
+          </div>
+        </div>
+      )}
+
       {detailOpen && (
         <ProductDetailDialog
           product={selectedProduct}
           open={detailOpen}
           onClose={() => { setDetailOpen(false); setSelectedProduct(null); }}
+          taskId={activeTaskId || ''}
         />
       )}
 

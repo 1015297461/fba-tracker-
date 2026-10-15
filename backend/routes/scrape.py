@@ -9,10 +9,12 @@ taskId，前端改为轮询 /api/scrape/progress。这样刷新页面、关标�
 同一个 task_id 起一个新线程，待跑列表由「全部 ASIN − 已成功 ASIN」算出，天然跳过
 跑过的。这样暂停不需要把线程挂在那儿阻塞，服务重启后照样能继续。
 """
+import random
 import threading
+import time
 from urllib.parse import urlparse, parse_qs
 
-from .. import product_fetcher
+from .. import product_fetcher, review_media
 from ..utils import _extract_token, _now_iso, _log
 
 # 正在执行的采集任务：task_id -> _TaskCtl。
@@ -30,6 +32,124 @@ COUNT_REFRESH_EVERY = 5
 
 # 每完成这么多条 ASIN 打一行进度日志：既能实时看到推进，又不会刷屏。
 PROGRESS_LOG_EVERY = 25
+
+
+# ---------------------------------------------------------------------------
+# 评论媒体（Customer photos and videos）—— 按需抓取 + 批量预热
+#
+# 这批数据只能经「本机浏览器的 CDP」拿到（端点要求有效会话，详见 review_media 模块）。
+# 因此权限与限速比采集更严：
+#   - 详情页 tab：优先读缓存；无缓存时**仅 root** 可触发抓取，其他人看到明确提示
+#   - 批量预热：**仅 root**，且带随机间隔 / 单批上限 / 当日上限 / 异常即停
+#     （抓 1 个产品只有 1 次 AJAX 请求，远小于正常打开一个详情页的 100+ 请求）
+# ---------------------------------------------------------------------------
+
+_media_batch = {
+    "running": False, "stopped": False,
+    "total": 0, "done": 0, "ok": 0, "fail": 0,
+    "current": "", "log": [],
+    "startedAt": None, "finishedAt": None,
+}
+# 用 RLock：_media_log() 内部也要拿这把锁，而调用点往往已持有它
+_media_batch_lock = threading.RLock()
+
+MEDIA_DELAY_RANGE = (20, 60)   # 每个 ASIN 之间的随机间隔（秒）——随机更像真人
+MEDIA_BATCH_MAX = 25           # 单批上限
+MEDIA_DAILY_MAX = 50           # 当日上限（内存计数，进程重启即重置）
+MEDIA_LOG_KEEP = 200           # 批量日志最多保留条数
+
+_media_daily = {"date": "", "count": 0}
+
+_MEDIA_HINTS = {
+    "cdp_unavailable": "评论媒体服务未就绪：请确认本机浏览器已打开、并已允许远程调试",
+    "page_not_ready": "详情页加载超时，请稍后重试",
+    "open_tab_failed": "无法打开后台标签页，请确认浏览器远程调试可用",
+    "bad_asin": "ASIN 格式不正确",
+    "daily_limit": f"今日抓取已达上限（{MEDIA_DAILY_MAX} 个）",
+}
+
+
+def _media_hint(code):
+    return _MEDIA_HINTS.get(code or "", "抓取失败，请稍后重试")
+
+
+def _media_daily_guard():
+    """当日配额检查。返回 (是否允许, 今日已用)。"""
+    today = _now_iso()[:10]
+    if _media_daily["date"] != today:
+        _media_daily["date"] = today
+        _media_daily["count"] = 0
+    return _media_daily["count"] < MEDIA_DAILY_MAX, _media_daily["count"]
+
+
+def _media_log(msg):
+    with _media_batch_lock:
+        _media_batch["log"].append(f"{_now_iso()[11:19]}  {msg}")
+        if len(_media_batch["log"]) > MEDIA_LOG_KEEP:
+            _media_batch["log"] = _media_batch["log"][-MEDIA_LOG_KEEP:]
+
+
+def _run_media_batch(state, targets, marketplace):
+    """批量抓取线程：串行 + 随机间隔 + 异常即停。
+
+    注意：日志与计数都在**锁外**更新（_media_log 内部自己加锁），
+    且「成功」分支**不能**提前 continue —— 否则会跳过限速等待，
+    批量就变成连续快抓，违背风控设计。
+    """
+    total = len(targets)
+    try:
+        for i, p in enumerate(targets):
+            asin = p.get("asin") or ""
+            with _media_batch_lock:
+                if _media_batch["stopped"]:
+                    _media_log("已停止")
+                    break
+                _media_batch["current"] = asin
+
+            _media_log(f"[{i + 1}/{total}] {asin} 抓取中…")
+            try:
+                res = review_media.fetch_review_media(asin, marketplace)
+            except Exception as e:
+                res = {"ok": False, "error": f"exc:{type(e).__name__}"}
+
+            ok = bool(res.get("ok"))
+            err = res.get("error")
+            with _media_batch_lock:
+                _media_batch["done"] += 1
+                _media_batch["ok" if ok else "fail"] += 1
+
+            if ok:
+                state.save_review_media(asin, res.get("items") or [])
+                _media_daily["count"] += 1
+                n = len(res.get("items") or [])
+                _media_log(f"  ✓ {asin} 抓到 {n} 项"
+                           f"{'（该产品无评论媒体）' if res.get('note') == 'no_media' else ''}")
+            else:
+                _media_log(f"  ✗ {asin} 失败：{err}")
+                # 服务不可用类错误 → 立即中止，不硬撑（保护账号，也别空转）
+                if err in ("cdp_unavailable", "open_tab_failed"):
+                    _media_log("服务不可用，已自动中止")
+                    break
+
+            if i < total - 1:
+                delay = random.uniform(*MEDIA_DELAY_RANGE)
+                _media_log(f"  限速等待 {delay:.0f}s")
+                stopped = False
+                for _ in range(int(delay)):
+                    with _media_batch_lock:
+                        if _media_batch["stopped"]:
+                            stopped = True
+                            break
+                    time.sleep(1)
+                if stopped:
+                    _media_log("已停止")
+                    break
+    finally:
+        with _media_batch_lock:
+            _media_batch["running"] = False
+            _media_batch["current"] = ""
+            _media_batch["finishedAt"] = _now_iso()
+        _media_log("批量抓取结束")
 
 
 class _TaskCtl:
@@ -467,3 +587,136 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         product_fetcher.reset_session(marketplace if marketplace else None)
         self._send_json(200, {"ok": True})
     POST["/api/scrape/reset-session"] = post_reset_session
+
+    # ---- 评论媒体（Customer photos and videos）----
+    #
+    # 抓取会经「管理员本机浏览器」发出（端点要求有效会话），所以这两个写接口
+    # 都限制 root：员工点详情页 tab 只能读已落库的缓存。
+
+    def _is_root(self):
+        user = auth.verify(_extract_token(self))
+        return bool(user and user.get("role") == "root")
+
+    def get_review_media(self):
+        """详情页 tab：读缓存；无缓存时仅 root 可触发抓取。"""
+        if not _authed(self):
+            return
+        qs = parse_qs(urlparse(self.path).query)
+        task_id = (qs.get("taskId") or [""])[0]
+        asin = (qs.get("asin") or [""])[0].strip().upper()
+        if not asin:
+            self._send_json(400, {"error": "asin required"})
+            return
+
+        # 三态：None=从未抓过（要抓）；[]=抓过但无媒体；[...]=有媒体
+        cached = state.get_review_media(task_id, asin) if task_id else None
+        if cached is not None:
+            self._send_json(200, {"items": cached, "cached": True,
+                                  "note": "no_media" if not cached else "ok"})
+            return
+
+        if not _is_root(self):
+            self._send_json(200, {"items": [], "cached": False, "needsFetch": True,
+                                  "hint": "该产品的评论媒体尚未采集，请联系管理员"})
+            return
+
+        allowed, _used = _media_daily_guard()
+        if not allowed:
+            self._send_json(200, {"items": [], "cached": False, "fetchError": "daily_limit",
+                                  "hint": _media_hint("daily_limit")})
+            return
+
+        task = state.get_scrape_task(task_id) if task_id else None
+        marketplace = (task or {}).get("marketplace") or "US"
+        res = review_media.fetch_review_media(asin, marketplace)
+        if not res.get("ok"):
+            self._send_json(200, {"items": [], "cached": False,
+                                  "fetchError": res.get("error"),
+                                  "detail": res.get("detail"),
+                                  "hint": _media_hint(res.get("error"))})
+            return
+        items = res.get("items") or []
+        state.save_review_media(asin, items)
+        _media_daily["count"] += 1
+        self._send_json(200, {"items": items, "cached": False, "fetched": True,
+                              "note": res.get("note")})
+    GET["/api/scrape/review-media"] = get_review_media
+
+    def post_review_media_batch(self):
+        """批量预热（仅 root）：把选中/全部产品的评论媒体一次抓好，之后全员可读。"""
+        if not _authed(self):
+            return
+        if not _is_root(self):
+            self._send_json(403, {"error": "仅 root 账号可执行批量抓取"})
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        task_id = payload.get("taskId")
+        scope = payload.get("asins")
+        if not task_id:
+            self._send_json(400, {"error": "taskId required"})
+            return
+        with _media_batch_lock:
+            if _media_batch["running"]:
+                self._send_json(409, {"error": "已有批量抓取在进行中"})
+                return
+
+        products = state.get_scrape_products(task_id)
+        if scope:
+            want = {str(a).strip().upper() for a in scope}
+            targets = [p for p in products if p.get("asin") in want]
+        else:
+            targets = [p for p in products if p.get("status") == "success"]
+        # 跳过「已经抓过」的（含抓过但无媒体的），避免每批都重试同一批空产品
+        todo = [p for p in targets
+                if not ((p.get("customerReviews") or {}).get("reviewMediaFetched"))]
+        if not todo:
+            self._send_json(200, {"started": False, "hint": "所选范围都已有媒体缓存，无需抓取"})
+            return
+
+        allowed, used = _media_daily_guard()
+        if not allowed:
+            self._send_json(200, {"started": False, "hint": _media_hint("daily_limit")})
+            return
+        budget = min(MEDIA_BATCH_MAX, MEDIA_DAILY_MAX - used)
+        todo = todo[:budget]
+
+        task = state.get_scrape_task(task_id) or {}
+        marketplace = task.get("marketplace") or "US"
+        with _media_batch_lock:
+            _media_batch.update({"running": True, "stopped": False, "total": len(todo),
+                                 "done": 0, "ok": 0, "fail": 0, "current": "", "log": [],
+                                 "startedAt": _now_iso(), "finishedAt": None})
+        threading.Thread(target=_run_media_batch, args=(state, todo, marketplace),
+                         daemon=True, name="ReviewMediaBatch").start()
+        _log(f"[review-media] 批量开始：{len(todo)} 个 ASIN @ {marketplace}"
+             f"（今日剩余额度 {MEDIA_DAILY_MAX - used}）")
+        self._send_json(200, {"started": True, "total": len(todo),
+                              "hint": f"已开始，每个之间随机等待 "
+                                      f"{MEDIA_DELAY_RANGE[0]}–{MEDIA_DELAY_RANGE[1]} 秒"})
+    POST["/api/scrape/review-media/batch"] = post_review_media_batch
+
+    def get_review_media_batch(self):
+        if not _authed(self):
+            return
+        with _media_batch_lock:
+            snap = dict(_media_batch)
+        snap["log"] = snap["log"][-80:]
+        _allowed, used = _media_daily_guard()
+        snap.update({"dailyUsed": used, "dailyMax": MEDIA_DAILY_MAX,
+                     "batchMax": MEDIA_BATCH_MAX, "delayRange": list(MEDIA_DELAY_RANGE)})
+        self._send_json(200, snap)
+    GET["/api/scrape/review-media/batch"] = get_review_media_batch
+
+    def post_review_media_batch_cancel(self):
+        if not _authed(self):
+            return
+        if not _is_root(self):
+            self._send_json(403, {"error": "仅 root 账号可操作"})
+            return
+        with _media_batch_lock:
+            _media_batch["stopped"] = True
+        _log("[review-media] 收到停止请求")
+        self._send_json(200, {"ok": True})
+    POST["/api/scrape/review-media/batch/cancel"] = post_review_media_batch_cancel

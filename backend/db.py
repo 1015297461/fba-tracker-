@@ -196,7 +196,8 @@ class DbState:
                     status        TEXT,
                     error_message TEXT,
                     scraped_at    TEXT,
-                    seq           INTEGER DEFAULT 0
+                    seq           INTEGER DEFAULT 0,
+                    review_media  TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_scrape_prod_task ON scrape_products(task_id);
 
@@ -484,6 +485,10 @@ class DbState:
             conn.execute("DROP INDEX IF EXISTS idx_scrape_prod_task_asin")
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_scrape_prod_task_asin_seq "
                          "ON scrape_products(task_id, asin, seq)")
+            # 评论媒体（图片/视频）：按需经 CDP 抓取后缓存为 JSON 数组；未抓过为 NULL。
+            # 与采集主链路解耦——采集阶段不写它，只在详情页 tab / 批量预热时写入。
+            if "review_media" not in _scraped_cols:
+                conn.execute("ALTER TABLE scrape_products ADD COLUMN review_media TEXT")
 
             # SIF v1 → v2：旧版结构（单表快照 + detail 冗余存 60 周历史）与新「爆品关键词
             # 监控」不兼容，按确认「旧架构与历史数据全部丢弃」直接重建为 v2。
@@ -1121,12 +1126,60 @@ class DbState:
                 "customersSayAspects": json.loads(row["customers_say_aspects"] or "[]"),
                 "reviewImages":     json.loads(row["review_images"] or "[]"),
                 "selectToLearnMore": json.loads(row["select_to_learn_more"] or "[]"),
+                # 评论媒体（图片/视频）：按需抓取后缓存的 JSON；未抓过为 []（前端据此显示「尚未采集」）
+                "reviewMedia":      json.loads(row["review_media"] or "[]"),
+                # 区分「从未抓过」与「抓过但该产品确实没有媒体」——
+                # 前者点 tab 会触发抓取，后者直接显示「无媒体」，避免反复重抓
+                "reviewMediaFetched": row["review_media"] is not None,
             },
             "status":       row["status"],
             "errorMessage": row["error_message"],
             "scrapedAt":    row["scraped_at"],
             "seq":          row["seq"] if row["seq"] is not None else 0,
         }
+
+    def save_review_media(self, asin, media):
+        """缓存某 ASIN 的评论媒体（按需抓取后写入）。
+
+        故意按 **asin** 更新（不限 task_id）：评论媒体是「产品级」属性，
+        同一 ASIN 可能出现在多个任务里，抓一次应处处可见，避免重复消耗额度。
+        只覆盖 review_media 一列，不动其它字段；返回受影响行数（0 = 库里还没有该 ASIN）。
+        """
+        payload = json.dumps(media or [], ensure_ascii=False)
+        with self.lock:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    "UPDATE scrape_products SET review_media=? WHERE asin=?", [payload, asin])
+                conn.commit()
+                return cur.rowcount
+
+    def cleanup_review_media(self, task_id, asin):
+        """清空某 ASIN 的媒体缓存（用于「重新抓取」前先作废）。"""
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE scrape_products SET review_media=NULL WHERE task_id=? AND asin=?",
+                    [task_id, asin])
+                conn.commit()
+
+    def get_review_media(self, task_id, asin):
+        """读某任务某 ASIN 的媒体缓存。
+
+        返回语义（三态，别混）：
+          None  → 从未抓过（点 tab 应触发抓取）
+          []    → 抓过，但该产品确实没有评论媒体
+          [...] → 抓到了媒体
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT review_media FROM scrape_products "
+                "WHERE task_id=? AND asin=? AND seq=0", [task_id, asin]).fetchone()
+        if not row or row[0] is None:
+            return None
+        try:
+            return json.loads(row[0])
+        except Exception:
+            return []
 
     def get_scrape_products(self, task_id):
         with self._conn() as conn:

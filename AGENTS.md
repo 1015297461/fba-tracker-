@@ -108,6 +108,16 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   （overall-summary/aspect-label/aspect-summary）+ id=rh_controls_aspect_N。
                               #   全量内容在初始 HTML 中，无额外请求，实测净增约 44ms。
                               #   scrape_product()/scrape_products() 有 with_customers_say 开关（默认 True）
+  review_media.py              # 评论媒体（Customer photos and videos）按需抓取 —— **唯一走浏览器 CDP 的模块**。
+                              #   评论图片/视频由详情页懒加载 widget cr-customer-videos 提供，端点为
+                              #   POST /portal/customer-reviews/ajax/lazy-widgets/stream。该端点**要求有效会话**：
+                              #   不带 cookie 返回 0 字节，干净匿名会话同样 0（对照实测 168,632 vs 3,282），
+                              #   因此 requests 抓不到，改为驱动本机已开浏览器（cdp-proxy 127.0.0.1:3456）。
+                              #   实测单个 ASIN 约 5s、仅 1 次 AJAX 请求、返回 13 图 + 1 视频。
+                              #   依赖「浏览器开着 + 已允许远程调试」；不可用时 ensure_ready() 返回明确原因。
+                              #   解析要点：响应是 JSON 数组文本（多段 &&& 分隔），HTML 引号处于 \" 转义态，
+                              #   必须先 JSON.parse 反转义；选择器用 button[data-mediatype]（span 那条是 See all）；
+                              #   图片ID 取 data-physicalid，地址取 data-url（视频给的是 HLS m3u8）。
   sif_fetcher.py               # SIF 抓取器 v2（HTTP JSON-RPC 直连 mcp.sif.com，零第三方依赖；封装关键词域/ASIN域/
                               #   决策域共 14 个工具 + 每日层/每周层编排 run_daily_layer()/run_weekly_layer()；
                               #   密钥读环境变量 SIF_MCP_KEY 或 data/sif-config.json，见"SIF 爆品关键词监控模块"一节）
@@ -170,6 +180,15 @@ src/
                                 #   （JSX 注释包住，state/参数/后端链路均未删），需要时去掉注释即可恢复
                                 #   详情弹窗「顾客评价 · Customers say」：摘要整段 + 关注点折叠列表
                                 #   （CsAspectRow，点开展示计数/正负面/总结句/评论引用，引用不标截断）
+                                #   详情弹窗已 tab 化：「商品信息」/「Customer photos and videos」。
+                                #   后者**切过去才挂载**（懒加载 → 才发请求）：优先读缓存；无缓存时
+                                #   仅 root 会真正抓取（经本机浏览器 CDP，见 review_media.py），
+                                #   其他账号拿到 needsFetch + 一句「请联系管理员」提示。
+                                #   网格展示图片缩略图 / 视频（播放图标 + 时长），点击开 MediaLightbox
+                                #   （图片给原图；视频是 HLS，给缩略图 + 打开链接；另给「在 Amazon 打开评论」
+                                #   —— 评论正文端点 403，拿不到原文，只能跳转）
+                                #   工具栏「抓取评论媒体」批量入口**仅 root 可见**（isRoot 门控）：
+                                #   右下角浮层显示逐条日志 + 停止；默认随机间隔 20–60s / 单批 ≤25 / 日 ≤50
                                 #   CSV 导出（exportCSV，纯前端 Blob）新增两列，均由 customersSayAspects 现算：
                                 #     「Customers say 关注点」= Name(N) - X Positive / Y Negative / 情感 · …
                                 #     情感值一律英文（Positive / Mixed / Negative），与详情弹窗一致
@@ -237,7 +256,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | `trash` | 回收站：产品被删除时的完整快照（`product_json`），`write()` 检测到某 id 从新列表中消失即挪进这张表而非真删 |
 | `audit_log` | 产品数据变更审计 |
 | `keyword_tasks` / `rank_snapshots` | 关键词排名：任务配置 + 历史快照 |
-| `scrape_tasks` / `scrape_products` | 产品采集：任务记录 + 落库的商品详情。`scrape_tasks.with_reviews`/`with_customers_say` 两个采集开关（后者默认 1）；`scrape_products` 的 Customers say 占三列——`customers_say`（AI 摘要整段）、`customers_say_tags`（`Effectiveness(100) · …` 一行；**前端已不再消费它**，导出改由 aspects 现算，留作历史数据备用）、`customers_say_aspects`（JSON，含每关注点计数/正负面/总结句/引用；**详情弹窗与 CSV 两列的单一来源**）。唯一约束是 `(task_id, asin, seq)`——`seq=0` 是正常采集/「重采·替换」覆盖的那条，「重采·新增一条记录」写 `seq=max+1` 保留旧版（**用户显式点击才产生多行**，早期那个「同 ASIN 攒 3 行」是 bug、已修，两回事）；`refresh_scrape_task_counts` 按 asin 去重统计，避免多行让 success 超过 total |
+| `scrape_tasks` / `scrape_products` | 产品采集：任务记录 + 落库的商品详情。`scrape_tasks.with_reviews`/`with_customers_say` 两个采集开关（后者默认 1）；`scrape_products` 的 Customers say 占三列——`customers_say`（AI 摘要整段）、`customers_say_tags`（`Effectiveness(100) · …` 一行；**前端已不再消费它**，导出改由 aspects 现算，留作历史数据备用）、`customers_say_aspects`（JSON，含每关注点计数/正负面/总结句/引用；**详情弹窗与 CSV 两列的单一来源**）。唯一约束是 `(task_id, asin, seq)`——`seq=0` 是正常采集/「重采·替换」覆盖的那条，「重采·新增一条记录」写 `seq=max+1` 保留旧版（**用户显式点击才产生多行**，早期那个「同 ASIN 攒 3 行」是 bug、已修，两回事）；`refresh_scrape_task_counts` 按 asin 去重统计，避免多行让 success 超过 total。另有 `review_media` 列（JSON）缓存评论媒体（图片/视频）——按 **asin** 更新（产品级属性，抓一次多任务共享）；`NULL`=从未抓过、`[]`=抓过但该产品确实没媒体，两态不能混（否则会反复重抓） |
 | `review_tasks` / `review_results` | 评论采集：任务记录 + 评论池（按 asin+review_id 去重） |
 | `export_jobs` | 后台导出任务（`ExportWorker` 消费，最多2并发） |
 | `ai_analysis_tasks` | AI分析任务（`AiAnalysisWorker` 消费，强制串行1并发；`files` 字段是产出文件名列表 JSON；`status` 除 pending/running/done/failed 外还有 `cancelled`；`username` 记录发起人，登录态按用户名分区要用） |
