@@ -1575,10 +1575,10 @@ export function ProductScrape() {
                   <th className="ps-sortable" onClick={() => { if (sortKey === 'rating') setSortAsc(v => !v); else { setSortKey('rating'); setSortAsc(false); } }} data-active={sortKey === 'rating'}>
                     评分{sortKey === 'rating' && <span className="ps-sort-arrow">{sortAsc ? '↑' : '↓'}</span>}
                   </th>
+                  <th className="ps-col-rc">评分数量</th>
                   <th className="ps-col-launch ps-sortable" onClick={() => { if (sortKey === 'launch') setSortAsc(v => !v); else { setSortKey('launch'); setSortAsc(false); } }} data-active={sortKey === 'launch'}>
                     上架时间{sortKey === 'launch' && <span className="ps-sort-arrow">{sortAsc ? '↑' : '↓'}</span>}
                   </th>
-                  <th className="ps-col-cat">分类路径</th>
                   <th className="ps-sortable" onClick={() => { if (sortKey === 'mainRank') setSortAsc(v => !v); else { setSortKey('mainRank'); setSortAsc(true); } }} data-active={sortKey === 'mainRank'}>
                     大类排名{sortKey === 'mainRank' && <span className="ps-sort-arrow">{sortAsc ? '↑' : '↓'}</span>}
                   </th>
@@ -1616,8 +1616,8 @@ export function ProductScrape() {
                     <td>{p.brand || '—'}</td>
                     <td>{p.price || '—'}</td>
                     <td>{p.rating ? p.rating.replace(/ out of.*/i, '') : '—'}</td>
+                    <td className="ps-col-rc">{p.reviewCount || '—'}</td>
                     <td className="ps-col-launch" title={findDateFirstAvailable(p)}>{findDateFirstAvailable(p) || '—'}</td>
-                    <td className="ps-col-cat" title={p.categories || ''}>{p.categories || '—'}</td>
                     <td>
                       {p.bestSellerRank.mainRank != null
                         ? <>#{p.bestSellerRank.mainRank.toLocaleString()} <span className="ps-muted">{p.bestSellerRank.mainCategory}</span></>

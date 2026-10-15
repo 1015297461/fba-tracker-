@@ -790,20 +790,27 @@ def parse_product_page(html_text, asin, marketplace, with_customers_say=True):
     specifications = clean_record(raw_specs)
 
     # 产品信息
+    #
+    # ⚠️ Amazon 会在 key 与 value 之间插入 RTL 控制符（\u200e / \u200f / \u202a-\u202e），
+    # 典型形态：'Date First Available\n \u200f\n :\n \u200e September 9, 2022'。
+    # 这些字符**不属于 \s**，所以原来 `re.split(r'\s*[:：]\s*')` 切不开冒号
+    # → 整条 li 被当作「无冒号」丢弃 → productDetails 全空（上架时间因此消失）。
+    # 修法：先把 RTL 控制符剥掉再切分。
+    _RTL = re.compile(r'[\u200e\u200f\u202a-\u202e]')
     raw_pd = {}
     for el in soup.select("#detailBullets_feature_div li, #productDetails_db_sections .a-section"):
-        text = el.get_text().strip()
-        parts = re.split(r'\s*[:：]\s*', text)
+        text = _RTL.sub('', el.get_text())
+        parts = re.split(r'\s*[:：]\s*', text, maxsplit=1)
         if len(parts) >= 2:
             key = re.sub(r'[^\w\s一-鿿]', '', parts[0]).strip()
-            value = ":".join(parts[1:]).strip()
+            value = parts[1].strip()
             if key and value:
                 raw_pd[key] = value
     for el in soup.select("#detailBulletsWrapper_feature_div li"):
         spans = el.select("span span")
         if len(spans) >= 2:
-            key = re.sub(r'[：:\s]+$', '', spans[0].get_text()).strip()
-            value = spans[1].get_text().strip()
+            key = re.sub(r'[：:\s]+$', '', _RTL.sub('', spans[0].get_text())).strip()
+            value = _RTL.sub('', spans[1].get_text()).strip()
             if key and value:
                 raw_pd[key] = value
     product_details = clean_record(raw_pd)

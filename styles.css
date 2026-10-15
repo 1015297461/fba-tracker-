@@ -2329,7 +2329,7 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .ps-col-img   { width: 56px; }
 .ps-col-asin  { width: 110px; }
 .ps-col-title { min-width: 220px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ps-col-cat   { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-col-rc     { width: 88px; white-space: nowrap; }
 .ps-col-launch { width: 118px; white-space: nowrap; }
 .ps-col-scraped { width: 118px; white-space: nowrap; color: var(--ink-3); font-size: 12px; }
 .ps-col-ops   { width: 80px; }

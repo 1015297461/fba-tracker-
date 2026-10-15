@@ -108,6 +108,11 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   （overall-summary/aspect-label/aspect-summary）+ id=rh_controls_aspect_N。
                               #   全量内容在初始 HTML 中，无额外请求，实测净增约 44ms。
                               #   scrape_product()/scrape_products() 有 with_customers_say 开关（默认 True）
+                              #   ⚠️ detailBullets 解析必须**先剥 RTL 控制符**（\u200e/\u200f/\u202a-\u202e）再按
+                              #   冒号切分：Amazon 把控制符插在 key 与 value 之间，它们不属于 \s，
+                              #   会让 `re.split(r'\s*[:：]\s*')` 切不开 → 整条 li 被丢弃 → productDetails 全空
+                              #   （曾因此让「上架时间」整列消失）。注意 parse_product_page 返回的是
+                              #   **下划线**键名 product_details，别和接口层的驼峰 productDetails 搞混。
   review_media.py              # 评论媒体（Customer photos and videos）按需抓取 —— **唯一走浏览器 CDP 的模块**。
                               #   评论图片/视频由详情页懒加载 widget cr-customer-videos 提供，端点为
                               #   POST /portal/customer-reviews/ajax/lazy-widgets/stream。该端点**要求有效会话**：
@@ -173,6 +178,8 @@ src/
       ProductScrape.tsx         # 工具：产品采集（含详情预览弹窗 + 图片 Lightbox + ASIN搜索过滤 + 列头排序；
                                 #   结果表列见 findDateFirstAvailable()——「上架时间」取亚马逊详情的
                                 #   Date First Available（productDetails 优先、回退 specifications）；
+                                #   「评分数量」列取 reviewCount；「分类路径」列已移除
+                                #   （categories 字段仍在数据里，只是不再展示）
                                 #   多选导出 + 每页50/100/150条分页跳转）
                                 #   左栏「历史任务」为紧凑单行列表：今天/昨天/更早分组 + 名称/站点检索
                                 #   + 全部/进行中/有失败筛选 + 每页 10/15/25/50 翻页；
