@@ -551,9 +551,115 @@ def _brand_from(soup, selector):
 
 
 # ============================================================
+# Customers say（AI 评论摘要）解析
+# ------------------------------------------------------------
+# Amazon 已把该区块改为混淆类名（aui-primitive + hash，如 __dChsbGMXsw4B），
+# 早期使用的 data-hook 选择器（cr-insights-widget / cr-lighthouse-summary /
+# cr-summarization-header 等）在现行页面上已全部失效，会静默返回 None。
+# 现改用 data-testid + id 模式定位，实测（2026-10-15，ASIN B0B49TY3RK @ US）
+# 可完整拿到：摘要整段、各 aspect 的计数/正负面/总结句、以及每 aspect 的
+# 评论引用（恒 4 条，含 "Read more" 截断标记）。
+# ============================================================
+_CS_HEAD = re.compile(
+    r"(\d+)\s+customers?\s+mention\s+(.+?),\s*(\d+)\s+positive,\s*(\d+)\s+negative", re.I)
+_CS_HEAD_REST = re.compile(
+    r'^\s*\d+\s+customers?\s+mention\s+"[^"]*"\s*\d+\s+positive\s+\d+\s+negative\s*', re.I)
+# 引用匹配：闭合引号后须紧跟 Read more，再往后必须是下一个引号或行尾
+# （前瞻写 (?=\s*"|$)，若只写 (?=\s|$) ，\s* 会回溯到零长度、拿一个空格就满足前瞻，
+#  导致引文内部的引号把一条引用切成两半——2026-10-15 边界测试实测踩到）。
+# 正文用「温度贪婪」(?!Read more). 禁止跨越 Read more，避免相邻引用被并成一条。
+_CS_QUOTE = re.compile(r'"((?:(?!Read more).)+?)"\s*(Read more)?(?=\s*"|$)', re.S)
+_CS_SENTIMENT = re.compile(
+    r"(Positive|Mixed|Negative)\s+aspect,\s*(.+?),\s*(\d+)\s+mentions?", re.I)
+_CS_LABEL = re.compile(r"^(.+?)\s*\((\d+)\)$")
+_CS_QUOTE_MIN_LEN = 15   # 低于此长度视为退化引用（实测有整条仅 "buy" 一词的）
+
+
+def _norm_sentence(raw):
+    """规整句子：清空白，并修掉行内高亮标签造成的「标点前空格」（great . I → great. I）。
+
+    clean_text 对空输入返回 None，故这里必须兜底 —— 否则 summary 为纯空白时会抛
+    TypeError（2026-10-15 边界测试实测踩到）。
+    """
+    s = clean_text(raw)
+    if not s:
+        return None
+    return re.sub(r"\s+([,.;:!?])", r"\1", s)
+
+
+def parse_customers_say(soup):
+    """解析 Customers say 全量内容。
+
+    返回 {"summary": str|None, "aspects": [{
+        name, mentions, positive, negative, sentiment, summary,
+        quotes: [{text, truncated}]}]}
+    """
+    result = {"summary": None, "aspects": []}
+
+    # ① AI 摘要整段
+    el = soup.find(attrs={"data-testid": "overall-summary"})
+    if el:
+        result["summary"] = _norm_sentence(el.get_text(" ", strip=True))
+
+    # ② aspect 标签：名称（Title Case）+ 计数
+    label_map = {}
+    for sp in soup.find_all(attrs={"data-testid": "aspect-label"}):
+        m = _CS_LABEL.match(_norm_sentence(sp.get_text(" ", strip=True)))
+        if m:
+            label_map[m.group(1).strip().lower()] = {
+                "name": m.group(1).strip(), "mentions": int(m.group(2))}
+
+    # 情感（Positive/Mixed/Negative）取自 tab 的 aria-label
+    sentiment_map = {}
+    for tag in soup.find_all(attrs={"aria-label": _CS_SENTIMENT}):
+        m = _CS_SENTIMENT.search(tag["aria-label"])
+        if m:
+            sentiment_map[m.group(2).strip().lower()] = m.group(1).capitalize()
+
+    # ③ 每个 aspect 的明细面板
+    for p in soup.find_all(id=re.compile(r"^rh_controls_aspect_\d+$")):
+        norm = re.sub(r"\s*\n\s*", " ", p.get_text("\n", strip=True)).strip()
+        m = _CS_HEAD.match(norm)
+        if not m:
+            continue
+        mentions = int(m.group(1))
+        raw_name = m.group(2).strip()
+        positive, negative = int(m.group(3)), int(m.group(4))
+        key = raw_name.lower()
+
+        # 总结句：取面板内 data-testid=aspect-summary。
+        # 不能按行切片——表头第二行也是 "N customers mention ..."，会切错。
+        s_el = p.find(attrs={"data-testid": "aspect-summary"})
+        summary = _norm_sentence(s_el.get_text(" ", strip=True)) if s_el else None
+
+        # 引用：剥掉表头剩余行，再取成对引号包裹的内容。
+        # 正则要求闭合引号后紧跟 Read more 或行尾，故引文内部再出现引号也不会被截断。
+        tail = _CS_HEAD_REST.sub("", norm[m.end():], count=1)
+        quotes = []
+        for qm in _CS_QUOTE.finditer(tail):
+            body = _norm_sentence(qm.group(1))
+            if not body or len(body) < _CS_QUOTE_MIN_LEN or body.lower() == key:
+                continue
+            quotes.append({"text": body, "truncated": bool(qm.group(2))})
+
+        lbl = label_map.get(key, {})
+        result["aspects"].append({
+            "name": lbl.get("name") or raw_name,
+            "mentions": mentions,
+            "positive": positive,
+            "negative": negative,
+            "sentiment": sentiment_map.get(key),
+            "summary": summary,
+            "quotes": quotes,
+        })
+
+    return result
+
+
+# ============================================================
 # 解析产品页
 # ============================================================
-def parse_product_page(html_text, asin, marketplace):
+def parse_product_page(html_text, asin, marketplace, with_customers_say=True):
     soup = _make_soup(html_text)
     if soup is None:
         raise RuntimeError("缺少 beautifulsoup4，无法解析产品页面")
@@ -769,42 +875,19 @@ def parse_product_page(html_text, asin, marketplace):
             bsr_sub_rank, bsr_sub_category = entries[-1][0], entries[-1][1]
 
     # ============================================================
-    # 顾客评价：customers_say 摘要 / 评论图 / "买家关注点" 标签
-    # 注意：大量评论数据走 AJAX，初始 HTML 仅含部分数据，原项目固有限制
+    # 顾客评价：Customers say（AI 摘要 + aspect 明细）/ 评论图 / "买家关注点"标签
+    # 注意：明细与引用均在初始 HTML 中，无需 JS 交互；解析逻辑见 parse_customers_say()
+    # with_customers_say=False 时整段跳过（用户可在前端关闭该开关）。
     # ============================================================
-    say_candidates = []
-
-    el = soup.select_one("[data-hook='cr-insights-widget-aspects-summary']")
-    say_candidates.append(el.get_text().strip() if el else "")
-
-    el = soup.select_one("[data-hook='cr-summarization-header']")
-    nxt = _next_element_sibling(el, ("p", "div")) if el else None
-    say_candidates.append(nxt.get_text().strip() if nxt else "")
-
-    say_candidates.append(_text1(soup, "[data-hook='cr-lighthouse-summary']"))
-
-    el = soup.select_one(".cr-lighthouse-term-list-header")
-    nxt = _next_element_sibling(el) if el else None
-    say_candidates.append(nxt.get_text().strip() if nxt else "")
-
-    el = soup.select_one("#cr-summarization-attributes-list")
-    closest = _closest_with_attr(el, "data-hook") if el else None
-    prv = _prev_element_sibling(closest) if closest else None
-    say_candidates.append(prv.get_text().strip() if prv else "")
-
-    for sel in ("[data-hook='cr-insights-widget']", "#cr-insights-widget"):
-        el = soup.select_one(sel)
-        inner = el.find("p") if el else None
-        say_candidates.append(inner.get_text().strip() if inner else "")
-
-    say_candidates.append(_text1(soup, ".cr-insights-widget-aspects-summary"))
-
-    el = soup.select_one("[data-hook='cr-lighthouse-term-list']")
-    prv = _prev_element_sibling(el, ("p", "div")) if el else None
-    say_candidates.append(prv.get_text().strip() if prv else "")
-
-    say_candidates = [s for s in say_candidates if len(s) > 20]
-    customers_say = clean_text(say_candidates[0]) if say_candidates else None
+    if with_customers_say:
+        customers_say_detail = parse_customers_say(soup)
+    else:
+        customers_say_detail = {"summary": None, "aspects": []}
+    customers_say = customers_say_detail.get("summary")
+    # 派生两个落库字段：tags 供表格扫读，aspects 供详情弹窗折叠展示
+    _cs_aspects = customers_say_detail.get("aspects") or []
+    customers_say_tags = " · ".join(f"{a['name']}({a['mentions']})" for a in _cs_aspects) or None
+    customers_say_aspects = json.dumps(_cs_aspects, ensure_ascii=False) if _cs_aspects else None
 
     # 评论图（最多 10 张）：脚本 JSON + DOM 选择器
     review_images = []
@@ -827,20 +910,12 @@ def parse_product_page(html_text, asin, marketplace):
         src = el.get("src") or ""
         _add_review_img(re.sub(r'\._[A-Z0-9_,]+_\.', '._SL500_.', src, flags=re.I))
 
-    # "买家关注点"标签
+    # "买家关注点"标签：由 aspect 明细生成（名称 + 提及数）
     select_to_learn_more = []
-    for sel in (
-        ".cr-lighthouse-term",
-        "[data-hook='cr-summarization-attribute'] span",
-        "#cr-summarization-attributes-list .a-list-item",
-        "[data-hook='cr-lighthouse-term-list'] li",
-        "[data-hook='cr-insights-widget'] .a-list-item",
-        ".cr-insights-widget-aspects-list li",
-    ):
-        for el in soup.select(sel):
-            text = clean_text(el.get_text())
-            if text and 1 < len(text) < 100 and text not in select_to_learn_more:
-                select_to_learn_more.append(text)
+    for _a in customers_say_detail.get("aspects") or []:
+        _tag = f"{_a['name']}({_a['mentions']})"
+        if _tag not in select_to_learn_more:
+            select_to_learn_more.append(_tag)
 
     # ============================================================
     # A+ 内容图片
@@ -910,6 +985,9 @@ def parse_product_page(html_text, asin, marketplace):
         "bsr_sub_rank": bsr_sub_rank,
         "bsr_raw_text": bsr_raw_text,
         "customers_say": customers_say,
+        "customers_say_detail": customers_say_detail,
+        "customers_say_tags": customers_say_tags,
+        "customers_say_aspects": customers_say_aspects,
         "review_images": review_images,
         "select_to_learn_more": select_to_learn_more,
         "status": "success",
@@ -955,23 +1033,9 @@ def parse_reviews_page(html_text):
     if soup is None:
         return {}
 
-    say_candidates = []
-    for sel in (
-        "[data-hook='cr-insights-widget-aspects-summary']",
-        "[data-hook='cr-lighthouse-summary']",
-        ".cr-lighthouse-summary",
-        "[data-hook='cr-summarization-description']",
-        ".a-section.cr-lighthouse-summary-widget p",
-    ):
-        say_candidates.append(_text1(soup, sel))
-    for sel in ("[data-hook='cr-insights-widget']", "#cr-insights-widget"):
-        el = soup.select_one(sel)
-        inner = el.find("p") if el else None
-        say_candidates.append(inner.get_text().strip() if inner else "")
-    say_candidates.append(_text1(soup, "[data-hook='review-body'] span"))
-
-    say_candidates = [s for s in say_candidates if len(s) > 30]
-    customers_say = clean_text(say_candidates[0]) if say_candidates else None
+    # Customers say：评论页同样带该区块，解析逻辑与详情页一致（见 parse_customers_say）
+    customers_say_detail = parse_customers_say(soup)
+    customers_say = customers_say_detail.get("summary")
 
     review_images = []
 
@@ -1013,8 +1077,12 @@ def parse_reviews_page(html_text):
             if text and 1 < len(text) < 100 and text not in select_to_learn_more:
                 select_to_learn_more.append(text)
 
+    _rv_aspects = customers_say_detail.get("aspects") or []
     return {
         "customers_say": customers_say,
+        "customers_say_detail": customers_say_detail,
+        "customers_say_tags": " · ".join(f"{a['name']}({a['mentions']})" for a in _rv_aspects) or None,
+        "customers_say_aspects": json.dumps(_rv_aspects, ensure_ascii=False) if _rv_aspects else None,
         "review_images": review_images[:10],
         "select_to_learn_more": select_to_learn_more[:20],
     }
@@ -1273,8 +1341,12 @@ def _empty_product(asin, marketplace, error_message=None):
     }
 
 
-def scrape_product(asin, marketplace, with_reviews=False):
-    """抓取单个 ASIN，返回字段与 scrape_products 表列一一对应的 dict。"""
+def scrape_product(asin, marketplace, with_reviews=False, with_customers_say=True):
+    """抓取单个 ASIN，返回字段与 scrape_products 表列一一对应的 dict。
+
+    with_customers_say：是否解析 Customers say（AI 摘要 + aspect 明细 + 引用）。
+    该项不产生额外网络请求（内容就在详情页 HTML 里），实测净增约 44ms。
+    """
     asin = (asin or "").strip().upper()
     marketplace = (marketplace or "US").upper()
 
@@ -1292,7 +1364,8 @@ def scrape_product(asin, marketplace, with_reviews=False):
         return _empty_product(asin, marketplace, str(e) or "抓取失败")
 
     try:
-        product = parse_product_page(html_text, asin, marketplace)
+        product = parse_product_page(html_text, asin, marketplace,
+                                     with_customers_say=with_customers_say)
     except Exception as e:
         return _empty_product(asin, marketplace, f"解析失败: {e}")
 
@@ -1312,6 +1385,9 @@ def scrape_product(asin, marketplace, with_reviews=False):
             review_data = parse_reviews_page(reviews_html)
             if review_data.get("customers_say"):
                 product["customers_say"] = review_data["customers_say"]
+                product["customers_say_detail"] = review_data.get("customers_say_detail")
+                product["customers_say_tags"] = review_data.get("customers_say_tags")
+                product["customers_say_aspects"] = review_data.get("customers_say_aspects")
             if review_data.get("review_images"):
                 merged = list(dict.fromkeys(review_data["review_images"] + product["review_images"]))
                 product["review_images"] = merged[:10]
@@ -1322,7 +1398,7 @@ def scrape_product(asin, marketplace, with_reviews=False):
 
 
 def scrape_products(asins, marketplace, with_reviews=False, on_progress=None,
-                    should_stop=None):
+                    should_stop=None, with_customers_say=True):
     """批量抓取，返回与 asins 等长的结果列表；失败项会自动重试一轮。
 
     batch_size（每批提交几个）与 concurrency（同时几个 worker）是两件事：
@@ -1349,7 +1425,7 @@ def scrape_products(asins, marketplace, with_reviews=False, on_progress=None,
             time.sleep(stagger_sec)
         if _stop_requested():
             raise ScrapeInterrupted()
-        return idx, scrape_product(asin, marketplace, with_reviews)
+        return idx, scrape_product(asin, marketplace, with_reviews, with_customers_say)
 
     def _stagger_for(pos, stagger_base, jitter):
         """只有「同时启动的那一批」需要错开发车，排队中的任务会被空闲 worker 自然错开。

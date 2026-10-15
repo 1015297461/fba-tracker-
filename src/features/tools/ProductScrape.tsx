@@ -44,6 +44,52 @@ interface ProductDetailProps {
   open: boolean;
   onClose: () => void;
 }
+// Customers say 单个关注点：默认折叠（只显示名称+提及数），点击展开明细
+function CsAspectRow({ aspect }: { aspect: CsAspect }) {
+  const [open, setOpen] = useState(false);
+  const dotColor = aspect.sentiment === 'Positive' ? 'var(--green)'
+    : aspect.sentiment === 'Negative' ? 'var(--red)'
+    : aspect.sentiment === 'Mixed' ? 'var(--orange)'
+    : 'var(--ink-4)';
+  const hasBody = !!(aspect.summary || (aspect.quotes && aspect.quotes.length > 0));
+  return (
+    <div className="ps-cs-aspect">
+      <button
+        className="ps-cs-row"
+        aria-expanded={open}
+        onClick={() => hasBody && setOpen(o => !o)}
+        style={{ cursor: hasBody ? 'pointer' : 'default' }}
+      >
+        <span className="ps-cs-dot" style={{ background: dotColor }} />
+        <span className="ps-cs-name">{aspect.name}</span>
+        <span className="ps-cs-count">{aspect.mentions}</span>
+        {hasBody && <span className="ps-cs-caret">{open ? '▾' : '▸'}</span>}
+      </button>
+      {open && hasBody && (
+        <div className="ps-cs-body">
+          <div className="ps-cs-stats">
+            <span>{aspect.mentions} 人提及</span>
+            <span style={{ color: 'var(--green)' }}>{aspect.positive} 正面</span>
+            <span style={{ color: 'var(--red)' }}>{aspect.negative} 负面</span>
+            {aspect.sentiment && <span className="ps-cs-sent">{aspect.sentiment}</span>}
+          </div>
+          {aspect.summary && <p className="ps-cs-summary">{aspect.summary}</p>}
+          {aspect.quotes && aspect.quotes.length > 0 && (
+            <div className="ps-cs-quotes">
+              {aspect.quotes.map((q, i) => (
+                <div key={i} className="ps-cs-quote">
+                  <span>{q.text}</span>
+                  {q.truncated && <em className="ps-cs-trunc">（截断）</em>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProductDetailDialog({ product, open, onClose }: ProductDetailProps) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxImages, setLightboxImages] = useState<string[]>([]);
@@ -176,32 +222,39 @@ function ProductDetailDialog({ product, open, onClose }: ProductDetailProps) {
                 </div>
               )}
 
-              {/* Customer reviews */}
-              {cr?.customersSay ? (
+              {/* Customer reviews：Customers say（AI 摘要 + 关注点明细，默认折叠）*/}
+              {(cr?.customersSay || (cr?.customersSayAspects && cr.customersSayAspects.length > 0)) ? (
                 <div className="ps-detail-section">
-                  <h4>顾客评价</h4>
-                  <div className="ps-customer-say">{cr.customersSay}</div>
-                  {cr.selectToLearnMore && cr.selectToLearnMore.length > 0 && (
-                    <div className="ps-tags">
-                      {cr.selectToLearnMore.map((t, i) => <span key={i} className="ps-tag">{t}</span>)}
-                    </div>
-                  )}
-                  {reviewImages.length > 0 && (
-                    <div className="ps-detail-section">
-                      <div className="ps-detail-section-head">
-                        <h4>顾客图片 ({reviewImages.length} 张)</h4>
-                      </div>
-                      <div className="ps-detail-img-grid">
-                        {reviewImages.slice(0, 10).map((img, i) => (
-                          <div key={i} className="ps-detail-img-card" onClick={() => openLightbox(reviewImages, i)}>
-                            <img src={img} alt={`Review ${i + 1}`} />
-                          </div>
+                  <h4>顾客评价 · Customers say</h4>
+                  {cr?.customersSay && <div className="ps-customer-say">{cr.customersSay}</div>}
+                  {cr?.customersSayAspects && cr.customersSayAspects.length > 0 && (
+                    <>
+                      <div className="ps-cs-hint">点击任一关注点展开明细</div>
+                      <div className="ps-cs-list">
+                        {cr.customersSayAspects.map((a, i) => (
+                          <CsAspectRow key={a.name || i} aspect={a} />
                         ))}
                       </div>
-                    </div>
+                    </>
                   )}
                 </div>
               ) : null}
+
+              {/* 顾客图片：独立成区，不受上面「有无摘要」影响 */}
+              {reviewImages.length > 0 && (
+                <div className="ps-detail-section">
+                  <div className="ps-detail-section-head">
+                    <h4>顾客图片 ({reviewImages.length} 张)</h4>
+                  </div>
+                  <div className="ps-detail-img-grid">
+                    {reviewImages.slice(0, 10).map((img, i) => (
+                      <div key={i} className="ps-detail-img-card" onClick={() => openLightbox(reviewImages, i)}>
+                        <img src={img} alt={`Review ${i + 1}`} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Specifications */}
               {Object.keys(filteredSpecifications).length > 0 && (
@@ -391,8 +444,16 @@ interface BestSellerRank {
   mainCategory: string | null; mainRank: number | null;
   subCategory: string | null; subRank: number | null; rawText: string | null;
 }
+interface CsAspect {
+  name: string; mentions: number; positive: number; negative: number;
+  sentiment: string | null; summary: string | null;
+  quotes: { text: string; truncated: boolean }[];
+}
 interface CustomerReviews {
-  customersSay: string | null; reviewImages: string[]; selectToLearnMore: string[];
+  customersSay: string | null;
+  customersSayTags: string | null;
+  customersSayAspects: CsAspect[];
+  reviewImages: string[]; selectToLearnMore: string[];
 }
 interface ScrapedProduct {
   id?: number;
@@ -410,7 +471,7 @@ interface ScrapedProduct {
 //   running / paused / completed / partial / cancelled / error
 interface ScrapeTask {
   id: string; marketplace: string; name: string | null; total: number; success: number; failed: number;
-  withReviews: boolean; status: string; createdAt: string;
+  withReviews: boolean; withCustomersSay: boolean; status: string; createdAt: string;
   asins: string[]; startedAt: string | null; endedAt: string | null; error: string | null;
 }
 
@@ -426,10 +487,10 @@ async function apiGetProducts(taskId: string): Promise<ScrapedProduct[]> {
   return (await r.json()).products || [];
 }
 // 提交即返回 taskId，真正的抓取在服务端后台线程里跑——所以刷新页面不会中断任务
-async function apiStartScrape(asins: string[], marketplace: string, withReviews: boolean, taskId?: string): Promise<string> {
+async function apiStartScrape(asins: string[], marketplace: string, withReviews: boolean, taskId?: string, withCustomersSay: boolean = true): Promise<string> {
   const r = await fetch('/api/scrape/start', {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ asins, marketplace, withReviews, ...(taskId ? { taskId } : {}) }),
+    body: JSON.stringify({ asins, marketplace, withReviews, withCustomersSay, ...(taskId ? { taskId } : {}) }),
   });
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
@@ -555,10 +616,13 @@ function exportCSV(products: ScrapedProduct[], marketplace: string) {
     'ASIN', '站点', '标题', '品牌', '价格', '评分', '评论数', '可用性',
     '五点描述', '产品描述', '主图链接', '所有图片链接',
     '产品规格', '产品详情', '分类路径', '大类', '大类排名', '小类', '小类排名',
-    '卖家', 'Customers say', '状态', '链接',
+    '卖家', 'Customers say', 'Customers say 关注点', '状态', '链接',
   ];
   const rows = products.map(p => {
     const bsr = p.bestSellerRank, cr = p.customerReviews;
+    // 关注点压成一行：「名称(提及数) × N」；明细（总结句/引用）不进 CSV，避免单元格爆炸
+    const aspects = (cr.customersSayAspects || [])
+      .map(a => `${a.name}(${a.mentions})`).join(' | ');
     return [
       p.asin, p.marketplace, p.title || '', p.brand || '', p.price || '',
       p.rating || '', p.reviewCount || '', p.availability || '',
@@ -569,6 +633,7 @@ function exportCSV(products: ScrapedProduct[], marketplace: string) {
       p.categories || '', bsr.mainCategory || '', bsr.mainRank != null ? String(bsr.mainRank) : '',
       bsr.subCategory || '', bsr.subRank != null ? String(bsr.subRank) : '',
       p.seller || '', cr.customersSay || '',
+      cr.customersSayTags || aspects,
       p.status === 'success' ? '成功' : '失败',
       productUrl(p.asin, p.marketplace || marketplace),
     ];
@@ -624,6 +689,8 @@ export function ProductScrape() {
   const [asinInput, setAsinInput]     = React.useState('');
   const [marketplace, setMarketplace] = React.useState('US');
   const [withReviews, setWithReviews] = React.useState(false);
+  // Customers say（AI 评价摘要）默认开启：内容就在详情页里，不增加请求，实测净增约 44ms
+  const [withCustomersSay, setWithCustomersSay] = React.useState(true);
   const [products, setProducts]       = React.useState<ScrapedProduct[]>([]);
   const [running, setRunning]         = React.useState(false);
   // 「本轮」进度：进度条用它。分母=本轮工作集（首次=全部 ASIN；重试/续跑=未成功的那些），
@@ -790,7 +857,7 @@ export function ProductScrape() {
     setErr('');
     try {
       await apiResetSession(marketplace);
-      await apiStartScrape(failedProducts.map(p => p.asin), marketplace, withReviews, activeTaskId);
+      await apiStartScrape(failedProducts.map(p => p.asin), marketplace, withReviews, activeTaskId, withCustomersSay);
       // 立即切到本轮口径（待重试数），避免闪现上一轮残留的 100%
       setProgress({ completed: 0, total: failedProducts.length });
       startPolling(activeTaskId);
@@ -802,7 +869,7 @@ export function ProductScrape() {
     setErr(''); setProducts([]); setActiveTaskId(null); setPage(1);
     setProgress({ completed: 0, total: validAsins.length });
     try {
-      const taskId = await apiStartScrape(validAsins, marketplace, withReviews);
+      const taskId = await apiStartScrape(validAsins, marketplace, withReviews, undefined, withCustomersSay);
       startPolling(taskId);
     } catch (e: any) {
       setErr(e.message || '提交采集失败');
@@ -979,6 +1046,10 @@ export function ProductScrape() {
           <input type="checkbox" checked={withReviews} onChange={e => setWithReviews(e.target.checked)} disabled={running} />
           <span>抓取评论数据（速度较慢）</span>
         </label>
+        <label className="ps-check" title="亚马逊 AI 从评论生成的摘要、各关注点计数与评论引用。数据本就在详情页里，不增加请求，几乎不影响速度。">
+          <input type="checkbox" checked={withCustomersSay} onChange={e => setWithCustomersSay(e.target.checked)} disabled={running} />
+          <span>抓取 Customers say 评价摘要</span>
+        </label>
 
         {err && <div className="ps-err">{err}</div>}
 
@@ -1042,7 +1113,9 @@ export function ProductScrape() {
               const info = mkInfo(t.marketplace);
               const displayName = t.name || `${info.flag} ${info.name} · ${fmtDateTime(t.createdAt)}`;
               const fullTip = `${displayName}\n创建 ${fmtDateTime(t.createdAt)} · 共 ${t.total} · 成功 ${t.success} · 失败 ${t.failed}`
-                + `${taskStatusText(t) ? ` · ${taskStatusText(t)}` : ''}${t.withReviews ? ' · 含评论' : ''}`;
+                + `${taskStatusText(t) ? ` · ${taskStatusText(t)}` : ''}`
+                + `${t.withReviews ? ' · 含评论' : ''}`
+                + `${t.withCustomersSay === false ? ' · 无 Customers say' : ''}`;
               return (
                 <React.Fragment key={t.id}>
                   {g !== prevG && <div className="ps-hist-group">{g}</div>}

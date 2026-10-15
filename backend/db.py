@@ -151,6 +151,7 @@ class DbState:
                     success      INTEGER DEFAULT 0,
                     failed       INTEGER DEFAULT 0,
                     with_reviews INTEGER DEFAULT 0,
+                    with_customers_say INTEGER DEFAULT 1,
                     status       TEXT DEFAULT 'completed',
                     created_at   TEXT,
                     asins        TEXT DEFAULT '[]',
@@ -185,6 +186,8 @@ class DbState:
                     bsr_sub_rank      INTEGER,
                     bsr_raw_text      TEXT,
                     customers_say     TEXT,
+                    customers_say_tags    TEXT,
+                    customers_say_aspects TEXT,
                     review_images     TEXT,
                     select_to_learn_more TEXT,
                     status        TEXT,
@@ -439,6 +442,16 @@ class DbState:
             existing_scrape = {row[1] for row in conn.execute("PRAGMA table_info(scrape_tasks)")}
             if "name" not in existing_scrape:
                 conn.execute("ALTER TABLE scrape_tasks ADD COLUMN name TEXT")
+            if "with_customers_say" not in existing_scrape:
+                # 老库没有该开关，按「默认开启」补列并回填 1，行为与新版一致
+                conn.execute("ALTER TABLE scrape_tasks ADD COLUMN with_customers_say INTEGER DEFAULT 1")
+                conn.execute("UPDATE scrape_tasks SET with_customers_say=1 WHERE with_customers_say IS NULL")
+
+            # Customers say 落库：summary 复用既有 customers_say 列，另补 tags / aspects 两列
+            _scrape_prod_cols = {r[1] for r in conn.execute("PRAGMA table_info(scrape_products)")}
+            for col in ("customers_say_tags", "customers_say_aspects"):
+                if col not in _scrape_prod_cols:
+                    conn.execute(f"ALTER TABLE scrape_products ADD COLUMN {col} TEXT")
 
             # 采集任务改为服务端后台执行后，任务需要自己记住「原始 ASIN 列表」才能断点续跑，
             # 并记录运行窗口与失败原因。新表已含这四列，这里只为老库补列。
@@ -856,6 +869,7 @@ class DbState:
             "success":     row["success"],
             "failed":      row["failed"],
             "withReviews": bool(row["with_reviews"]),
+            "withCustomersSay": bool(row["with_customers_say"]),
             "status":      row["status"],
             "createdAt":   row["created_at"],
             "asins":       json.loads(row["asins"] or "[]"),
@@ -864,7 +878,8 @@ class DbState:
             "error":       row["error"],
         }
 
-    def create_scrape_task(self, marketplace, asins, with_reviews, name=None):
+    def create_scrape_task(self, marketplace, asins, with_reviews, name=None,
+                           with_customers_say=True):
         """建任务并把完整 ASIN 列表落库——这是断点续跑的唯一依据。"""
         tid = "st" + secrets.token_hex(6)
         now = _now_iso()
@@ -873,9 +888,10 @@ class DbState:
                 conn.execute(
                     """INSERT INTO scrape_tasks
                        (id, marketplace, name, total, success, failed, with_reviews,
-                        status, created_at, asins, started_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        with_customers_say, status, created_at, asins, started_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                     [tid, marketplace, name, len(asins), 0, 0, 1 if with_reviews else 0,
+                     1 if with_customers_say else 0,
                      "running", now, json.dumps(list(asins), ensure_ascii=False), now],
                 )
                 conn.commit()
@@ -982,8 +998,9 @@ class DbState:
                             main_image, images, aplus_images, specifications, product_details,
                             categories, seller, bsr_main_category, bsr_main_rank,
                             bsr_sub_category, bsr_sub_rank, bsr_raw_text, customers_say,
+                            customers_say_tags, customers_say_aspects,
                             review_images, select_to_learn_more, status, error_message, scraped_at)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                            ON CONFLICT(task_id, asin) DO UPDATE SET
                                marketplace=excluded.marketplace, title=excluded.title,
                                brand=excluded.brand, price=excluded.price,
@@ -1002,6 +1019,8 @@ class DbState:
                                bsr_sub_rank=excluded.bsr_sub_rank,
                                bsr_raw_text=excluded.bsr_raw_text,
                                customers_say=excluded.customers_say,
+                               customers_say_tags=excluded.customers_say_tags,
+                               customers_say_aspects=excluded.customers_say_aspects,
                                review_images=excluded.review_images,
                                select_to_learn_more=excluded.select_to_learn_more,
                                status=excluded.status, error_message=excluded.error_message,
@@ -1021,6 +1040,8 @@ class DbState:
                             p.get("bsr_main_category"), p.get("bsr_main_rank"),
                             p.get("bsr_sub_category"), p.get("bsr_sub_rank"), p.get("bsr_raw_text"),
                             p.get("customers_say"),
+                            p.get("customers_say_tags"),
+                            p.get("customers_say_aspects"),
                             json.dumps(p.get("review_images", []), ensure_ascii=False),
                             json.dumps(p.get("select_to_learn_more", []), ensure_ascii=False),
                             p.get("status"), p.get("error_message"), now,
@@ -1057,6 +1078,8 @@ class DbState:
             },
             "customerReviews": {
                 "customersSay":     row["customers_say"],
+                "customersSayTags": row["customers_say_tags"],
+                "customersSayAspects": json.loads(row["customers_say_aspects"] or "[]"),
                 "reviewImages":     json.loads(row["review_images"] or "[]"),
                 "selectToLearnMore": json.loads(row["select_to_learn_more"] or "[]"),
             },

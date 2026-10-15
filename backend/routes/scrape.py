@@ -76,7 +76,7 @@ def _run_progress(ctl, task):
     return {"done": max(0, done), "total": ctl.run_total}
 
 
-def _run_scrape(state, task_id, marketplace, with_reviews, ctl):
+def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, ctl):
     """后台线程：按断点续跑，逐条落库，支持暂停/取消。"""
     try:
         state.set_scrape_task_status(task_id, "running", started_at=_now_iso())
@@ -110,7 +110,8 @@ def _run_scrape(state, task_id, marketplace, with_reviews, ctl):
             try:
                 results = product_fetcher.scrape_products(
                     chunk, marketplace, with_reviews,
-                    on_progress=on_progress, should_stop=ctl.stop.is_set)
+                    on_progress=on_progress, should_stop=ctl.stop.is_set,
+                    with_customers_say=with_customers_say)
             except product_fetcher.ScrapeInterrupted:
                 raise
             except Exception as e:
@@ -153,12 +154,16 @@ def _run_scrape(state, task_id, marketplace, with_reviews, ctl):
             _running.pop(task_id, None)
 
 
-def start_scrape_task(state, asins, marketplace, with_reviews, task_id=None):
+def start_scrape_task(state, asins, marketplace, with_reviews, task_id=None,
+                      with_customers_say=True):
     """建/复用任务并起后台线程，立即返回 task_id。
 
     传 task_id 时把新 ASIN 合并进已有任务（「重试失败项」「继续」走这条路）。
     待跑列表由「任务里的全部 ASIN − 已成功的 ASIN」算出，所以重跑会天然跳过
     已成功项、只补失败项与未跑项。
+
+    with_customers_say：是否解析 Customers say。新建任务用传入值；
+    复用已有任务时改用任务里记录的开关（与上次采集保持一致）。
     """
     asins = [a.strip().upper() for a in asins if a and a.strip()]
     ctl = _TaskCtl()
@@ -171,8 +176,11 @@ def start_scrape_task(state, asins, marketplace, with_reviews, task_id=None):
                 raise ValueError(f"任务不存在: {task_id}")
             merged = list(dict.fromkeys((t.get("asins") or []) + asins))
             state.update_scrape_task_asins(task_id, merged)
+            # 续跑/重试沿用原任务的开关，避免同一任务两次采集字段不一致
+            with_customers_say = bool(t.get("withCustomersSay", True))
         else:
-            task_id = state.create_scrape_task(marketplace, asins, with_reviews)
+            task_id = state.create_scrape_task(marketplace, asins, with_reviews,
+                                               with_customers_say=with_customers_say)
             merged = asins
         _running[task_id] = ctl
         # 同步落状态再返回：否则 start 一返回、后台线程还没调度起来时，任务状态仍是
@@ -188,7 +196,7 @@ def start_scrape_task(state, asins, marketplace, with_reviews, task_id=None):
                          + (snapshot.get("failed") or 0)) == 0
 
     threading.Thread(target=_run_scrape,
-                     args=(state, task_id, marketplace, with_reviews, ctl),
+                     args=(state, task_id, marketplace, with_reviews, with_customers_say, ctl),
                      daemon=True, name=f"ScrapeTask-{task_id[:8]}").start()
     return task_id
 
@@ -268,20 +276,28 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             self._send_json(400, {"error": f"unsupported marketplace: {marketplace}"})
             return
         with_reviews = bool(payload.get("withReviews", False))
+        # Customers say 默认开启：成本极低（净增约 44ms，无额外请求）
+        with_customers_say = bool(payload.get("withCustomersSay", True))
         task_id_in = payload.get("taskId")
         if not isinstance(task_id_in, str) or not task_id_in:
             task_id_in = None
         try:
             task_id = start_scrape_task(state, asins, marketplace, with_reviews,
-                                        task_id=task_id_in)
+                                        task_id=task_id_in,
+                                        with_customers_say=with_customers_say)
         except RuntimeError as e:
             self._send_json(409, {"error": str(e)})
             return
         except ValueError as e:
             self._send_json(404, {"error": str(e)})
             return
+        _extras = []
+        if with_reviews:
+            _extras.append("含评论")
+        if with_customers_say:
+            _extras.append("含 Customers say")
         _log(f"[scrape] 已提交 {len(asins)} 个 ASIN @ {marketplace}"
-             f"{' (含评论)' if with_reviews else ''} -> {task_id}")
+             f"{(' (' + ' + '.join(_extras) + ')') if _extras else ''} -> {task_id}")
         self._send_json(200, {"taskId": task_id})
     POST["/api/scrape/start"] = post_start
 
@@ -315,7 +331,8 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             return
         try:
             start_scrape_task(state, [], task["marketplace"], task["withReviews"],
-                              task_id=task_id)
+                              task_id=task_id,
+                              with_customers_say=bool(task.get("withCustomersSay", True)))
         except RuntimeError as e:
             self._send_json(409, {"error": str(e)})
             return

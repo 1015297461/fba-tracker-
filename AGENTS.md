@@ -97,7 +97,13 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
     pdf.py                      # /api/pdf/*
     ai_analysis.py               # /api/ai/*
   rank_fetcher.py              # 关键词排名抓取器（正则解析，无 bs4 依赖）
-  product_fetcher.py           # 产品详情抓取器（bs4 解析 + 反爬：会话池/令牌桶/CAPTCHA/Dog-page检测）
+  product_fetcher.py           # 产品详情抓取器（bs4 解析 + 反爬：会话池/令牌桶/CAPTCHA/Dog-page检测）；
+                              #   含 parse_customers_say()——解析 Customers say（AI 摘要 + 各关注点计数/
+                              #   正负面/总结句/评论引用）。Amazon 已改混淆类名，旧 data-hook 选择器
+                              #   （cr-insights-widget 等）全部失效，现锚点用 data-testid
+                              #   （overall-summary/aspect-label/aspect-summary）+ id=rh_controls_aspect_N。
+                              #   全量内容在初始 HTML 中，无额外请求，实测净增约 44ms。
+                              #   scrape_product()/scrape_products() 有 with_customers_say 开关（默认 True）
   sif_fetcher.py               # SIF 抓取器 v2（HTTP JSON-RPC 直连 mcp.sif.com，零第三方依赖；封装关键词域/ASIN域/
                               #   决策域共 14 个工具 + 每日层/每周层编排 run_daily_layer()/run_weekly_layer()；
                               #   密钥读环境变量 SIF_MCP_KEY 或 data/sif-config.json，见"SIF 爆品关键词监控模块"一节）
@@ -154,6 +160,11 @@ src/
                                 #   操作按钮悬停/选中才出现，避免挤压任务名
                                 #   顶部 BATCH_SIZE 决定每次 POST 带多少个 ASIN（现为 50）；
                                 #   后端速率闸门与批大小无关，改小它只会增加 HTTP 往返与后端空等
+                                #   输入区两个采集开关：withReviews（评论数据，慢）+ withCustomersSay
+                                #   （Customers say 评价摘要，默认开，几乎不影响速度）；后者关掉时
+                                #   customers_say/tags/aspects 三列全部写 NULL
+                                #   详情弹窗「顾客评价 · Customers say」：摘要整段 + 关注点折叠列表
+                                #   （CsAspectRow，点开展示计数/正负面/总结句/评论引用）
       ReviewFetch.tsx           # 工具：评论采集（多ASIN批量抓取，按评分/排序/是否验证购买过滤）
       PdfSplit.tsx              # 工具：批量 PDF 拆分（每文件独立配置拆分方式，拆分结果通过浏览器下载）
       AiAnalyze.tsx             # 工具：AI分析（无人值守 shell 出去跑 `Codex -p` 执行 Codex Skill；
@@ -203,7 +214,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | `trash` | 回收站：产品被删除时的完整快照（`product_json`），`write()` 检测到某 id 从新列表中消失即挪进这张表而非真删 |
 | `audit_log` | 产品数据变更审计 |
 | `keyword_tasks` / `rank_snapshots` | 关键词排名：任务配置 + 历史快照 |
-| `scrape_tasks` / `scrape_products` | 产品采集：任务记录 + 落库的商品详情 |
+| `scrape_tasks` / `scrape_products` | 产品采集：任务记录 + 落库的商品详情。`scrape_tasks.with_reviews`/`with_customers_say` 两个采集开关（后者默认 1）；`scrape_products` 的 Customers say 占三列——`customers_say`（AI 摘要整段）、`customers_say_tags`（`Effectiveness(100) · …` 一行，表格/CSV 用）、`customers_say_aspects`（JSON，含每关注点计数/正负面/总结句/引用，详情弹窗折叠展示用） |
 | `review_tasks` / `review_results` | 评论采集：任务记录 + 评论池（按 asin+review_id 去重） |
 | `export_jobs` | 后台导出任务（`ExportWorker` 消费，最多2并发） |
 | `ai_analysis_tasks` | AI分析任务（`AiAnalysisWorker` 消费，强制串行1并发；`files` 字段是产出文件名列表 JSON；`status` 除 pending/running/done/failed 外还有 `cancelled`；`username` 记录发起人，登录态按用户名分区要用） |
@@ -303,7 +314,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 - `backend/db.py`（2063 行，SIF v2 的 8 张表读写集中在文件后半段，改前先 grep `SIF v2` 分区注释定位）
 - `backend/routes/sif_keywords.py`（1015 行，前半是分层编排 `execute_task()` + 调度器，后半是 `register()` 里的路由表）
 - `styles.css`（3030 行，按模块分区，新模块追加在文件末尾对应分区注释下；SIF v2 组件样式在文件最末）
-- `backend/product_fetcher.py`（1389 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
+- `backend/product_fetcher.py`（1512 行，含完整反爬逻辑；Dog page 检测会在 503 分支同步重置 session cookies）
 
   **限流的两层概念（改参数前务必分清）**：
   - **速率闸门**：`SCRAPER_REFILL_MS=1500`（令牌桶补充间隔 ms）、`SCRAPER_BUCKET_CAPACITY=8`（令牌桶容量）、
