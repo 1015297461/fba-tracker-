@@ -2337,14 +2337,19 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 /* 重采下拉浮层（替换当前记录 / 新增一条记录） */
 .ps-menu-wrap { position: relative; display: inline-block; }
 .ps-menu-mask { position: fixed; inset: 0; z-index: 30; }
+/* 右对齐按钮向左展开：按钮位于工具栏最右端，若 left:0 向右展开，
+   菜单会越过 .ps-main（overflow:hidden）的右边界被裁掉。 */
 .ps-menu {
-  position: absolute; top: calc(100% + 4px); left: 0; z-index: 31;
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 31;
   min-width: 156px; padding: 4px; display: flex; flex-direction: column; gap: 2px;
   background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .20);
+  white-space: nowrap;
 }
 .ps-menu button {
   text-align: left; font: inherit; font-size: 12px; padding: 6px 10px;
   background: none; border: 0; border-radius: 6px; cursor: pointer; color: var(--ink);
+  white-space: nowrap;
 }
 .ps-menu button:hover { background: var(--bg-2); }
 
