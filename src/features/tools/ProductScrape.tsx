@@ -77,10 +77,7 @@ function CsAspectRow({ aspect }: { aspect: CsAspect }) {
           {aspect.quotes && aspect.quotes.length > 0 && (
             <div className="ps-cs-quotes">
               {aspect.quotes.map((q, i) => (
-                <div key={i} className="ps-cs-quote">
-                  <span>{q.text}</span>
-                  {q.truncated && <em className="ps-cs-trunc">（截断）</em>}
-                </div>
+                <div key={i} className="ps-cs-quote">{q.text}</div>
               ))}
             </div>
           )}
@@ -611,18 +608,38 @@ function dateFirstAvailableTs(p: ScrapedProduct): number {
   return isNaN(t) ? Infinity : t;
 }
 
+// 关注点情感的展示文案（中文，导出列用）
+const SENTIMENT_CN: Record<string, string> = {
+  Positive: '正面', Mixed: '混合', Negative: '负面',
+};
+
+// 导出①「Customers say 关注点」：一行压平，形如
+//   Skimmer(70) - 63 正面 / 7 负面 / 正面 · Cleanliness(56) - 51 正面 / 5 负面 / 正面
+function aspectTagsText(aspects: CsAspect[]): string {
+  return (aspects || []).map(a =>
+    `${a.name}(${a.mentions}) - ${a.positive} 正面 / ${a.negative} 负面 / ${SENTIMENT_CN[a.sentiment || ''] || '—'}`
+  ).join(' · ');
+}
+
+// 导出②「CustomersReview」：每个关注点一块，块内 = 加粗名称 + 摘要 + 逐行引用；
+// 块与块之间空行分隔（Markdown 的 **名称** 在支持 Markdown 处会渲染成粗体）
+function aspectReviewText(aspects: CsAspect[]): string {
+  return (aspects || []).map(a => {
+    const lines: string[] = [`**${a.name}**${a.summary ? ':' + a.summary : ''}`];
+    for (const q of (a.quotes || [])) lines.push(q.text);
+    return lines.join('\n');
+  }).join('\n\n');
+}
+
 function exportCSV(products: ScrapedProduct[], marketplace: string) {
   const headers = [
     'ASIN', '站点', '标题', '品牌', '价格', '评分', '评论数', '可用性',
     '五点描述', '产品描述', '主图链接', '所有图片链接',
     '产品规格', '产品详情', '分类路径', '大类', '大类排名', '小类', '小类排名',
-    '卖家', 'Customers say', 'Customers say 关注点', '状态', '链接',
+    '卖家', 'Customers say', 'Customers say 关注点', 'CustomersReview', '状态', '链接',
   ];
   const rows = products.map(p => {
     const bsr = p.bestSellerRank, cr = p.customerReviews;
-    // 关注点压成一行：「名称(提及数) × N」；明细（总结句/引用）不进 CSV，避免单元格爆炸
-    const aspects = (cr.customersSayAspects || [])
-      .map(a => `${a.name}(${a.mentions})`).join(' | ');
     return [
       p.asin, p.marketplace, p.title || '', p.brand || '', p.price || '',
       p.rating || '', p.reviewCount || '', p.availability || '',
@@ -633,7 +650,8 @@ function exportCSV(products: ScrapedProduct[], marketplace: string) {
       p.categories || '', bsr.mainCategory || '', bsr.mainRank != null ? String(bsr.mainRank) : '',
       bsr.subCategory || '', bsr.subRank != null ? String(bsr.subRank) : '',
       p.seller || '', cr.customersSay || '',
-      cr.customersSayTags || aspects,
+      aspectTagsText(cr.customersSayAspects),
+      aspectReviewText(cr.customersSayAspects),
       p.status === 'success' ? '成功' : '失败',
       productUrl(p.asin, p.marketplace || marketplace),
     ];

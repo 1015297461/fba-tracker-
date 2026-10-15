@@ -2411,7 +2411,6 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .ps-cs-summary { font-size: 12.5px; line-height: 1.6; color: var(--ink); margin: 0 0 8px; }
 .ps-cs-quotes { display: flex; flex-direction: column; gap: 5px; }
 .ps-cs-quote { font-size: 12px; line-height: 1.55; color: var(--ink-3); border-left: 2px solid var(--border); padding: 2px 0 2px 9px; }
-.ps-cs-trunc { font-style: normal; color: var(--ink-4); }
 
 /* Specifications list */
 .ps-spec-list { display: flex; flex-direction: column; gap: 8px; }

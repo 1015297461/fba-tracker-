@@ -165,7 +165,11 @@ src/
                                 #   withReviews（评论数据，慢）的 checkbox 自 2026-10-15 起**暂时隐藏**
                                 #   （JSX 注释包住，state/参数/后端链路均未删），需要时去掉注释即可恢复
                                 #   详情弹窗「顾客评价 · Customers say」：摘要整段 + 关注点折叠列表
-                                #   （CsAspectRow，点开展示计数/正负面/总结句/评论引用）
+                                #   （CsAspectRow，点开展示计数/正负面/总结句/评论引用，引用不标截断）
+                                #   CSV 导出（exportCSV，纯前端 Blob）新增两列，均由 customersSayAspects 现算：
+                                #     「Customers say 关注点」= Name(N) - X 正面 / Y 负面 / 情感 · …
+                                #     「CustomersReview」    = 每关注点一块，**名称**:摘要 + 逐行引用，块间空行
+                                #   （**名称** 是 Markdown 写法，CSV 本身无加粗能力）
       ReviewFetch.tsx           # 工具：评论采集（多ASIN批量抓取，按评分/排序/是否验证购买过滤）
                                 #   ⚠️ 自 2026-10-15 起**前端入口暂时隐藏**（用户要求）：Sidebar 工具
                                 #   列表与 app.tsx 的 Tweaks 视图下拉均已注释掉，另在 app.tsx 加了一条
@@ -220,7 +224,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | `trash` | 回收站：产品被删除时的完整快照（`product_json`），`write()` 检测到某 id 从新列表中消失即挪进这张表而非真删 |
 | `audit_log` | 产品数据变更审计 |
 | `keyword_tasks` / `rank_snapshots` | 关键词排名：任务配置 + 历史快照 |
-| `scrape_tasks` / `scrape_products` | 产品采集：任务记录 + 落库的商品详情。`scrape_tasks.with_reviews`/`with_customers_say` 两个采集开关（后者默认 1）；`scrape_products` 的 Customers say 占三列——`customers_say`（AI 摘要整段）、`customers_say_tags`（`Effectiveness(100) · …` 一行，表格/CSV 用）、`customers_say_aspects`（JSON，含每关注点计数/正负面/总结句/引用，详情弹窗折叠展示用） |
+| `scrape_tasks` / `scrape_products` | 产品采集：任务记录 + 落库的商品详情。`scrape_tasks.with_reviews`/`with_customers_say` 两个采集开关（后者默认 1）；`scrape_products` 的 Customers say 占三列——`customers_say`（AI 摘要整段）、`customers_say_tags`（`Effectiveness(100) · …` 一行；**前端已不再消费它**，导出改由 aspects 现算，留作历史数据备用）、`customers_say_aspects`（JSON，含每关注点计数/正负面/总结句/引用；**详情弹窗与 CSV 两列的单一来源**） |
 | `review_tasks` / `review_results` | 评论采集：任务记录 + 评论池（按 asin+review_id 去重） |
 | `export_jobs` | 后台导出任务（`ExportWorker` 消费，最多2并发） |
 | `ai_analysis_tasks` | AI分析任务（`AiAnalysisWorker` 消费，强制串行1并发；`files` 字段是产出文件名列表 JSON；`status` 除 pending/running/done/failed 外还有 `cancelled`；`username` 记录发起人，登录态按用户名分区要用） |
