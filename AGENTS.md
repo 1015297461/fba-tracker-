@@ -171,7 +171,8 @@ src/
                                 #   详情弹窗「顾客评价 · Customers say」：摘要整段 + 关注点折叠列表
                                 #   （CsAspectRow，点开展示计数/正负面/总结句/评论引用，引用不标截断）
                                 #   CSV 导出（exportCSV，纯前端 Blob）新增两列，均由 customersSayAspects 现算：
-                                #     「Customers say 关注点」= Name(N) - X 正面 / Y 负面 / 情感 · …
+                                #     「Customers say 关注点」= Name(N) - X Positive / Y Negative / 情感 · …
+                                #     情感值一律英文（Positive / Mixed / Negative），与详情弹窗一致
                                 #     「CustomersReview」    = 每关注点一块，**名称**:摘要 + 逐行引用，块间空行
                                 #   （**名称** 是 Markdown 写法，CSV 本身无加粗能力）
                                 #   工具栏：搜索 ASIN / 重试失败(N) / 导出 CSV / 重采▾

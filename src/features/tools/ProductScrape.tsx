@@ -69,8 +69,8 @@ function CsAspectRow({ aspect }: { aspect: CsAspect }) {
         <div className="ps-cs-body">
           <div className="ps-cs-stats">
             <span>{aspect.mentions} 人提及</span>
-            <span style={{ color: 'var(--green)' }}>{aspect.positive} 正面</span>
-            <span style={{ color: 'var(--red)' }}>{aspect.negative} 负面</span>
+            <span style={{ color: 'var(--green)' }}>{aspect.positive} Positive</span>
+            <span style={{ color: 'var(--red)' }}>{aspect.negative} Negative</span>
             {aspect.sentiment && <span className="ps-cs-sent">{aspect.sentiment}</span>}
           </div>
           {aspect.summary && <p className="ps-cs-summary">{aspect.summary}</p>}
@@ -612,16 +612,18 @@ function dateFirstAvailableTs(p: ScrapedProduct): number {
   return isNaN(t) ? Infinity : t;
 }
 
-// 关注点情感的展示文案（中文，导出列用）
-const SENTIMENT_CN: Record<string, string> = {
-  Positive: '正面', Mixed: '混合', Negative: '负面',
-};
+// 关注点情感：一律用英文原值（Positive / Mixed / Negative），与详情弹窗口径一致。
+// 只接受这三个合法值，其余（空/异常）统一显示为 —，避免导出里出现空段。
+const SENTIMENTS = ['Positive', 'Mixed', 'Negative'];
+function sentimentText(s?: string | null): string {
+  return s && SENTIMENTS.includes(s) ? s : '—';
+}
 
 // 导出①「Customers say 关注点」：一行压平，形如
-//   Skimmer(70) - 63 正面 / 7 负面 / 正面 · Cleanliness(56) - 51 正面 / 5 负面 / 正面
+//   Skimmer(70) - 63 Positive / 7 Negative / Positive · Cleanliness(56) - 51 Positive / 5 Negative / Positive
 function aspectTagsText(aspects: CsAspect[]): string {
   return (aspects || []).map(a =>
-    `${a.name}(${a.mentions}) - ${a.positive} 正面 / ${a.negative} 负面 / ${SENTIMENT_CN[a.sentiment || ''] || '—'}`
+    `${a.name}(${a.mentions}) - ${a.positive} Positive / ${a.negative} Negative / ${sentimentText(a.sentiment)}`
   ).join(' · ');
 }
 
