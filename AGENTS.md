@@ -113,8 +113,14 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   POST /portal/customer-reviews/ajax/lazy-widgets/stream。该端点**要求有效会话**：
                               #   不带 cookie 返回 0 字节，干净匿名会话同样 0（对照实测 168,632 vs 3,282），
                               #   因此 requests 抓不到，改为驱动本机已开浏览器（cdp-proxy 127.0.0.1:3456）。
-                              #   实测单个 ASIN 约 5s、仅 1 次 AJAX 请求、返回 13 图 + 1 视频。
+                              #   实测单个 ASIN 约 4–9s、仅 1 次 AJAX 请求、返回 13–17 项媒体。
                               #   依赖「浏览器开着 + 已允许远程调试」；不可用时 ensure_ready() 返回明确原因。
+                              #   **常驻标签复用**：不再每抓一个就新开标签，而是复用一个常驻标签
+                              #   （首次开 about:blank，之后在其中 navigate；抓完停在原地、不返回空白页），
+                              #   闲置 10 分钟由守护线程自动关闭；被手动关掉/浏览器重启则下次自动重建。
+                              #   实测连抓 3 个 ASIN 标签数净增 1。
+                              #   ⚠️ CSRF 是**页面级签名、与 ASIN 绑定**（实测 token(A)+asin=B 返回 0 字节），
+                              #   所以「打开目标详情页」这步省不掉，能省的只是「不新开标签」。
                               #   解析要点：响应是 JSON 数组文本（多段 &&& 分隔），HTML 引号处于 \" 转义态，
                               #   必须先 JSON.parse 反转义；选择器用 button[data-mediatype]（span 那条是 See all）；
                               #   图片ID 取 data-physicalid，地址取 data-url（视频给的是 HLS m3u8）。

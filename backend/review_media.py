@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -40,7 +41,7 @@ CHECK_DEPS = os.path.join(SKILL_DIR, "check-deps.mjs")
 PROXY_SCRIPT = os.path.join(SKILL_DIR, "cdp-proxy.mjs")
 
 PAGE_READY_TIMEOUT = 40      # 等待详情页出现 #cr-state-object 的上限（秒）
-PAGE_POLL_INTERVAL = 1.0
+PAGE_POLL_INTERVAL = 0.4     # 就绪轮询间隔：调小可明显减少平均等待（原来 1.0s）
 WIDGETS = [
     "cr-reviews-ai-pills-t1",
     "cr-age-recommendation",
@@ -177,6 +178,102 @@ def _new_tab(url):
         return None
 
 
+# ---------------------------------------------------------------------------
+# 常驻标签页
+#
+# 早先是「每抓一个 ASIN 就新开一个标签、抓完关掉」，实际用起来等于「每点一次就闪一个标签」，
+# 很吵。改为**复用同一个标签**：首次开一个（about:blank），之后每次在它里面
+# navigate 到目标详情页。
+#
+# 实测过「CSRF 能否跨 ASIN 复用」—— 不能：token 是页面级签名，
+# token(A) + asin=B 会被服务端拒绝（返回 0 字节）。所以「打开目标详情页」这步省不掉；
+# 能省的只是「不要再新开标签」。抓完**不回到空白页**（用户要求停在原地），
+# 标签闲置 IDLE_CLOSE_SEC 后由后台线程自动关掉。
+# ---------------------------------------------------------------------------
+
+IDLE_CLOSE_SEC = 600          # 标签闲置多久自动关闭（10 分钟）
+_tab_state = {"id": None, "asin": "", "lastUsed": 0.0}
+_tab_lock = threading.RLock()
+_reaper_started = False
+
+
+def _tab_alive(target_id):
+    status, text = _http(f"{PROXY_BASE}/targets", timeout=8)
+    if status != 200:
+        return False
+    try:
+        return any(t.get("targetId") == target_id for t in json.loads(text))
+    except Exception:
+        return False
+
+
+def _start_idle_reaper():
+    """后台线程：标签闲置超时就关掉（用户也可随时手动关，这里只是兜底）。"""
+    global _reaper_started
+    with _tab_lock:
+        if _reaper_started:
+            return
+        _reaper_started = True
+
+    def loop():
+        while True:
+            time.sleep(60)
+            with _tab_lock:
+                tid = _tab_state["id"]
+                idle = _tab_state["lastUsed"] and (time.time() - _tab_state["lastUsed"]) > IDLE_CLOSE_SEC
+                if tid and idle:
+                    _close_tab(tid)
+                    _tab_state.update({"id": None, "asin": "", "lastUsed": 0.0})
+                    _log(f"[review-media] 常驻标签闲置超过 {IDLE_CLOSE_SEC // 60} 分钟，已自动关闭")
+
+    threading.Thread(target=loop, daemon=True, name="ReviewMediaTabReaper").start()
+
+
+def _ensure_tab():
+    """取常驻标签：还活着就复用，否则新开一个（about:blank）。"""
+    with _tab_lock:
+        tid = _tab_state["id"]
+        if tid and _tab_alive(tid):
+            return tid
+        tid = _new_tab("about:blank")
+        if not tid:
+            return None
+        _tab_state.update({"id": tid, "asin": "", "lastUsed": time.time()})
+        _log(f"[review-media] 已开常驻标签 {tid[:8]}（后续抓取复用它，不再新开）")
+    _start_idle_reaper()
+    return tid
+
+
+def _navigate_and_wait(tab, asin, marketplace):
+    """在常驻标签里导航到目标详情页并等就绪；已经停在目标页就不再导航。"""
+    def ready():
+        # 必须同时满足「URL 已是目标 ASIN」和「cr-state-object 已渲染」——
+        # 只查元素会读到上一个页面的残留节点
+        js = ("(location.href.indexOf(%s) >= 0 && "
+              "!!document.getElementById('cr-state-object'))" % json.dumps(asin))
+        val, _err = _eval(tab, js, timeout=15)
+        return val is True
+
+    with _tab_lock:
+        if _tab_state.get("asin") == asin and ready():
+            return True
+
+    status, _text = _http(f"{PROXY_BASE}/navigate?target={urllib.parse.quote(tab)}",
+                          data=_page_url(asin, marketplace).encode("utf-8"),
+                          method="POST", timeout=45)
+    if status != 200:
+        return False
+
+    deadline = time.time() + PAGE_READY_TIMEOUT
+    while time.time() < deadline:
+        if ready():
+            with _tab_lock:
+                _tab_state["asin"] = asin
+            return True
+        time.sleep(PAGE_POLL_INTERVAL)
+    return False
+
+
 def _eval(target, expression, timeout=45):
     url = f"{PROXY_BASE}/eval?target={urllib.parse.quote(target)}"
     status, text = _http(url, data=expression.encode("utf-8"), method="POST", timeout=timeout)
@@ -225,26 +322,15 @@ def fetch_review_media(asin, marketplace="US"):
     if not ready:
         return {"ok": False, "error": "cdp_unavailable", "detail": detail}
 
-    target = _new_tab(_page_url(asin, marketplace))
-    if not target:
+    tab = _ensure_tab()
+    if not tab:
         return {"ok": False, "error": "open_tab_failed"}
     try:
-        # 等详情页把 #cr-state-object 渲染出来（懒加载脚本依赖它）
-        deadline = time.time() + PAGE_READY_TIMEOUT
-        ready_page = False
-        while time.time() < deadline:
-            val, err = _eval(target, "!!document.getElementById('cr-state-object')", timeout=15)
-            if val is True:
-                ready_page = True
-                break
-            if err:
-                _log(f"[review-media] {asin} 等待页面时出错: {err}")
-                break
-            time.sleep(PAGE_POLL_INTERVAL)
-        if not ready_page:
+        # 复用常驻标签：在其中导航到目标详情页（token 与 ASIN 绑定，这步省不掉）
+        if not _navigate_and_wait(tab, asin, marketplace):
             return {"ok": False, "error": "page_not_ready"}
 
-        data, err = _eval(target, _js(asin), timeout=45)
+        data, err = _eval(tab, _js(asin), timeout=45)
         if err or not isinstance(data, dict):
             return {"ok": False, "error": "eval_failed", "detail": str(err)[:200]}
         if data.get("error"):
@@ -256,4 +342,6 @@ def fetch_review_media(asin, marketplace="US"):
         return {"ok": True, "items": items,
                 "note": "ok" if items else "no_media"}
     finally:
-        _close_tab(target)
+        # 不关标签：留着给下一个 ASIN 复用；闲置由后台线程兜底关闭
+        with _tab_lock:
+            _tab_state["lastUsed"] = time.time()
