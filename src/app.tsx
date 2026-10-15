@@ -80,6 +80,12 @@ function AppShell() {
   useEffect(() => { document.documentElement.setAttribute('data-theme', theme); }, [theme]);
   useEffect(() => { if (t.view && t.view !== view) setView(t.view); }, [t.view]);
 
+  // 「评论采集」自 2026-10-15 起暂时隐藏（用户要求，仅前端隐藏）。
+  // 入口已从侧边栏与 Tweaks 视图下拉移除；这里兜底：若本地持久化的 view 仍是
+  // reviewFetch，自动回落到产品列表，避免停在一个已隐藏的页面上。
+  // 恢复方式：删掉本 effect，并取消下面两处「暂时隐藏」注释即可。
+  useEffect(() => { if (view === 'reviewFetch') changeView('list'); }, [view]);
+
   function changeView(v: string) { setView(v); setTweak('view', v); }
   function toggleTheme() { setTweak('theme', theme === 'dark' ? 'light' : 'dark'); }
 
@@ -163,7 +169,9 @@ function AppShell() {
             { value: 'table', label: '📐 数据表格' },
             { value: 'keywordRank', label: '🔍 关键词排名' },
             { value: 'productScrape', label: '🛒 产品采集' },
+            /* 暂时隐藏「评论采集」视图（2026-10-15）——恢复时去掉这圈注释
             { value: 'reviewFetch', label: '💬 评论采集' },
+            */
             { value: 'pdfSplit', label: '✂️ PDF拆分' },
             ...(isRoot ? AI_SKILLS.map(s => ({ value: 'aiAnalyze:' + s.id, label: `${s.ic} ${s.label}` })) : []),
           ]}

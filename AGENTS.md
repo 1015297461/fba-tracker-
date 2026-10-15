@@ -167,6 +167,11 @@ src/
                                 #   详情弹窗「顾客评价 · Customers say」：摘要整段 + 关注点折叠列表
                                 #   （CsAspectRow，点开展示计数/正负面/总结句/评论引用）
       ReviewFetch.tsx           # 工具：评论采集（多ASIN批量抓取，按评分/排序/是否验证购买过滤）
+                                #   ⚠️ 自 2026-10-15 起**前端入口暂时隐藏**（用户要求）：Sidebar 工具
+                                #   列表与 app.tsx 的 Tweaks 视图下拉均已注释掉，另在 app.tsx 加了一条
+                                #   兜底 effect（持久化的 view 若为 reviewFetch 自动回落 list）。
+                                #   组件本身、渲染分支、后端 /api/review/* 全部保留未删。
+                                #   恢复：取消这两处「暂时隐藏」注释 + 删掉那条 effect 即可。
       PdfSplit.tsx              # 工具：批量 PDF 拆分（每文件独立配置拆分方式，拆分结果通过浏览器下载）
       AiAnalyze.tsx             # 工具：AI分析（无人值守 shell 出去跑 `Codex -p` 执行 Codex Skill；
                                 #   导出 AI_SKILLS 常量供 Sidebar.tsx / app.tsx 渲染"AI分析"分组按钮/视图路由/Tweaks下拉，
@@ -302,7 +307,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 ## 前端架构
 
 - **状态管理**：单一 `ProductContext`（无 Redux/Zustand），`useProducts()` 暴露数据 + 一组 `update*()` 函数，每个对应 `Product`/`Variant`/`Stage` 等不同粒度的字段更新，最终都落到 `products` 数组并触发同步。
-- **视图路由**：无 react-router，`app.tsx` 的 `AppShell` 用 `view` 状态字符串切换（`'list' | 'progress' | 'table' | 'keywordRank' | 'productScrape' | 'reviewFetch' | 'pdfSplit' | 'sifKeyword' | 'myExports' | 'trash'`），Sidebar/TopBar 负责切换按钮和标题映射。新增视图需同时更新 `app.tsx`（渲染分支）、`Sidebar.tsx`（工具列表 + titles 映射）。
+- **视图路由**：无 react-router，`app.tsx` 的 `AppShell` 用 `view` 状态字符串切换（`'list' | 'progress' | 'table' | 'keywordRank' | 'productScrape' | 'reviewFetch' | 'pdfSplit' | 'sifKeyword' | 'myExports' | 'trash'`），Sidebar/TopBar 负责切换按钮和标题映射。新增视图需同时更新 `app.tsx`（渲染分支）、`Sidebar.tsx`（工具列表 + titles 映射）。`reviewFetch` 视图自 2026-10-15 起入口暂时隐藏（见 `ReviewFetch.tsx` 条目）。
   "AI分析"是个例外：`view` 用 `'aiAnalyze:' + skillId` 动态拼出来的 key（而非固定字符串），因为它是一个按 skill 分组、未来会有多个入口的分组，`app.tsx` 用 `view.startsWith('aiAnalyze:')` 判断+ `.slice()` 取出 skillId 传给 `<AiAnalyze skillId=.../>`，Sidebar 的按钮和 TopBar 的标题也是从 `AiAnalyze.tsx` 导出的 `AI_SKILLS` 数组动态渲染，不是写死的按钮列表。
 - **数据模型核心**：`Product.stages: Record<stageKey, StageData>`，`stageKey` 取自 `STAGES`（18个阶段，每个归属 `TABS` 中某个 tab，各阶段业务含义见 `docs/business-overview.md` 第1节），`Product.variants: Variant[]` 为 SKU 变体，变体也有自己的 `stages` 子集（`VARIANT_STAGE_KEYS`）。
 - **"工具模块"模式**（关键词排名 / 产品采集 / SIF爆品监控 共享）：左侧输入+历史任务列表，右侧结果表格+操作；后端各有一个 `backend/xxx_fetcher.py` 抓取器 + `backend/routes/xxx.py` 里的 `/api/xxx/*` 路由 + `run_xxx_task()`（SIF 模块另有三档频率的分层定时调度器 `start_scheduler()` + 本地信号引擎 `sif_signals.py`）。新增同类工具时可参照 `ProductScrape.tsx` + `backend/product_fetcher.py` + `docs/plans/product-scrape-integration-plan.md`。

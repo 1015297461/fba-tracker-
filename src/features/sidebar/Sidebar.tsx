@@ -92,7 +92,9 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
           {[
             { k: 'keywordRank', ic: '🔍', label: '关键词排名' },
             { k: 'productScrape', ic: '🛒', label: '产品采集' },
+            /* 暂时隐藏「评论采集」入口（2026-10-15）——恢复时去掉这圈注释
             { k: 'reviewFetch', ic: '💬', label: '评论采集' },
+            */
             { k: 'pdfSplit', ic: '✂️', label: 'PDF拆分' },
             { k: 'sifKeyword', ic: '🔑', label: '爆品监控' },
           ].map(v => (
