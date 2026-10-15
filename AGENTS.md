@@ -160,9 +160,10 @@ src/
                                 #   操作按钮悬停/选中才出现，避免挤压任务名
                                 #   顶部 BATCH_SIZE 决定每次 POST 带多少个 ASIN（现为 50）；
                                 #   后端速率闸门与批大小无关，改小它只会增加 HTTP 往返与后端空等
-                                #   输入区两个采集开关：withReviews（评论数据，慢）+ withCustomersSay
-                                #   （Customers say 评价摘要，默认开，几乎不影响速度）；后者关掉时
-                                #   customers_say/tags/aspects 三列全部写 NULL
+                                #   输入区采集开关：withCustomersSay（Customers say 评价摘要，默认开，
+                                #   几乎不影响速度）；关掉时 customers_say/tags/aspects 三列全部写 NULL。
+                                #   withReviews（评论数据，慢）的 checkbox 自 2026-10-15 起**暂时隐藏**
+                                #   （JSX 注释包住，state/参数/后端链路均未删），需要时去掉注释即可恢复
                                 #   详情弹窗「顾客评价 · Customers say」：摘要整段 + 关注点折叠列表
                                 #   （CsAspectRow，点开展示计数/正负面/总结句/评论引用）
       ReviewFetch.tsx           # 工具：评论采集（多ASIN批量抓取，按评分/排序/是否验证购买过滤）

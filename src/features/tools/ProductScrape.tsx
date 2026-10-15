@@ -1042,10 +1042,14 @@ export function ProductScrape() {
           </div>
         </div>
 
+        {/* 暂时隐藏「抓取评论数据」选项（2026-10-15 用户要求）。
+            恢复方式：把下面这段 JSX 注释去掉即可；state/参数/后端链路均未改动，
+            恢复后无需其他调整。
         <label className="ps-check">
           <input type="checkbox" checked={withReviews} onChange={e => setWithReviews(e.target.checked)} disabled={running} />
           <span>抓取评论数据（速度较慢）</span>
         </label>
+        */}
         <label className="ps-check" title="亚马逊 AI 从评论生成的摘要、各关注点计数与评论引用。数据本就在详情页里，不增加请求，几乎不影响速度。">
           <input type="checkbox" checked={withCustomersSay} onChange={e => setWithCustomersSay(e.target.checked)} disabled={running} />
           <span>抓取 Customers say 评价摘要</span>
