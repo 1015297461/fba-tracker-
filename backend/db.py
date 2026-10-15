@@ -21,9 +21,12 @@ def _dedupe_scrape_products(conn):
     库里曾出现同一任务同一 ASIN 最多 3 条。清理前先把要删的行导出到 data/ 备查，
     每对 (task_id, asin) 只保留 id 最大的一条（即最近一次采集结果）。
     已有唯一索引时直接跳过，因此本函数是幂等的。
+    注意：新索引名也要认（见下方「seq」迁移）——否则本函数会在每次启动时把已被
+    替换掉的旧索引重建回来，把「重采 · 新增一条记录」重新拦死。
     """
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' "
-                    "AND name='idx_scrape_prod_task_asin'").fetchone():
+                    "AND name IN ('idx_scrape_prod_task_asin', "
+                    "'idx_scrape_prod_task_asin_seq')").fetchone():
         return
 
     dups = conn.execute(
@@ -192,7 +195,8 @@ class DbState:
                     select_to_learn_more TEXT,
                     status        TEXT,
                     error_message TEXT,
-                    scraped_at    TEXT
+                    scraped_at    TEXT,
+                    seq           INTEGER DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_scrape_prod_task ON scrape_products(task_id);
 
@@ -467,6 +471,19 @@ class DbState:
             # 会累积多行。先导出备份再清理（每对只保留最新一次），随后建唯一索引，
             # 之后 save_scrape_products 用 ON CONFLICT DO UPDATE 收敛到一行。
             _dedupe_scrape_products(conn)
+
+            # 「重采 · 新增一条记录」支持：唯一约束从 (task_id, asin) 放宽到
+            # (task_id, asin, seq)。seq=0 是被「替换」覆盖的那条；「新增」写 seq=max+1。
+            # 正常采集路径一律写 seq=0，行为与以前完全一致（同 ASIN 仍是覆盖，不产生重复）。
+            _scraped_cols = {r[1] for r in conn.execute("PRAGMA table_info(scrape_products)")}
+            if "seq" not in _scraped_cols:
+                conn.execute("ALTER TABLE scrape_products ADD COLUMN seq INTEGER DEFAULT 0")
+                conn.execute("UPDATE scrape_products SET seq=0 WHERE seq IS NULL")
+            # 旧索引（更严格）必须**无条件**确保不存在：_dedupe_scrape_products 在老库上
+            # 可能把它重建出来，留着会拦死「新增一条记录」。
+            conn.execute("DROP INDEX IF EXISTS idx_scrape_prod_task_asin")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_scrape_prod_task_asin_seq "
+                         "ON scrape_products(task_id, asin, seq)")
 
             # SIF v1 → v2：旧版结构（单表快照 + detail 冗余存 60 周历史）与新「爆品关键词
             # 监控」不兼容，按确认「旧架构与历史数据全部丢弃」直接重建为 v2。
@@ -925,11 +942,16 @@ class DbState:
 
         累加会把「失败后重试成功」的 ASIN 同时计进两边，导致 success + failed > total；
         重算则始终等于结果表里的真实分布。
+
+        注意按 **asin 去重**统计：同一 ASIN 可能因「重采 · 新增一条记录」存在多行
+        （seq=0/1/…），直接 COUNT(*) 会让 success 超过任务的 ASIN 总数。
+        判定口径与 get_scrape_done_asins 一致 —— 任意一行成功即算该 ASIN 成功。
         """
         with self.lock:
             with self._conn() as conn:
                 row = conn.execute(
-                    "SELECT COUNT(*) n, SUM(status='success') s "
+                    "SELECT COUNT(DISTINCT asin) n, "
+                    "COUNT(DISTINCT CASE WHEN status='success' THEN asin END) s "
                     "FROM scrape_products WHERE task_id=?", [task_id]
                 ).fetchone()
                 done = row[0] or 0
@@ -981,11 +1003,26 @@ class DbState:
             ).fetchall()
             return [self._row_to_scrape_task(r) for r in rows]
 
-    def save_scrape_products(self, task_id, products):
-        """写入采集结果，按 (task_id, asin) 收敛为一行。
+    def next_scrape_product_seq(self, task_id, asin):
+        """该 (task_id, asin) 下一个可用的 seq —— 「重采 · 新增一条记录」用。
 
-        重试某个 ASIN 时直接覆盖旧结果，不会像早期版本那样累积重复行
-        （那时同一任务同一 ASIN 最多出现 3 条，列表里也是重复展示）。
+        库中不存在该 ASIN 时返回 0（等价于首次落库）；否则返回 max(seq)+1，
+        即在同任务同 ASIN 下追加一个新版本行（旧版本保留，不覆盖）。
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT MAX(seq) AS m FROM scrape_products WHERE task_id=? AND asin=?",
+                [task_id, asin]).fetchone()
+        m = row["m"] if row else None
+        return 0 if m is None else int(m) + 1
+
+    def save_scrape_products(self, task_id, products):
+        """写入采集结果，按 (task_id, asin, seq) 收敛为一行。
+
+        默认 seq=0：重试/重采（替换）某个 ASIN 时直接覆盖旧结果，不会累积重复行
+        （早期版本同一任务同一 ASIN 最多出现 3 条，列表里也是重复展示，已修）。
+        「重采 · 新增一条记录」由调用方在 product 里带 seq=max+1 —— 这是**用户显式
+        选择**才产生的多行，用于对比新旧数据，与上面那个 bug 不是一回事。
         """
         now = _now_iso()
         with self.lock:
@@ -999,9 +1036,10 @@ class DbState:
                             categories, seller, bsr_main_category, bsr_main_rank,
                             bsr_sub_category, bsr_sub_rank, bsr_raw_text, customers_say,
                             customers_say_tags, customers_say_aspects,
-                            review_images, select_to_learn_more, status, error_message, scraped_at)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                           ON CONFLICT(task_id, asin) DO UPDATE SET
+                            review_images, select_to_learn_more, status, error_message, scraped_at,
+                            seq)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                           ON CONFLICT(task_id, asin, seq) DO UPDATE SET
                                marketplace=excluded.marketplace, title=excluded.title,
                                brand=excluded.brand, price=excluded.price,
                                rating=excluded.rating, review_count=excluded.review_count,
@@ -1045,6 +1083,7 @@ class DbState:
                             json.dumps(p.get("review_images", []), ensure_ascii=False),
                             json.dumps(p.get("select_to_learn_more", []), ensure_ascii=False),
                             p.get("status"), p.get("error_message"), now,
+                            int(p.get("seq") or 0),
                         ],
                     )
                 conn.commit()
@@ -1086,6 +1125,7 @@ class DbState:
             "status":       row["status"],
             "errorMessage": row["error_message"],
             "scrapedAt":    row["scraped_at"],
+            "seq":          row["seq"] if row["seq"] is not None else 0,
         }
 
     def get_scrape_products(self, task_id):

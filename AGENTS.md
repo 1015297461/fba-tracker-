@@ -90,6 +90,10 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                 #   （分母=本轮工作集）；重试用它，否则任务累计口径
                                 #   (success+failed) 会把待重试项算成已完成 → 一开跑就 100%
                                 #   且不动。计算见 _run_progress()
+                                #   重采通道：/start 支持 force（待跑**恰好是这批 ASIN**，
+                                #   绕过「已成功就跳过」——否则重采已成功的项会什么都不发生）
+                                #   + append（落库写 seq=max+1 追加新版本，否则写 seq=0 覆盖）。
+                                #   重采进度与任务计数脱钩，走 ctl.force_done/force_total
     review.py                   # /api/review/*，含 run_review_task()
     sif_keywords.py              # /api/sif/*，SIF 爆品关键词监控：任务 CRUD + 三档频率调度器（daily/every_n/weekly）
                               #   + 分层抓取编排 execute_task() + 看板/趋势/信号/入池/设置/点查路由
@@ -170,6 +174,14 @@ src/
                                 #     「Customers say 关注点」= Name(N) - X 正面 / Y 负面 / 情感 · …
                                 #     「CustomersReview」    = 每关注点一块，**名称**:摘要 + 逐行引用，块间空行
                                 #   （**名称** 是 Markdown 写法，CSV 本身无加粗能力）
+                                #   工具栏：搜索 ASIN / 重试失败(N) / 导出 CSV / 重采▾
+                                #     「重采」下拉两个选项：替换当前记录（覆盖）/ 新增一条记录（追加）
+                                #     范围 = 已勾选的，**没勾就重采当前任务全部**（与「导出 CSV」同一约定）
+                                #     提交前自动 apiResetSession()（失败/重采多半撞 CAPTCHA）
+                                #   表格多一列「采集时间」（scrapedAt），用于区分重采产生的多行；
+                                #   行 key 用 asin#seq
+                                #   ⚠️ 「导出 Excel（含主图）」按钮自 2026-10-15 起**暂时隐藏**
+                                #   （JSX 注释包住，createExportJob 逻辑保留），恢复＝去掉注释
       ReviewFetch.tsx           # 工具：评论采集（多ASIN批量抓取，按评分/排序/是否验证购买过滤）
                                 #   ⚠️ 自 2026-10-15 起**前端入口暂时隐藏**（用户要求）：Sidebar 工具
                                 #   列表与 app.tsx 的 Tweaks 视图下拉均已注释掉，另在 app.tsx 加了一条
@@ -224,7 +236,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | `trash` | 回收站：产品被删除时的完整快照（`product_json`），`write()` 检测到某 id 从新列表中消失即挪进这张表而非真删 |
 | `audit_log` | 产品数据变更审计 |
 | `keyword_tasks` / `rank_snapshots` | 关键词排名：任务配置 + 历史快照 |
-| `scrape_tasks` / `scrape_products` | 产品采集：任务记录 + 落库的商品详情。`scrape_tasks.with_reviews`/`with_customers_say` 两个采集开关（后者默认 1）；`scrape_products` 的 Customers say 占三列——`customers_say`（AI 摘要整段）、`customers_say_tags`（`Effectiveness(100) · …` 一行；**前端已不再消费它**，导出改由 aspects 现算，留作历史数据备用）、`customers_say_aspects`（JSON，含每关注点计数/正负面/总结句/引用；**详情弹窗与 CSV 两列的单一来源**） |
+| `scrape_tasks` / `scrape_products` | 产品采集：任务记录 + 落库的商品详情。`scrape_tasks.with_reviews`/`with_customers_say` 两个采集开关（后者默认 1）；`scrape_products` 的 Customers say 占三列——`customers_say`（AI 摘要整段）、`customers_say_tags`（`Effectiveness(100) · …` 一行；**前端已不再消费它**，导出改由 aspects 现算，留作历史数据备用）、`customers_say_aspects`（JSON，含每关注点计数/正负面/总结句/引用；**详情弹窗与 CSV 两列的单一来源**）。唯一约束是 `(task_id, asin, seq)`——`seq=0` 是正常采集/「重采·替换」覆盖的那条，「重采·新增一条记录」写 `seq=max+1` 保留旧版（**用户显式点击才产生多行**，早期那个「同 ASIN 攒 3 行」是 bug、已修，两回事）；`refresh_scrape_task_counts` 按 asin 去重统计，避免多行让 success 超过 total |
 | `review_tasks` / `review_results` | 评论采集：任务记录 + 评论池（按 asin+review_id 去重） |
 | `export_jobs` | 后台导出任务（`ExportWorker` 消费，最多2并发） |
 | `ai_analysis_tasks` | AI分析任务（`AiAnalysisWorker` 消费，强制串行1并发；`files` 字段是产出文件名列表 JSON；`status` 除 pending/running/done/failed 外还有 `cancelled`；`username` 记录发起人，登录态按用户名分区要用） |

@@ -45,6 +45,10 @@ class _TaskCtl:
         self.base_success = 0
         self.run_total = 0
         self.first_run = True
+        #   force_total  本轮「强制重采」的 ASIN 数（>0 表示按重采口径报进度）
+        #   force_done   本轮已处理的重采 ASIN 数，由 _run_scrape 逐块递增
+        self.force_total = 0
+        self.force_done = 0
 
 
 def _active_task_id():
@@ -67,34 +71,65 @@ def _run_progress(ctl, task):
     为什么重试不能用「成功 + 失败」：失败项早已在结果表里（有行=已处理），
     重试时它们正被重新抓，若仍算作「已完成」→ success + failed 恒等于 total，
     进度条会一开跑就 100% 且全程不动。
+
+    强制重采（重采按钮）另走一条口径：任务累计的 success 在「替换」模式下不会增长
+    （同一行被覆盖），在「新增」模式下增长数也不等于本轮处理数 —— 所以用量
+    _run_scrape 自己维护的 force_done / force_total，与任务计数脱钩。
     """
     if ctl is None:
         return None
+    if ctl.force_total > 0:
+        return {"done": min(ctl.force_done, ctl.force_total), "total": ctl.force_total}
     success = task.get("success") or 0
     failed = task.get("failed") or 0
     done = (success + failed) if ctl.first_run else (success - ctl.base_success)
     return {"done": max(0, done), "total": ctl.run_total}
 
 
-def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, ctl):
-    """后台线程：按断点续跑，逐条落库，支持暂停/取消。"""
+def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, ctl,
+                force_asins=None, append=False):
+    """后台线程：按断点续跑，逐条落库，支持暂停/取消。
+
+    force_asins：「强制重采」的 ASIN 集合。它们**即使已成功也不跳过**——这正是重采
+      的前提（断点续跑默认会把已成功项跳过，直接重采会「什么都没发生」）。
+      给了这一项时，待跑列表就**恰好是这批 ASIN**，不会顺带把任务里其他失败项也跑一遍。
+    append：True 时落库写 seq=max+1（「新增一条记录」，保留旧版本）；
+      默认 False 写 seq=0，即覆盖（「替换当前记录」）。
+    """
     try:
         state.set_scrape_task_status(task_id, "running", started_at=_now_iso())
         task = state.get_scrape_task(task_id) or {}
         asins = task.get("asins") or []
-        # 待跑 = 全部 ASIN − 已成功的。这就是断点续跑：跳过跑过的，只补没跑的和失败的。
-        done = state.get_scrape_done_asins(task_id)
-        pending = [a for a in asins if a not in done]
+        force_set = set(force_asins or [])
+        if force_set:
+            pending = [a for a in asins if a in force_set]
+        else:
+            # 待跑 = 全部 ASIN − 已成功的。这就是断点续跑：跳过跑过的，只补没跑的和失败的。
+            done = state.get_scrape_done_asins(task_id)
+            pending = [a for a in asins if a not in done]
         _log(f"[scrape] 任务 {task_id} 开始：待采集 {len(pending)} 个"
-             f"（总 {len(asins)}，已成功 {len(done)}）")
+             f"（总 {len(asins)}）"
+             + (f"，本次为强制重采（{'新增' if append else '替换'}）" if force_set else ""))
 
         since_refresh = 0
         scraped = 0
+        # append 模式下每条 ASIN 的 seq 只算一次并缓存 —— 否则 on_progress 与
+        # 块末兜底写会各取一次 max+1，同一 ASIN 被写成两行。
+        _seq_cache = {}
+
+        def _persist(products):
+            if append:
+                for p in products:
+                    a = p.get("asin")
+                    if a not in _seq_cache:
+                        _seq_cache[a] = state.next_scrape_product_seq(task_id, a)
+                products = [{**p, "seq": _seq_cache.get(p.get("asin"), 0)} for p in products]
+            state.save_scrape_products(task_id, products)
 
         def on_progress(_completed, _total, product):
             """每抓完一个 ASIN 就落库，进度条才不会长时间停在 0/500。"""
             nonlocal since_refresh, scraped
-            state.save_scrape_products(task_id, [product])
+            _persist([product])
             since_refresh += 1
             scraped += 1
             if scraped % PROGRESS_LOG_EVERY == 0:
@@ -120,8 +155,11 @@ def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, c
                 results = [{**product_fetcher._empty_product(
                     a, marketplace, f"fetch_exc:{type(e).__name__}")} for a in chunk]
             # 兜底再写一次：失败重试轮的结果不走 on_progress，靠这里落库（UPSERT 幂等）
-            state.save_scrape_products(task_id, results)
+            _persist(results)
             state.refresh_scrape_task_counts(task_id)
+            # 重采进度与任务计数脱钩，由这里按块推进（见 _run_progress 的说明）
+            if force_set:
+                ctl.force_done = min(start + len(chunk), len(pending))
 
         state.refresh_scrape_task_counts(task_id)
         t = state.get_scrape_task(task_id) or {}
@@ -155,7 +193,7 @@ def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, c
 
 
 def start_scrape_task(state, asins, marketplace, with_reviews, task_id=None,
-                      with_customers_say=True):
+                      with_customers_say=True, force_asins=None, append=False):
     """建/复用任务并起后台线程，立即返回 task_id。
 
     传 task_id 时把新 ASIN 合并进已有任务（「重试失败项」「继续」走这条路）。
@@ -164,8 +202,13 @@ def start_scrape_task(state, asins, marketplace, with_reviews, task_id=None,
 
     with_customers_say：是否解析 Customers say。新建任务用传入值；
     复用已有任务时改用任务里记录的开关（与上次采集保持一致）。
+
+    force_asins + append：重采通道。给了 force_asins 时，待跑列表恰好是这批 ASIN
+    （不再按「已成功就跳过」过滤，否则重采已成功的项会什么都不发生）；
+    append=True 落库写新 seq（保留旧版本），默认 False 覆盖。
     """
     asins = [a.strip().upper() for a in asins if a and a.strip()]
+    force_set = {a.strip().upper() for a in (force_asins or []) if a and a.strip()}
     ctl = _TaskCtl()
     with _running_lock:
         if _running:
@@ -191,12 +234,18 @@ def start_scrape_task(state, asins, marketplace, with_reviews, task_id=None,
         done = state.get_scrape_done_asins(task_id)
         snapshot = state.get_scrape_task(task_id) or {}
         ctl.base_success = len(done)
-        ctl.run_total = sum(1 for a in merged if a not in done)
+        if force_set:
+            # 重采：分母就是这批 ASIN，且走 force_done/force_total 口径
+            ctl.force_total = sum(1 for a in merged if a in force_set)
+            ctl.run_total = ctl.force_total
+        else:
+            ctl.run_total = sum(1 for a in merged if a not in done)
         ctl.first_run = ((snapshot.get("success") or 0)
                          + (snapshot.get("failed") or 0)) == 0
 
     threading.Thread(target=_run_scrape,
                      args=(state, task_id, marketplace, with_reviews, with_customers_say, ctl),
+                     kwargs={"force_asins": sorted(force_set), "append": append},
                      daemon=True, name=f"ScrapeTask-{task_id[:8]}").start()
     return task_id
 
@@ -278,26 +327,39 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         with_reviews = bool(payload.get("withReviews", False))
         # Customers say 默认开启：成本极低（净增约 44ms，无额外请求）
         with_customers_say = bool(payload.get("withCustomersSay", True))
+        # 重采通道：force=True 时这批 ASIN 强制重跑（不按「已成功就跳过」过滤）；
+        # append=True 落库追加新版本（「新增一条记录」），否则覆盖（「替换」）。
+        force = bool(payload.get("force", False))
+        append = bool(payload.get("append", False))
         task_id_in = payload.get("taskId")
         if not isinstance(task_id_in, str) or not task_id_in:
             task_id_in = None
+        if force and not task_id_in:
+            self._send_json(400, {"error": "重采必须带 taskId（重采的是已有任务里的记录）"})
+            return
         try:
             task_id = start_scrape_task(state, asins, marketplace, with_reviews,
                                         task_id=task_id_in,
-                                        with_customers_say=with_customers_say)
+                                        with_customers_say=with_customers_say,
+                                        force_asins=asins if force else None,
+                                        append=append)
         except RuntimeError as e:
             self._send_json(409, {"error": str(e)})
             return
         except ValueError as e:
             self._send_json(404, {"error": str(e)})
             return
-        _extras = []
-        if with_reviews:
-            _extras.append("含评论")
-        if with_customers_say:
-            _extras.append("含 Customers say")
-        _log(f"[scrape] 已提交 {len(asins)} 个 ASIN @ {marketplace}"
-             f"{(' (' + ' + '.join(_extras) + ')') if _extras else ''} -> {task_id}")
+        if force:
+            _log(f"[scrape] 重采 {len(asins)} 个 ASIN @ {marketplace}"
+                 f"（{'新增一条记录' if append else '替换当前记录'}）-> {task_id}")
+        else:
+            _extras = []
+            if with_reviews:
+                _extras.append("含评论")
+            if with_customers_say:
+                _extras.append("含 Customers say")
+            _log(f"[scrape] 已提交 {len(asins)} 个 ASIN @ {marketplace}"
+                 f"{(' (' + ' + '.join(_extras) + ')') if _extras else ''} -> {task_id}")
         self._send_json(200, {"taskId": task_id})
     POST["/api/scrape/start"] = post_start
 

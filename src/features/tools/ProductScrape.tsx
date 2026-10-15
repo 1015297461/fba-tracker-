@@ -463,6 +463,8 @@ interface ScrapedProduct {
   categories: string | null; seller: string | null;
   bestSellerRank: BestSellerRank; customerReviews: CustomerReviews;
   status: string; errorMessage: string | null; scrapedAt?: string;
+  // 同一 (任务, ASIN) 可能因「重采 · 新增一条记录」存在多行；seq=0 是被覆盖的那条
+  seq?: number;
 }
 // status 取值（由服务端后台执行器维护）：
 //   running / paused / completed / partial / cancelled / error
@@ -484,10 +486,12 @@ async function apiGetProducts(taskId: string): Promise<ScrapedProduct[]> {
   return (await r.json()).products || [];
 }
 // 提交即返回 taskId，真正的抓取在服务端后台线程里跑——所以刷新页面不会中断任务
-async function apiStartScrape(asins: string[], marketplace: string, withReviews: boolean, taskId?: string, withCustomersSay: boolean = true): Promise<string> {
+// extra.force/append：重采通道。force=强制重跑（绕过「已成功就跳过」），
+// append=true 追加新版本（「新增一条记录」），否则覆盖（「替换当前记录」）。
+async function apiStartScrape(asins: string[], marketplace: string, withReviews: boolean, taskId?: string, withCustomersSay: boolean = true, extra?: { force?: boolean; append?: boolean }): Promise<string> {
   const r = await fetch('/api/scrape/start', {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ asins, marketplace, withReviews, withCustomersSay, ...(taskId ? { taskId } : {}) }),
+    body: JSON.stringify({ asins, marketplace, withReviews, withCustomersSay, ...(extra || {}), ...(taskId ? { taskId } : {}) }),
   });
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
@@ -735,6 +739,8 @@ export function ProductScrape() {
   const [editingTaskId, setEditingTaskId] = React.useState<string | null>(null);
   const [editingName, setEditingName] = React.useState('');
   const [exportQueued, setExportQueued] = React.useState(false);
+  // 「重采」下拉浮层开合（替换当前记录 / 新增一条记录）
+  const [rescrapeMenuOpen, setRescrapeMenuOpen] = React.useState(false);
   // 历史任务列表：检索 / 筛选 / 分页（纯前端，tasks 一次全量拉回，最多 100 条）
   const [histQuery, setHistQuery] = React.useState('');
   const [histFilter, setHistFilter] = React.useState<'all' | 'active' | 'failed'>('all');
@@ -880,6 +886,26 @@ export function ProductScrape() {
       setProgress({ completed: 0, total: failedProducts.length });
       startPolling(activeTaskId);
     } catch (e: any) { setErr(e.message || '提交重试失败'); }
+  }
+
+  // 重采：范围 = 已勾选的，没勾就全部（与「导出 CSV」同一约定）
+  // append=true → 新增一条记录（旧版本保留，同列表多一行）；false → 覆盖当前记录
+  async function handleRescrape(append: boolean) {
+    if (running || !activeTaskId || !products.length) return;
+    const targets = selectedAsins.size > 0 ? [...selectedAsins] : products.map(p => p.asin);
+    if (!targets.length) return;
+    const scope = selectedAsins.size > 0 ? `已选 ${targets.length} 个` : `全部 ${targets.length} 个`;
+    const how = append ? '新增一条记录（保留旧数据，列表多一行）' : '替换当前记录（覆盖旧数据）';
+    const est = Math.max(10, Math.ceil(targets.length * 2));
+    if (!confirm(`重采 ${scope} ASIN？\n\n方式：${how}\n系统会先刷新会话，预计约 ${est} 秒起（受亚马逊限速影响）。`)) return;
+    setErr('');
+    try {
+      await apiResetSession(marketplace);
+      await apiStartScrape(targets, marketplace, withReviews, activeTaskId,
+                           withCustomersSay, { force: true, append });
+      setProgress({ completed: 0, total: targets.length });
+      startPolling(activeTaskId);
+    } catch (e: any) { setErr(e.message || '提交重采失败'); }
   }
 
   async function runScrape() {
@@ -1227,6 +1253,30 @@ export function ProductScrape() {
               )}>
                 导出 CSV{selectedAsins.size > 0 ? `（已选 ${selectedAsins.size}）` : ''}
               </button>
+              {/* 重采：无勾选时重采当前任务全部 ASIN */}
+              <div className="ps-menu-wrap">
+                <button
+                  className="btn btn-sm"
+                  disabled={running || !activeTaskId || !products.length}
+                  onClick={() => setRescrapeMenuOpen(o => !o)}
+                >
+                  重采{selectedAsins.size > 0 ? `（已选 ${selectedAsins.size}）` : ''}
+                </button>
+                {rescrapeMenuOpen && (
+                  <>
+                    <div className="ps-menu-mask" onClick={() => setRescrapeMenuOpen(false)} />
+                    <div className="ps-menu">
+                      <button onClick={() => { setRescrapeMenuOpen(false); handleRescrape(false); }}>
+                        替换当前记录
+                      </button>
+                      <button onClick={() => { setRescrapeMenuOpen(false); handleRescrape(true); }}>
+                        新增一条记录
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+              {/* 暂时隐藏「导出 Excel（含主图）」按钮（2026-10-15 用户要求）——恢复时去掉这圈注释
               <button
                 className="btn btn-sm"
                 disabled={exportQueued || !activeTaskId}
@@ -1242,6 +1292,7 @@ export function ProductScrape() {
                   setExportQueued(false);
                 }}
               >{exportQueued ? '提交中…' : `导出 Excel${selectedAsins.size > 0 ? `（已选 ${selectedAsins.size}）` : '（含主图）'}`}</button>
+              */}
             </div>
           )}
           {selectedAsins.size > 0 && (
@@ -1295,12 +1346,13 @@ export function ProductScrape() {
                     小类排名{sortKey === 'subRank' && <span className="ps-sort-arrow">{sortAsc ? '↑' : '↓'}</span>}
                   </th>
                   <th>状态</th>
+                  <th className="ps-col-scraped">采集时间</th>
                   <th className="ps-col-ops">操作</th>
                 </tr>
               </thead>
               <tbody>
                 {pagedProducts.map((p, i) => (
-                  <tr key={p.asin + i} data-selected={selectedAsins.has(p.asin)}>
+                  <tr key={p.asin + '#' + (p.seq ?? 0)} data-selected={selectedAsins.has(p.asin)}>
                     <td className="ps-col-chk">
                       <input
                         type="checkbox"
@@ -1340,6 +1392,9 @@ export function ProductScrape() {
                       {p.status === 'success'
                         ? <span className="ps-status ps-status-ok">成功</span>
                         : <span className="ps-status ps-status-fail" title={p.errorMessage || '未知错误'}>失败</span>}
+                    </td>
+                    <td className="ps-col-scraped" title={p.scrapedAt || ''}>
+                      {p.scrapedAt ? fmtDateTime(p.scrapedAt) : '—'}
                     </td>
                     <td className="ps-col-ops">
                       <button className="btn btn-sm ps-btn-detail" onClick={() => { setSelectedProduct(p); setDetailOpen(true); }}>详情</button>
