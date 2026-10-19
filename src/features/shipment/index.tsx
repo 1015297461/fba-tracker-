@@ -190,6 +190,29 @@ function fmtShipDate(d?: string): string {
 }
 const num = (n: any): number => Number((Number(n) || 0).toFixed(2));
 
+// 实际送达天数 = 实收日期 − 发货日期（自然日）。缺任一日期返回 null。
+function deliverDays(s: Row): number | null {
+  const a = parseDate(s.shipDate);
+  const b = parseDate(s.actualDate);
+  if (!a || !b) return null;
+  return Math.round((b.getTime() - a.getTime()) / 86400000);
+}
+
+// 某月按渠道统计：票数 + 平均送达天数
+function channelStats(list: Row[]): Array<{ ch: string; n: number; avg: number }> {
+  const map = new Map<string, number[]>();
+  for (const s of list) {
+    const d = deliverDays(s);
+    if (d === null) continue;
+    const ch = s.channel || '未填渠道';
+    if (!map.has(ch)) map.set(ch, []);
+    map.get(ch)!.push(d);
+  }
+  return [...map.entries()]
+    .map(([ch, ds]) => ({ ch, n: ds.length, avg: ds.reduce((a, b) => a + b, 0) / ds.length }))
+    .sort((a, b) => b.n - a.n);
+}
+
 // 按发货时间生成汇总文字（按渠道分组，按 LCL 聚合）—— 与原 generateSummary 一致
 function generateSummary(list: Row[], shipDate: string): string {
   const rows = list.filter(s => !s.cancelled && s.shipDate === shipDate && shipKind(s) === 'fba');
@@ -623,14 +646,21 @@ export function ShipmentTracker() {
                       <span className="ss-section-n">{rows.length} 票</span>
                     </div>
                     {!folded && (
-                      <div className="ss-cards">
-                        {rows.map(s => (
-                          <ShipCard key={s.id} s={s} selected={selected.has(s.id)}
-                            onSel={() => toggleSel(s.id)}
-                            onEdit={() => setEditing({ ...s })}
-                            onDelete={() => removeShipment(s.id)} />
-                        ))}
-                      </div>
+                      sec.key === 'done' ? (
+                        <DoneMonthly rows={rows} selected={selected}
+                          onSel={toggleSel}
+                          onEdit={s => setEditing({ ...s })}
+                          onDelete={id => removeShipment(id)} />
+                      ) : (
+                        <div className="ss-cards">
+                          {rows.map(s => (
+                            <ShipCard key={s.id} s={s} selected={selected.has(s.id)}
+                              onSel={() => toggleSel(s.id)}
+                              onEdit={() => setEditing({ ...s })}
+                              onDelete={() => removeShipment(s.id)} />
+                          ))}
+                        </div>
+                      )
                     )}
                   </section>
                 );
@@ -691,6 +721,82 @@ export function ShipmentTracker() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- 已入库 · 月维度
+
+/** 已入库按【发货月】折叠。月份行汇总：总票数 + 各渠道票数与平均送达天数 + 整体平均。 */
+function DoneMonthly({ rows, selected, onSel, onEdit, onDelete }: {
+  rows: Row[]; selected: Set<string>;
+  onSel: (id: string) => void; onEdit: (s: Row) => void; onDelete: (id: string) => void;
+}) {
+  // 默认全部折叠：先看月度汇总，想看细节再点开
+  const [open, setOpen] = useState<Set<string>>(new Set());
+
+  const months = (() => {
+    const map = new Map<string, Row[]>();
+    for (const s of rows) {
+      const m = String(s.shipDate || '').slice(0, 7) || '未填发货月';
+      if (!map.has(m)) map.set(m, []);
+      map.get(m)!.push(s);
+    }
+    return [...map.entries()]
+      .map(([month, list]) => ({ month, list }))
+      .sort((a, b) => {
+        if (a.month === '未填发货月') return 1;
+        if (b.month === '未填发货月') return -1;
+        return a.month < b.month ? 1 : -1;
+      });
+  })();
+
+  return (
+    <div className="ss-months">
+      {months.map(({ month, list }) => {
+        const isOpen = open.has(month);
+        const stats = channelStats(list);
+        const allDays = list.map(deliverDays).filter((d): d is number => d !== null);
+        const overall = allDays.length
+          ? allDays.reduce((a, b) => a + b, 0) / allDays.length
+          : null;
+        return (
+          <div key={month} className="ss-month">
+            <button type="button" className="ss-month-head"
+              onClick={() => setOpen(prev => {
+                const n = new Set(prev);
+                n.has(month) ? n.delete(month) : n.add(month);
+                return n;
+              })}>
+              <span className="ss-month-arrow">{isOpen ? '▾' : '▸'}</span>
+              <span className="ss-month-label">{month}</span>
+              <span className="ss-month-n">{list.length} 票</span>
+              <span className="ss-month-chs">
+                {stats.map(st => (
+                  <span key={st.ch} className="ss-month-ch">
+                    {st.ch} <b>{st.n}</b> 票 · 均 <b>{st.avg.toFixed(1)}</b> 天
+                  </span>
+                ))}
+              </span>
+              {overall !== null && (
+                <span className="ss-month-total">整体均 {overall.toFixed(1)} 天</span>
+              )}
+            </button>
+            {isOpen && (
+              <div className="ss-month-body">
+                <div className="ss-cards">
+                  {list.map(s => (
+                    <ShipCard key={s.id} s={s} selected={selected.has(s.id)}
+                      onSel={() => onSel(s.id)}
+                      onEdit={() => onEdit(s)}
+                      onDelete={() => onDelete(s.id)} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
