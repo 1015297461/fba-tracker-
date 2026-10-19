@@ -118,6 +118,13 @@ input, textarea, select { font-family: inherit; font-size: 13px; }
 }
 .sb-view-btn .ic { font-size: 14px; }
 
+/* 状态筛选（收在「产品」分组内，只在该分组的产品视图下显示） */
+.sb-filter-group { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.sb-filter-head { display: flex; align-items: center; justify-content: space-between;
+  font-size: 10.5px; color: var(--ink-4); font-weight: 600; letter-spacing: 0.04em;
+  padding: 0 4px 5px; }
+.sb-filter-cur { color: var(--ink-3); font-weight: 400; letter-spacing: 0; }
+
 .sb-filter { display: flex; flex-direction: column; gap: 1px; }
 .sb-filter-btn {
   display: flex; justify-content: space-between; align-items: center;

@@ -6,6 +6,9 @@ import type { Product } from '../../data/types';
 import { useExportBadge } from '../exports/MyExports';
 import { AI_SKILLS } from '../tools/AiAnalyze';
 
+// 状态筛选只对这三个产品视图生效（filter 会影响它们的列表内容）
+const PRODUCT_VIEWS = ['list', 'progress', 'table'];
+
 function useSyncLabel() {
   const ctx = useProducts();
   const { syncMode, syncStatus, savedAt } = ctx || {};
@@ -69,7 +72,7 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
       </div>
 
       <div className="sb-section">
-        <div className="sb-section-label">视图</div>
+        <div className="sb-section-label">产品</div>
         <div className="sb-view-tabs">
           {[
             { k: 'list',     ic: '📋', label: '产品列表' },
@@ -84,6 +87,29 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
             </button>
           ))}
         </div>
+
+        {/* 状态筛选只对上面三个产品视图生效 —— 收进本分组，切到其它模块时隐藏，避免"点了没反应" */}
+        {PRODUCT_VIEWS.includes(view) && (
+          <div className="sb-filter-group">
+            <div className="sb-filter-head">
+              <span>状态筛选</span>
+              <span className="sb-filter-cur">{STATUS_LABELS[filter]?.label || '全部'}</span>
+            </div>
+            <div className="sb-filter">
+              {['all', 'active', 'pending', 'done', 'hold', 'cancel'].map(k => (
+                <button key={k} className="sb-filter-btn"
+                  data-active={filter === k}
+                  onClick={() => setFilter(k)}>
+                  <span className="left">
+                    <span className="dot" style={{background: STATUS_LABELS[k].color}}></span>
+                    <span>{STATUS_LABELS[k].label}</span>
+                  </span>
+                  <span className="count">{counts[k]}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="sb-section">
@@ -137,23 +163,6 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
           </div>
         </div>
       )}
-
-      <div className="sb-section">
-        <div className="sb-section-label">状态筛选</div>
-        <div className="sb-filter">
-          {['all', 'active', 'pending', 'done', 'hold', 'cancel'].map(k => (
-            <button key={k} className="sb-filter-btn"
-              data-active={filter === k}
-              onClick={() => setFilter(k)}>
-              <span className="left">
-                <span className="dot" style={{background: STATUS_LABELS[k].color}}></span>
-                <span>{STATUS_LABELS[k].label}</span>
-              </span>
-              <span className="count">{counts[k]}</span>
-            </button>
-          ))}
-        </div>
-      </div>
 
       {/* sb-stats 暂时隐藏
       <div className="sb-stats">
