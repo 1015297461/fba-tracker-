@@ -96,7 +96,33 @@ const DASHBOARD_SECTIONS = [
   { key: 'thisweek', label: '本周到货' },
   { key: 'upcoming', label: '未来 7 天' },
   { key: 'checkup', label: '下周（核对货代）' },
+  { key: 'future', label: '在途' },
+  { key: 'awd', label: '卫星仓' },
+  { key: 'walmart', label: '沃尔玛' },
+  { key: 'done', label: '已入库' },
+  { key: 'none', label: '未填预计送达' },
+  { key: 'cancel', label: '已取消' },
 ] as const;
+// 默认折叠的分区（预警类展开，其余折叠 —— 否则 84 张卡片会淹没预警）
+const DEFAULT_COLLAPSED_SECTIONS = ['future', 'awd', 'walmart', 'done', 'none', 'cancel'];
+
+// KPI 卡片 → classify 的 key（'' = 全部）；点击即筛选
+const KPI_DEFS = [
+  { key: '', label: '全部货件', cls: '' },
+  { key: 'overdue', label: '逾期未入库', cls: 'ss-kpi-bad' },
+  { key: 'thisweek', label: '本周到货', cls: 'ss-kpi-warn' },
+  { key: 'upcoming', label: '未来 7 天', cls: '' },
+  { key: 'checkup', label: '下周核对', cls: '' },
+  { key: 'future', label: '在途', cls: '' },
+  { key: 'done', label: '已入库', cls: 'ss-kpi-ok' },
+] as const;
+const KPI_LABEL: Record<string, string> = Object.fromEntries(
+  KPI_DEFS.filter(k => k.key).map(k => [k.key, k.label]));
+// 非看板分区（在途/已入库/无日期）单独筛选时的标题
+const STATUS_LABEL: Record<string, string> = {
+  ...KPI_LABEL, none: '未填预计送达时间', future: '在途（14 天以后）',
+  awd: '卫星仓', walmart: '沃尔玛', cancel: '已取消',
+};
 
 // ---------------------------------------------------------------- 日期与分类工具
 
@@ -155,6 +181,11 @@ function etaRange(s: Row): string {
 function fmtShort(d?: string): string {
   const x = parseDate(d);
   return x ? `${x.getMonth() + 1}/${x.getDate()}` : '';
+}
+// 2026-10-25 → 10.25（原项目 fmtShipDate 的显示格式）
+function fmtShipDate(d?: string): string {
+  const m = String(d || '').match(/^\d{4}-(\d{1,2})-(\d{1,2})$/);
+  return m ? `${Number(m[1])}.${Number(m[2])}` : String(d || '');
 }
 const num = (n: any): number => Number((Number(n) || 0).toFixed(2));
 
@@ -227,6 +258,19 @@ export function ShipmentTracker() {
   const [summaryDate, setSummaryDate] = useState<string>('');
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // 视图：状态看板 / 按发货时间（对齐原项目左侧「🚚 按发货时间」）
+  const [viewMode, setViewMode] = useState<'status' | 'byDate'>('status');
+  // KPI 点击筛选：'' = 全部，其余为 classify 的 key
+  const [statusFilter, setStatusFilter] = useState<string>('');
+  // 按发货时间视图当前选中的发货日期（'' 表示未填发货时间那组）
+  const [activeDate, setActiveDate] = useState<string>('');
+  // 按发货时间视图里折叠的产品分组
+  const [collapsedProducts, setCollapsedProducts] = useState<Set<string>>(new Set());
+  // 状态视图中折叠的分区（默认只展开预警类）
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(
+    new Set(DEFAULT_COLLAPSED_SECTIONS));
+  // 发货汇总的可编辑文本（按发货日期缓存）
+  const [summaryEdits, setSummaryEdits] = useState<Record<string, string>>({});
   const importRef = useRef<HTMLInputElement>(null);
   const [importPreview, setImportPreview] = useState<any[] | null>(null);
 
@@ -272,15 +316,59 @@ export function ShipmentTracker() {
     return g;
   }, [filtered]);
 
-  const counts = useMemo(() => ({
-    total: ships.length,
-    overdue: (groups.overdue || []).length,
-    thisweek: (groups.thisweek || []).length,
-    upcoming: (groups.upcoming || []).length,
-    checkup: (groups.checkup || []).length,
-    intransit: (groups.future || []).length,
-    done: (groups.done || []).length,
-  }), [ships, groups]);
+  const counts = useMemo(() => {
+    const n = (k: string) => (groups[k] || []).length;
+    return {
+      total: filtered.length,
+      overdue: n('overdue'),
+      thisweek: n('thisweek'),
+      upcoming: n('upcoming'),
+      checkup: n('checkup'),
+      future: n('future'),
+      done: n('done'),
+      none: n('none'),
+    };
+  }, [filtered, groups]);
+
+  // 按发货时间分组（对齐原 groupByShip：排除已取消、日期倒序、未填排最后）
+  const byShipDate = useMemo(() => {
+    const map = new Map<string, Row[]>();
+    for (const s of ships) {
+      if (s.cancelled) continue;
+      const k = s.shipDate || '';
+      if (!map.has(k)) map.set(k, []);
+      map.get(k)!.push(s);
+    }
+    const order = [...map.keys()].sort((a, b) => {
+      if (!a) return 1;
+      if (!b) return -1;
+      return a < b ? 1 : -1;
+    });
+    return { map, order };
+  }, [ships]);
+
+  // 切到「按发货时间」时，若当前选中日期失效则落到第一个
+  useEffect(() => {
+    if (viewMode !== 'byDate') return;
+    const { order } = byShipDate;
+    if (order.length && !order.includes(activeDate)) setActiveDate(order[0]);
+  }, [viewMode, byShipDate, activeDate]);
+
+  // 当前要展示的货件（状态视图受 KPI 筛选影响）
+  const visible = useMemo(() => {
+    if (!statusFilter) return filtered;
+    return filtered.filter(s => classify(s) === statusFilter);
+  }, [filtered, statusFilter]);
+
+  // 渲染用分组（基于 visible，这样筛选后分区标题与数量一致）
+  const visibleGroups = useMemo(() => {
+    const g: Record<string, Row[]> = {};
+    for (const s of visible) (g[classify(s)] ||= []).push(s);
+    for (const k of Object.keys(g)) {
+      g[k].sort((a, b) => String(a.etaDate || '9999').localeCompare(String(b.etaDate || '9999')));
+    }
+    return g;
+  }, [visible]);
 
   // ---- 操作 ----
   const saveShipment = async (data: Row) => {
@@ -313,15 +401,16 @@ export function ShipmentTracker() {
     } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
   };
 
-  const batchEta = async () => {
-    if (!selected.size) return;
+  const batchEta = async (ids?: string[]) => {
+    const target = ids || [...selected];
+    if (!target.length) return;
     const etaDate = prompt('预计送达时间（YYYY-MM-DD，留空则清空）', '');
     if (etaDate === null) return;
     setBusy(true);
     try {
       const r = await api('/api/shipment/shipments/batch-update', {
         method: 'POST',
-        body: { ids: [...selected], etaDate, etaEndDate: etaDate },
+        body: { ids: target, etaDate, etaEndDate: etaDate },
       });
       flash(`批量更新 ${r.updated} 条`);
       setSelected(new Set());
@@ -424,7 +513,7 @@ export function ShipmentTracker() {
           <input className="ss-search" placeholder="搜索货件号 / 产品 / LCL / 厂家…" value={q}
             onChange={e => setQ(e.target.value)} />
           {selected.size > 0 && (
-            <button type="button" className="btn btn-sm" disabled={busy} onClick={batchEta}>
+            <button type="button" className="btn btn-sm" disabled={busy} onClick={() => batchEta()}>
               批量改送达（{selected.size}）
             </button>
           )}
@@ -475,36 +564,107 @@ export function ShipmentTracker() {
         <div className="ss-empty">加载中…</div>
       ) : tab === 'dashboard' ? (
         <>
-          <div className="ss-kpis">
-            <div className="ss-kpi"><b>{counts.total}</b><span>全部货件</span></div>
-            <div className="ss-kpi ss-kpi-bad"><b>{counts.overdue}</b><span>逾期未入库</span></div>
-            <div className="ss-kpi ss-kpi-warn"><b>{counts.thisweek}</b><span>本周到货</span></div>
-            <div className="ss-kpi"><b>{counts.upcoming}</b><span>未来 7 天</span></div>
-            <div className="ss-kpi"><b>{counts.checkup}</b><span>下周核对</span></div>
-            <div className="ss-kpi"><b>{counts.intransit}</b><span>在途</span></div>
-            <div className="ss-kpi ss-kpi-ok"><b>{counts.done}</b><span>已入库</span></div>
+          {/* 视图切换：状态看板 / 按发货时间（对齐原项目左侧导航的两种维度） */}
+          <div className="ss-viewbar">
+            <div className="ss-seg">
+              <button type="button" className="ss-seg-btn" data-active={viewMode === 'status'}
+                onClick={() => setViewMode('status')}>状态看板</button>
+              <button type="button" className="ss-seg-btn" data-active={viewMode === 'byDate'}
+                onClick={() => setViewMode('byDate')}>按发货时间</button>
+            </div>
+            {viewMode === 'status' && statusFilter && (
+              <button type="button" className="ss-clear" onClick={() => setStatusFilter('')}>
+                筛选：{STATUS_LABEL[statusFilter] || statusFilter} ✕
+              </button>
+            )}
+            <span className="ss-spacer" />
+            <span className="ss-hint">
+              {q.trim() ? `搜索命中 ${filtered.length} / ${ships.length} 票` : `共 ${ships.length} 票`}
+            </span>
           </div>
 
-          {DASHBOARD_SECTIONS.map(sec => {
-            const rows = groups[sec.key] || [];
-            if (!rows.length) return null;
-            return (
-              <section key={sec.key} className="ss-section">
-                <div className="ss-section-head">
-                  <h4>{sec.label}</h4>
-                  <span className="ss-section-n">{rows.length} 票</span>
-                </div>
-                <div className="ss-cards">
-                  {rows.map(s => (
-                    <ShipCard key={s.id} s={s} selected={selected.has(s.id)}
-                      onSel={() => toggleSel(s.id)}
-                      onEdit={() => setEditing({ ...s })}
-                      onDelete={() => removeShipment(s.id)} />
-                  ))}
-                </div>
-              </section>
-            );
-          })}
+          {/* KPI 卡片：点击筛选（再点一次取消） */}
+          <div className="ss-kpis">
+            {KPI_DEFS.map(k => (
+              <button key={k.key || 'all'} type="button"
+                className={`ss-kpi ${k.cls}`}
+                data-active={viewMode === 'status' && statusFilter === k.key}
+                onClick={() => {
+                  setViewMode('status');
+                  setStatusFilter(prev => (prev === k.key ? '' : k.key));
+                }}
+                title={k.key ? `只看「${k.label}」` : '显示全部货件'}>
+                <b>{(counts as any)[k.key || 'total']}</b><span>{k.label}</span>
+              </button>
+            ))}
+          </div>
+
+          {viewMode === 'status' ? (
+            <>
+              {(statusFilter
+                ? [{ key: statusFilter, label: STATUS_LABEL[statusFilter] || statusFilter }]
+                : DASHBOARD_SECTIONS
+              ).map(sec => {
+                const rows = visibleGroups[sec.key] || [];
+                if (!rows.length) return null;
+                // 筛选某一类时强制展开；否则按用户折叠状态
+                const folded = !statusFilter && collapsedSections.has(sec.key);
+                return (
+                  <section key={sec.key} className="ss-section">
+                    <div className="ss-section-head ss-section-toggle"
+                      onClick={() => setCollapsedSections(prev => {
+                        const n = new Set(prev);
+                        n.has(sec.key) ? n.delete(sec.key) : n.add(sec.key);
+                        return n;
+                      })}>
+                      <span className="ss-sec-arrow">{folded ? '▸' : '▾'}</span>
+                      <h4>{sec.label}</h4>
+                      <span className="ss-section-n">{rows.length} 票</span>
+                    </div>
+                    {!folded && (
+                      <div className="ss-cards">
+                        {rows.map(s => (
+                          <ShipCard key={s.id} s={s} selected={selected.has(s.id)}
+                            onSel={() => toggleSel(s.id)}
+                            onEdit={() => setEditing({ ...s })}
+                            onDelete={() => removeShipment(s.id)} />
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                );
+              })}
+              {!visible.length && (statusFilter || q.trim()) && (
+                <div className="ss-empty">没有符合条件的货件</div>
+              )}
+            </>
+          ) : (
+            <ByDateView
+              order={byShipDate.order}
+              map={byShipDate.map}
+              activeDate={activeDate}
+              onPickDate={setActiveDate}
+              selected={selected}
+              onSel={toggleSel}
+              onEdit={s => setEditing({ ...s })}
+              onDelete={id => removeShipment(id)}
+              onBatchEta={ids => batchEta(ids)}
+              ships={ships}
+              collapsed={collapsedProducts}
+              onToggleProduct={p => setCollapsedProducts(prev => {
+                const n = new Set(prev);
+                n.has(p) ? n.delete(p) : n.add(p);
+                return n;
+              })}
+              summaryEdits={summaryEdits}
+              onEditSummary={(d, v) => setSummaryEdits(prev => ({ ...prev, [d]: v }))}
+              onResetSummary={d => setSummaryEdits(prev => {
+                const n = { ...prev };
+                delete n[d];
+                return n;
+              })}
+            />
+          )}
 
           {!ships.length && <div className="ss-empty">还没有货件，点右上角「+ 新增货件」或「导入 Excel」</div>}
         </>
@@ -530,6 +690,153 @@ export function ShipmentTracker() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- 按发货时间视图
+
+function ByDateView({
+  order, map, activeDate, onPickDate, selected, onSel, onEdit, onDelete,
+  onBatchEta, ships, collapsed, onToggleProduct, summaryEdits, onEditSummary, onResetSummary,
+}: {
+  order: string[]; map: Map<string, Row[]>; activeDate: string;
+  onPickDate: (d: string) => void;
+  selected: Set<string>; onSel: (id: string) => void;
+  onEdit: (s: Row) => void; onDelete: (id: string) => void;
+  onBatchEta: (ids: string[]) => void;
+  ships: Row[];
+  collapsed: Set<string>; onToggleProduct: (p: string) => void;
+  summaryEdits: Record<string, string>;
+  onEditSummary: (d: string, v: string) => void;
+  onResetSummary: (d: string) => void;
+}) {
+  const [copied, setCopied] = useState('');
+  const list = map.get(activeDate) || [];
+
+  // 按产品名分组（同产品多条，原项目用 project 名折叠）
+  const prodGroups: Array<[string, Row[]]> = [];
+  {
+    const idx = new Map<string, Row[]>();
+    for (const s of list) {
+      const p = s.product || '（未填产品）';
+      if (!idx.has(p)) { idx.set(p, []); prodGroups.push([p, idx.get(p)!]); }
+      idx.get(p)!.push(s);
+    }
+    prodGroups.sort((a, b) => a[0].localeCompare(b[0]));
+  }
+
+  const summaryText = activeDate in summaryEdits
+    ? summaryEdits[activeDate]
+    : generateSummary(ships, activeDate);
+
+  const fbaIds = list.filter(s => shipKind(s) === 'fba').map(s => s.id);
+
+  const copy = async (text: string, tag: string) => {
+    let ok = false;
+    // 局域网 http 访问不是「安全上下文」，navigator.clipboard 不可用 → 用隐藏 textarea 兜底
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch { ok = false; }
+    if (!ok) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+        document.body.appendChild(ta);
+        ta.focus(); ta.select();
+        ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch { ok = false; }
+    }
+    setCopied(ok ? tag : '复制失败，请手动选中文本复制');
+    setTimeout(() => setCopied(''), ok ? 1500 : 2400);
+  };
+
+  if (!order.length) return <div className="ss-empty">还没有可用的货件</div>;
+
+  return (
+    <div className="ss-bydate">
+      <aside className="ss-datelist">
+        <div className="ss-datelist-head">按发货时间</div>
+        {order.map(d => {
+          const n = (map.get(d) || []).length;
+          return (
+            <button key={d || '__none'} type="button" className="ss-dateitem"
+              data-active={activeDate === d} onClick={() => onPickDate(d)}>
+              <span className="ss-dateitem-d">{d ? fmtShipDate(d) : '未填发货时间'}</span>
+              <span className="ss-dateitem-n">{n}</span>
+            </button>
+          );
+        })}
+      </aside>
+
+      <div className="ss-bydate-main">
+        {/* 发货汇总：默认按渠道/LCL 自动生成，可手改，可重新生成 */}
+        <div className="ss-summary-box">
+          <div className="ss-summary-head">
+            <span>📋 发货汇总</span>
+            <span className="ss-spacer" />
+            {copied && <span className="ss-copied">{copied === 'ok' ? '已复制' : copied}</span>}
+            <button type="button" className="btn btn-sm" onClick={() => onResetSummary(activeDate)}>
+              重新生成
+            </button>
+            <button type="button" className="btn btn-sm btn-primary" onClick={() => copy(summaryText, 'ok')}>
+              复制
+            </button>
+          </div>
+          <textarea className="ss-summary-text" rows={Math.min(10, Math.max(4, summaryText.split('\n').length + 1))}
+            value={summaryText}
+            placeholder="（该批次暂无 FBA 货件）"
+            onChange={e => onEditSummary(activeDate, e.target.value)} />
+        </div>
+
+        <div className="ss-date-head">
+          <h4>
+            🚚 {activeDate ? fmtShipDate(activeDate) : '未填发货时间'}
+            <span className="ss-section-n">{list.length} 票</span>
+          </h4>
+          {fbaIds.length > 0 && (
+            <button type="button" className="btn btn-sm" onClick={() => onBatchEta(fbaIds)}>
+              整批改送达（{fbaIds.length}）
+            </button>
+          )}
+        </div>
+
+        {prodGroups.map(([p, plist]) => {
+          const isCollapsed = collapsed.has(p);
+          const subFba = plist.filter(s => shipKind(s) === 'fba').map(s => s.id);
+          return (
+            <div key={p} className="ss-prodgroup" data-collapsed={isCollapsed}>
+              <div className="ss-prodhead" onClick={() => onToggleProduct(p)}>
+                <span className="ss-prodhead-arrow">{isCollapsed ? '▸' : '▾'}</span>
+                <span className="ss-prodhead-name">{p}</span>
+                <span className="ss-prodhead-n">{plist.length}</span>
+                {subFba.length > 0 && (
+                  <button type="button" className="btn btn-sm" onClick={e => { e.stopPropagation(); onBatchEta(subFba); }}>
+                    改送达
+                  </button>
+                )}
+              </div>
+              {!isCollapsed && (
+                <div className="ss-cards">
+                  {plist.map(s => (
+                    <ShipCard key={s.id} s={s} selected={selected.has(s.id)}
+                      onSel={() => onSel(s.id)}
+                      onEdit={() => onEdit(s)}
+                      onDelete={() => onDelete(s.id)} />
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {!list.length && <div className="ss-empty">该发货时间下没有货件</div>}
+      </div>
     </div>
   );
 }

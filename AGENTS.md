@@ -179,9 +179,14 @@ src/
     progress/ProgressView.tsx  # 进度总览（甘特图等）
     tweaks/TweaksPanel.tsx     # 右侧"Tweaks"调试面板（主题/布局微调，开发用）
     shipment/
-      index.tsx                 # 业务：货件跟踪（由 shipment-tracker 迁移，单文件约 700 行）
-                                #   看板（逾期/本周/未来7天/下周核对，红黄绿左侧色条）+ 卡片 + 搜索
-                                #   + 货件表单（40 字段，物流进度 / 报关财务两段）+ 产品库
+      index.tsx                 # 业务：货件跟踪（由 shipment-tracker 迁移，单文件约 800 行）
+                                #   两种视图（顶部 ss-seg 切换）：
+                                #     ① 状态看板 —— KPI 卡片（可点击筛选，再点取消）+ 按 classify 分区
+                                #        预警类（逾期/本周/未来7天/下周核对）默认展开，其余默认折叠
+                                #     ② 按发货时间 —— 左侧日期列表（含未填组，倒序）+ 右侧
+                                #        发货汇总（可编辑/重新生成/复制，局域网 http 无 clipboard API
+                                #        时用 execCommand 兜底）+ 按产品折叠分组 + 整批改送达
+                                #   卡片 + 搜索 + 货件表单（40 字段，物流进度 / 报关财务两段）+ 产品库
                                 #   + 批量改送达 + 按渠道时效自动算 ETA + Excel 导入预览
                                 #   ⚠️ classify/shipKind/detectStore/generateSummary 与
                                 #   原项目 app.js **逐行对齐**：判定顺序、阈值（diff<=6/13、
@@ -442,12 +447,30 @@ POST  import/xlsx
   未来 7 天（diff ≤ 6）→ 下周核对（diff ≤ 13）→ 在途
 - 店铺归属 `detectStore()`：产品名含「钻石画」→ 宁熙，其余 FBA → 谛听
 
+**前端视图与筛选（2026-10-19 补）**：
+
+- **两种视图**，同一个 tab 内切换：`状态看板` / `按发货时间`
+- **KPI 卡片可点击筛选**：7 个 KPI → `classify` 的 key（全部 / 逾期 / 本周 / 未来7天 /
+  下周核对 / 在途 / 已入库）。再点一次取消；点其他 KPI 直接切换
+- 状态看板显示**全部分区**（含卫星仓/沃尔玛/已入库/无日期/已取消），
+  但非预警分区**默认折叠** —— 否则 84 张卡会淹没预警。筛选某一类时强制展开
+- **按发货时间**对齐原项目 `groupByShip()`：排除已取消、按日期**倒序**、未填发货时间排最后；
+  右侧按产品名折叠分组（同名产品多条）
+- `counts.total` 用 `filtered.length`（跟着搜索走），不是全库条数 —— 避免"搜索后数字与内容不符"
+- ⚠️ 局部变量 `groups`（基于 `filtered`，供 KPI 计数）与 `visibleGroups`（基于 `visible`，
+  供渲染）**必须分开**：合并会让"点 KPI 后其他 KPI 数字全变 0"，导致无法再切换
+
 **数据导入脚本**：`scripts/import_shipment_tracker.py`
 （幂等 upsert + 逐条逐字段比对，可重复执行；WAL 模式下复制库文件要连 `-wal` 一起拷）
 
-**⚠️ 待办：Mac 定时提醒还没适配**
-原 `reminder.js` + launchd 仍读 `../shipment-tracker/data/shipments.json`，
-而该文件**已不再更新**（原项目停用）→ 提醒会一直基于旧数据。
+**⚠️ 关于 Mac 定时提醒（实际核查结果）**
+
+原目录里 `reminder.js` 与 `install-schedule.sh` **文件还在，但 launchd 从未安装过**
+（`launchctl list` 无相关条目、`~/Library/LaunchAgents` 无 plist）→ **当前没有提醒在跑**，
+不存在"读旧数据"的隐患。
+
+若以后想启用，**必须先把 `reminder.js` 的数据源从 `data/shipments.json` 改成
+`fba2/data/fba-data.db`**（或调 fba2 的 `/api/shipment/shipments`），否则会一直基于冻结的旧快照。
 若要继续用每日弹窗，需把 `reminder.js` 的数据源改成调
 `http://localhost:8002/api/shipment/shipments`（用 root 账号登录拿 token），
 或改成直接读 `data/fba-data.db`。**此项未做**。

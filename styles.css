@@ -2586,7 +2586,7 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .pf-side-title { font-size: 14px; font-weight: 600; color: var(--ink); padding-bottom: 4px; border-bottom: 1px solid var(--border); }
 
 .pf-dropzone { border: 2px dashed var(--border-strong); border-radius: 8px; padding: 14px 12px; text-align: center; font-size: 12px; color: var(--ink-3); cursor: pointer; transition: border-color 0.15s, background 0.15s; }
-.pf-dropzone:hover { border-color: var(--accent); background: var(--bg-3, var(--bg-2)); color: var(--ink-2); }
+.pf-dropzone:hover { border-color: var(--accent); background: var(--bg); color: var(--ink-2); }
 
 /* 文件配置卡片 */
 .pf-file-card { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--card-bg); margin-bottom: 8px; }
@@ -3167,17 +3167,80 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .ss-alert-ok { background: color-mix(in srgb, var(--green) 9%, transparent); border: 1px solid color-mix(in srgb, var(--green) 34%, transparent); color: var(--green); }
 
 /* KPI */
-.ss-kpis { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
-.ss-kpi { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 10px 16px; min-width: 96px; }
+.ss-kpis { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.ss-kpi { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--r-lg);
+  padding: 10px 16px; min-width: 96px; text-align: left; cursor: pointer; font: inherit;
+  color: inherit; transition: border-color .12s, box-shadow .12s, transform .12s; }
+.ss-kpi:hover { border-color: var(--ink-4); transform: translateY(-1px); }
+.ss-kpi[data-active="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--blue-soft); }
+.ss-kpi[data-active="true"] span { color: var(--accent); font-weight: 600; }
 .ss-kpi b { display: block; font-size: 20px; line-height: 1.2; font-variant-numeric: tabular-nums; }
 .ss-kpi span { font-size: 11.5px; color: var(--ink-3); }
 .ss-kpi-bad b { color: var(--red); }
 .ss-kpi-warn b { color: var(--orange); }
 .ss-kpi-ok b { color: var(--green); }
 
+/* 视图切换（状态看板 / 按发货时间） */
+.ss-viewbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.ss-seg { display: inline-flex; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 2px; }
+.ss-seg-btn { border: 0; background: transparent; font: inherit; font-size: 12.5px; color: var(--ink-3);
+  padding: 5px 13px; border-radius: calc(var(--r-lg) - 3px); cursor: pointer; }
+.ss-seg-btn:hover { color: var(--ink); }
+.ss-seg-btn[data-active="true"] { background: var(--card-bg); color: var(--ink); font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+.ss-clear { border: 1px solid var(--accent); background: var(--blue-soft);
+  color: var(--accent); font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 20px; cursor: pointer; }
+.ss-clear:hover { background: var(--accent); color: #fff; }
+.ss-hint { font-size: 12px; color: var(--ink-3); }
+
+/* 按发货时间：左侧日期列表 + 右侧内容 */
+.ss-bydate { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 18px; align-items: start; }
+.ss-datelist { position: sticky; top: 0; max-height: calc(100vh - 220px); overflow-y: auto;
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 6px; }
+.ss-datelist-head { font-size: 11.5px; color: var(--ink-3); font-weight: 600; letter-spacing: .3px;
+  padding: 6px 9px 8px; }
+.ss-dateitem { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent;
+  font: inherit; font-size: 13px; color: var(--ink-2); padding: 7px 9px; border-radius: var(--r-sm);
+  cursor: pointer; text-align: left; }
+.ss-dateitem:hover { background: var(--bg-2); }
+.ss-dateitem[data-active="true"] { background: var(--blue-soft); color: var(--accent); font-weight: 600; }
+.ss-dateitem-d { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
+.ss-dateitem-n { font-size: 11px; color: var(--ink-3); background: var(--bg-2);
+  border: 1px solid var(--border); border-radius: 20px; padding: 0 7px; }
+.ss-dateitem[data-active="true"] .ss-dateitem-n { color: var(--accent); border-color: currentColor; background: transparent; }
+
+.ss-bydate-main { min-width: 0; }
+.ss-date-head { display: flex; align-items: center; gap: 10px; margin: 16px 0 10px; }
+.ss-date-head h4 { font-size: 14px; margin: 0; display: flex; align-items: center; gap: 8px; }
+
+/* 发货汇总框 */
+.ss-summary-box { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 11px 13px; }
+.ss-summary-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12.5px; color: var(--ink-2); }
+.ss-summary-text { width: 100%; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; line-height: 1.65; color: var(--ink); background: var(--bg-2);
+  border: 1px solid var(--border); border-radius: var(--r-sm); padding: 9px 11px; resize: vertical; }
+.ss-copied { font-size: 11.5px; color: var(--green); }
+
+/* 产品分组（按发货时间视图里按产品折叠） */
+.ss-prodgroup { border: 1px solid var(--border); border-radius: var(--r-lg); margin-bottom: 12px; overflow: hidden; }
+.ss-prodhead { display: flex; align-items: center; gap: 8px; padding: 9px 12px; cursor: pointer;
+  background: var(--bg-2); font-size: 13px; }
+.ss-prodhead:hover { background: var(--bg); }
+.ss-prodhead-arrow { color: var(--ink-3); font-size: 11px; width: 10px; }
+.ss-prodhead-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ss-prodhead-n { font-size: 11px; color: var(--ink-3); background: var(--card-bg);
+  border: 1px solid var(--border); border-radius: 20px; padding: 0 8px; }
+.ss-prodgroup .ss-cards { padding: 12px; }
+.ss-prodgroup[data-collapsed="true"] .ss-prodhead { border-bottom: 0; }
+
 /* 分区 */
 .ss-section { margin-bottom: 22px; }
 .ss-section-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.ss-section-toggle { cursor: pointer; user-select: none; border-radius: var(--r-sm); padding: 2px 4px; margin-left: -4px; }
+.ss-section-toggle:hover { background: var(--bg-2); }
+.ss-section-toggle:hover h4 { color: var(--ink); }
+.ss-sec-arrow { color: var(--ink-4); font-size: 10px; width: 9px; }
 .ss-section-head h4 { font-size: 13px; margin: 0; color: var(--ink-2); font-weight: 600; }
 .ss-section-n { font-size: 11.5px; color: var(--ink-3); background: var(--bg-2); border: 1px solid var(--border); border-radius: 20px; padding: 1px 8px; }
 
