@@ -198,6 +198,15 @@ function deliverDays(s: Row): number | null {
   return Math.round((b.getTime() - a.getTime()) / 86400000);
 }
 
+// 已用时间 = 今天 − 发货日期（自然日）。只对「还没入库」的货件有意义。
+function elapsedDays(s: Row): number | null {
+  const a = parseDate(s.shipDate);
+  if (!a) return null;
+  const t = new Date();
+  t.setHours(0, 0, 0, 0);        // 只比日期，避免当天因时分秒差出 1 天
+  return Math.round((t.getTime() - a.getTime()) / 86400000);
+}
+
 // 某月按渠道统计：票数 + 平均送达天数
 function channelStats(list: Row[]): Array<{ ch: string; n: number; avg: number }> {
   const map = new Map<string, number[]>();
@@ -1045,6 +1054,7 @@ function ShipCard({ s, selected, onSel, onEdit, onDelete }: {
   const [txt, tone] = BADGE[cls] || BADGE.none;
   const chCls = CHANNEL_CLASS[s.channel] || '';
   const dDays = deliverDays(s);          // 实际送达天数（实收 − 发货），未入库为 null
+  const eDays = dDays === null ? elapsedDays(s) : null;   // 未入库：已用时间（今天 − 发货）
 
   // 整卡可点打开编辑；但三件事必须让路：
   //   ① 正在卡片内拖选文字（用户想复制 FBA 号/LCL 号）→ 不弹窗
@@ -1080,7 +1090,11 @@ function ShipCard({ s, selected, onSel, onEdit, onDelete }: {
         <span className="ss-arrow">→</span>
         <span className={cls === 'overdue' ? 'ss-bad' : ''}>{s.etaDate ? etaRange(s) : '未定'}</span>
         {s.actualDate && <span className="ss-ok">实收 {s.actualDate}</span>}
-        {dDays !== null && <span className="ss-days">{dDays} 天</span>}
+        {dDays !== null ? (
+          <span className="ss-days">{dDays} 天</span>
+        ) : eDays !== null ? (
+          <span className="ss-days ss-days-running">已用 {eDays} 天</span>
+        ) : null}
       </div>
       {s.progress && <div className="ss-card-progress">{s.progress}</div>}
       <div className="ss-card-foot">
