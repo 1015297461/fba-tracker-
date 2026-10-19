@@ -959,6 +959,7 @@ function ShipCard({ s, selected, onSel, onEdit, onDelete }: {
   const cls = classify(s);
   const [txt, tone] = BADGE[cls] || BADGE.none;
   const chCls = CHANNEL_CLASS[s.channel] || '';
+  const dDays = deliverDays(s);          // 实际送达天数（实收 − 发货），未入库为 null
   return (
     <div className="ss-card" data-tone={tone} data-selected={selected}>
       <div className="ss-card-top">
@@ -980,6 +981,7 @@ function ShipCard({ s, selected, onSel, onEdit, onDelete }: {
         <span className="ss-arrow">→</span>
         <span className={cls === 'overdue' ? 'ss-bad' : ''}>{s.etaDate ? etaRange(s) : '未定'}</span>
         {s.actualDate && <span className="ss-ok">实收 {s.actualDate}</span>}
+        {dDays !== null && <span className="ss-days">{dDays} 天</span>}
       </div>
       {s.progress && <div className="ss-card-progress">{s.progress}</div>}
       <div className="ss-card-foot">
