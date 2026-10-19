@@ -36,7 +36,7 @@ from .auth import AuthManager
 from .workers.export_worker import ExportWorker
 from .workers.ai_analysis_worker import AiAnalysisWorker
 from . import pdf_splitter
-from .routes import auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis, sif_keywords
+from .routes import auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis, sif_keywords, shipment
 
 
 # 正常 HTTP 请求行的起始标记。用 HTTPS 打到 HTTP 端口时，服务端读到的其实是
@@ -90,7 +90,7 @@ def get_lan_ip():
 
 
 ROUTE_MODULES = (
-    auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis, sif_keywords,
+    auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis, sif_keywords, shipment,
 )
 
 

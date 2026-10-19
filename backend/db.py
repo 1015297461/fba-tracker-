@@ -1,9 +1,11 @@
 import datetime
 import json
 import os
-import sqlite3
+import re
 import secrets
+import sqlite3
 import threading
+import uuid
 
 from .utils import _now_iso, PROJECT_ROOT, _log
 
@@ -12,6 +14,38 @@ from .utils import _now_iso, PROJECT_ROOT, _log
 # 而不是像早期版本那样每分钟重试一整天（单次 daily 层约 25 次 SIF 调用）。
 SIF_RETRY_BACKOFF_MIN = (5, 30, 120)
 SIF_MAX_RETRIES_PER_DAY = len(SIF_RETRY_BACKOFF_MIN) + 1
+
+
+# ---------------------------------------------------------------------------
+# 货件跟踪：camelCase(接口/原项目) <-> snake_case(SQLite) 机械互转
+#
+# 原 shipment-tracker 用 JSON 文件存，字段是 camelCase（shipmentId / etaDate / qtyPerBox…）。
+# 迁到 SQLite 后列名用 snake_case，接口仍返回 camelCase——这样前端逻辑可以原样搬，
+# 也避免 42 个字段手写映射表出错。
+# ---------------------------------------------------------------------------
+
+def _snake_key(k):
+    return re.sub(r'(?<!^)(?=[A-Z])', '_', str(k)).lower()
+
+
+def _camel_key(k):
+    parts = str(k).split('_')
+    return parts[0] + ''.join(p.title() for p in parts[1:])
+
+
+def _row_to_camel(row):
+    """SQLite 行 → camelCase dict；cancelled 还原成 bool，history 还原成数组。"""
+    d = {k: row[k] for k in row.keys()}
+    d["cancelled"] = bool(d.get("cancelled"))
+    hist = d.get("history")
+    if hist:
+        try:
+            d["history"] = json.loads(hist)
+        except Exception:
+            d["history"] = []
+    else:
+        d["history"] = []
+    return {_camel_key(k): v for k, v in d.items()}
 
 
 def _dedupe_scrape_products(conn):
@@ -260,6 +294,85 @@ class DbState:
                     created_at   TEXT,
                     completed_at TEXT
                 );
+
+                -- ===== 货件跟踪（由独立项目 shipment-tracker 迁移而来）=====
+                -- 字段名与原 JSON 一一对应（camelCase -> snake_case 机械转换），
+                -- 全部 TEXT：原数据本身就是字符串（含 "1500"/"9.83" 这类），不做类型转换以免丢精度。
+                -- history 存 JSON 数组（变更轨迹）。
+
+                CREATE TABLE IF NOT EXISTS shipment_products (
+                    id                 TEXT PRIMARY KEY,
+                    created_at         TEXT,
+                    product            TEXT,
+                    msku               TEXT,
+                    msku_full          TEXT,
+                    fnsku              TEXT,
+                    category_en        TEXT,
+                    category_cn        TEXT,
+                    qty_per_box        TEXT,
+                    box_count          TEXT,
+                    total_qty          TEXT,
+                    length             TEXT,
+                    width              TEXT,
+                    height             TEXT,
+                    volume             TEXT,
+                    single_box_weight  TEXT,
+                    total_weight       TEXT,
+                    total_volume       TEXT,
+                    supplier           TEXT,
+                    declaration_name   TEXT,
+                    updated_at         TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS shipments (
+                    id                 TEXT PRIMARY KEY,
+                    created_at         TEXT,
+                    cancelled          INTEGER DEFAULT 0,
+                    shipment_id        TEXT,
+                    tracking_no        TEXT,
+                    channel            TEXT,
+                    site               TEXT,
+                    warehouse          TEXT,
+                    order_no           TEXT,
+                    sail_date          TEXT,
+                    eta_date           TEXT,
+                    eta_end_date       TEXT,
+                    actual_date        TEXT,
+                    ship_date          TEXT,
+                    forwarder_eta      TEXT,
+                    product            TEXT,
+                    declaration_name   TEXT,
+                    msku               TEXT,
+                    fnsku              TEXT,
+                    category_en        TEXT,
+                    category_cn        TEXT,
+                    material           TEXT,
+                    invoice_unit       TEXT,
+                    invoice_name       TEXT,
+                    length             TEXT,
+                    width              TEXT,
+                    height             TEXT,
+                    volume             TEXT,
+                    single_box_weight  TEXT,
+                    total_weight       TEXT,
+                    total_volume       TEXT,
+                    qty_per_box        TEXT,
+                    box_count          TEXT,
+                    total_qty          TEXT,
+                    box_no             TEXT,
+                    supplier           TEXT,
+                    tax_company        TEXT,
+                    tax_type           TEXT,
+                    tax_rate           TEXT,
+                    special_invoice    TEXT,
+                    note               TEXT,
+                    store              TEXT,
+                    progress           TEXT,
+                    history            TEXT,
+                    updated_at         TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_shipment_eta ON shipments(eta_date);
+                CREATE INDEX IF NOT EXISTS idx_shipment_cancelled ON shipments(cancelled);
 
                 -- ===== SIF 爆品关键词监控 v2 =====
 
@@ -2321,6 +2434,86 @@ class DbState:
     def product_count(self):
         with self._conn() as conn:
             return conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+
+    # ------------------------------------------------------------------
+    # 货件跟踪（由 shipment-tracker 迁移；字段名与接口都用 camelCase）
+    # ------------------------------------------------------------------
+
+    def _upsert_camel(self, table, data):
+        """通用 upsert：入参 camelCase，落库 snake_case，未知列自动忽略。
+
+        用 PRAGMA 拿真实列名做白名单，这样前端多传/少传字段都不会炸，
+        也不需要维护 40+ 个字段的手写映射。
+        """
+        with self.lock:
+            with self._conn() as conn:
+                cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+                row = {}
+                for k, v in (data or {}).items():
+                    c = _snake_key(k)
+                    if c not in cols:
+                        continue
+                    if c == "cancelled":
+                        v = 1 if v else 0
+                    elif c == "history" and isinstance(v, (list, dict)):
+                        v = json.dumps(v, ensure_ascii=False)
+                    row[c] = v
+                if not row.get("id"):
+                    row["id"] = str(uuid.uuid4())
+                if "updated_at" in cols:
+                    row["updated_at"] = _now_iso()
+                keys = list(row.keys())
+                ph = ",".join("?" * len(keys))
+                sql = f"INSERT INTO {table}({','.join(keys)}) VALUES({ph})"
+                sets = ",".join(f"{k}=excluded.{k}" for k in keys if k != "id")
+                if sets:
+                    sql += f" ON CONFLICT(id) DO UPDATE SET {sets}"
+                conn.execute(sql, [row[k] for k in keys])
+                conn.commit()
+                return row["id"]
+
+    def list_shipments(self):
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM shipments ORDER BY ship_date DESC, created_at DESC").fetchall()
+        return [_row_to_camel(r) for r in rows]
+
+    def upsert_shipment(self, data):
+        return self._upsert_camel("shipments", data)
+
+    def delete_shipment(self, sid):
+        with self.lock:
+            with self._conn() as conn:
+                cur = conn.execute("DELETE FROM shipments WHERE id=?", [sid])
+                conn.commit()
+                return cur.rowcount
+
+    def list_shipment_products(self):
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM shipment_products ORDER BY created_at DESC").fetchall()
+        return [_row_to_camel(r) for r in rows]
+
+    def upsert_shipment_product(self, data):
+        return self._upsert_camel("shipment_products", data)
+
+    def delete_shipment_product(self, pid):
+        with self.lock:
+            with self._conn() as conn:
+                cur = conn.execute("DELETE FROM shipment_products WHERE id=?", [pid])
+                conn.commit()
+                return cur.rowcount
+
+    def bulk_upsert_shipments(self, rows, table="shipments"):
+        """批量导入（逐条 upsert；单条失败不阻断整批）。返回成功条数。"""
+        n = 0
+        for r in (rows or []):
+            try:
+                self._upsert_camel(table, r)
+                n += 1
+            except Exception as e:
+                _log(f"[shipment] 导入失败 {str(r.get('id'))[:12]}: {e}")
+        return n
 
 
 def _as_int(v):

@@ -108,6 +108,20 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
         </div>
       </div>
 
+      {(currentUser?.role === 'admin' || currentUser?.role === 'root') && (
+        <div className="sb-section">
+          <div className="sb-section-label">业务</div>
+          <div className="sb-view-tabs">
+            <button className="sb-view-btn"
+              data-active={view === 'shipment'}
+              onClick={() => setView('shipment')}>
+              <span className="ic">🚚</span>
+              <span>货件跟踪</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {currentUser?.role === 'root' && (
         <div className="sb-section">
           <div className="sb-section-label">AI分析</div>

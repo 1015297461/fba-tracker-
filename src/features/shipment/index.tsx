@@ -1,0 +1,699 @@
+/**
+ * 货件跟踪（由独立项目 shipment-tracker 迁移）
+ *
+ * 原项目是原生 JS + innerHTML 模板；这里重写为 React，但**业务规则一字未改**：
+ * - shipKind / detectStore / classify 的判定顺序与阈值
+ * - generateSummary 的「按渠道分组 → 按 LCL 聚合」算法
+ * - 表单字段顺序（物流进度 / 报关财务两段）
+ *
+ * 接口：/api/shipment/*（camelCase，与后端一致）
+ */
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+
+// ---------------------------------------------------------------- 常量
+
+type Row = Record<string, any>;
+
+const FIELDS: { section?: string; key?: string; label?: string; type?: string; req?: boolean; textarea?: boolean; rows?: number }[] = [
+  { section: '物流进度' },
+  { key: 'shipmentId', label: 'FBA货件号' },
+  { key: 'orderNo', label: 'LCL单号' },
+  { key: 'channel', label: '渠道' },
+  { key: 'progress', label: '当前进度' },
+  { key: 'shipDate', label: '发货时间', type: 'date' },
+  { key: 'etaDate', label: '预计送达时间', type: 'date', req: true },
+  { key: 'forwarderEta', label: '货代预计送达时间', type: 'date' },
+  { key: 'actualDate', label: '实际送达/入库', type: 'date' },
+  { key: 'trackingNo', label: '追踪编号' },
+  { key: 'warehouse', label: '仓库' },
+  { key: 'site', label: '站点' },
+  { key: 'store', label: '店铺' },
+  { key: 'product', label: '产品', textarea: true, rows: 4 },
+  { section: '报关/财务资料' },
+  { key: 'supplier', label: '厂家' },
+  { key: 'declarationName', label: '品名' },
+  { key: 'invoiceName', label: '开票名称' },
+  { key: 'msku', label: 'MSKU' },
+  { key: 'fnsku', label: 'FNSKU' },
+  { key: 'categoryEn', label: '产品英文类别' },
+  { key: 'categoryCn', label: '产品中文类别' },
+  { key: 'material', label: '材质含量' },
+  { key: 'invoiceUnit', label: '开票单位' },
+  { key: 'length', label: '长(cm)' },
+  { key: 'width', label: '宽(cm)' },
+  { key: 'height', label: '高(cm)' },
+  { key: 'volume', label: '体积(长*宽*高)' },
+  { key: 'singleBoxWeight', label: '单箱重量(kg)' },
+  { key: 'totalWeight', label: '总重量(kg)' },
+  { key: 'totalVolume', label: '总体积(m³)' },
+  { key: 'qtyPerBox', label: '每箱数量' },
+  { key: 'boxCount', label: '箱子总数' },
+  { key: 'totalQty', label: '数量总计' },
+  { key: 'boxNo', label: '箱子号' },
+  { key: 'taxCompany', label: '退税公司' },
+  { key: 'taxType', label: '退税/买单' },
+  { key: 'taxRate', label: '税点' },
+  { key: 'specialInvoice', label: '能否开专票' },
+  { key: 'note', label: '备注', textarea: true },
+];
+
+const PRODUCT_FIELDS: { key: string; label: string; req?: boolean }[] = [
+  { key: 'product', label: '产品', req: true },
+  { key: 'msku', label: 'msku' },
+  { key: 'categoryEn', label: '产品英文类别' },
+  { key: 'categoryCn', label: '产品中文类别' },
+  { key: 'qtyPerBox', label: '每箱商品数量' },
+  { key: 'singleBoxWeight', label: '单箱重量(kg)' },
+  { key: 'length', label: '长(cm)' },
+  { key: 'width', label: '宽(cm)' },
+  { key: 'height', label: '高(cm)' },
+  { key: 'volume', label: '体积(长×宽×高)' },
+  { key: 'supplier', label: '厂家' },
+  { key: 'fnsku', label: 'FNSKU' },
+];
+
+const BADGE: Record<string, [string, string]> = {
+  overdue: ['逾期', 'bad'],
+  thisweek: ['本周到货', 'warn'],
+  upcoming: ['近期到货', 'info'],
+  checkup: ['下周到货', 'mute'],
+  awd: ['卫星仓', 'awd'],
+  walmart: ['沃尔玛', 'wm'],
+  future: ['在途', 'info'],
+  done: ['已入库', 'ok'],
+  cancel: ['已取消', 'mute'],
+  none: ['无日期', 'mute'],
+};
+
+const CHANNEL_CLASS: Record<string, string> = {
+  '普船': 'ch-regular', '加班': 'ch-overtime', '正班': 'ch-scheduled', '空派': 'ch-air',
+};
+
+const TRANSIT: Record<string, number> = { '普船': 45, '加班': 38, '正班': 36, '空派': 14 };
+
+const DASHBOARD_SECTIONS = [
+  { key: 'overdue', label: '逾期未入库' },
+  { key: 'thisweek', label: '本周到货' },
+  { key: 'upcoming', label: '未来 7 天' },
+  { key: 'checkup', label: '下周（核对货代）' },
+] as const;
+
+// ---------------------------------------------------------------- 日期与分类工具
+
+const parseDate = (s?: string): Date | null => {
+  if (!s) return null;
+  const d = new Date(String(s).slice(0, 10) + 'T00:00:00');
+  return isNaN(d.getTime()) ? null : d;
+};
+const today = (): Date => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
+const addDays = (d: Date, n: number): Date => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const sundayOf = (d: Date): Date => { const x = new Date(d); x.setDate(x.getDate() - x.getDay()); return x; };
+const fmtD = (d: Date): string =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const diffDays = (a: Date, b: Date): number => Math.round((a.getTime() - b.getTime()) / 86400000);
+
+// 货件类型：FBA / AL0(卫星仓AWD) / 沃尔玛等；非 FBA 不跟踪到货时间
+function shipKind(s: Row): 'fba' | 'awd' | 'walmart' {
+  const id = String(s.shipmentId || '');
+  if (!id) return 'fba';
+  if (/^FBA/i.test(id)) return 'fba';
+  if (/^AL0/i.test(id)) return 'awd';
+  return 'walmart';
+}
+
+// 店铺归属：钻石画 → 宁熙，其它 FBA → 谛听
+function detectStore(s: Row): string {
+  if (!/^FBA/i.test(String(s.shipmentId || ''))) return '';
+  return /钻石画/.test(String(s.product || '')) ? '宁熙' : '谛听';
+}
+
+// 状态分类（判定顺序即优先级，勿改）
+function classify(s: Row): string {
+  if (s.cancelled) return 'cancel';
+  const kind = shipKind(s);
+  if (kind === 'awd') return 'awd';
+  if (kind === 'walmart') return 'walmart';
+  if (s.actualDate) return 'done';
+  if (!s.etaDate) return 'none';
+  const eta = parseDate(s.etaDate);
+  const t = today();
+  if (!eta) return 'none';
+  const end = parseDate(s.etaEndDate) || eta;   // 送达是一个区间，逾期按结束日判断
+  if (diffDays(end, t) < 0) return 'overdue';
+  const diff = diffDays(eta, t);
+  if (eta <= addDays(sundayOf(t), 6)) return 'thisweek';
+  if (diff <= 6) return 'upcoming';
+  if (diff <= 13) return 'checkup';
+  return 'future';
+}
+
+function etaRange(s: Row): string {
+  if (!s.etaDate) return '';
+  if (!s.etaEndDate || s.etaEndDate === s.etaDate) return fmtShort(s.etaDate);
+  return `${fmtShort(s.etaDate)} ~ ${fmtShort(s.etaEndDate)}`;
+}
+function fmtShort(d?: string): string {
+  const x = parseDate(d);
+  return x ? `${x.getMonth() + 1}/${x.getDate()}` : '';
+}
+const num = (n: any): number => Number((Number(n) || 0).toFixed(2));
+
+// 按发货时间生成汇总文字（按渠道分组，按 LCL 聚合）—— 与原 generateSummary 一致
+function generateSummary(list: Row[], shipDate: string): string {
+  const rows = list.filter(s => !s.cancelled && s.shipDate === shipDate && shipKind(s) === 'fba');
+  if (!rows.length) return '';
+  const order: string[] = [];
+  const byCh: Record<string, Row[]> = {};
+  for (const s of rows) {
+    const ch = s.channel || '未填渠道';
+    if (!byCh[ch]) { byCh[ch] = []; order.push(ch); }
+    byCh[ch].push(s);
+  }
+  const lines: string[] = [];
+  for (const ch of order) {
+    const lclOrder: string[] = [];
+    const byLcl: Record<string, { s: Row; box: number; vol: number; wt: number }> = {};
+    for (const s of byCh[ch]) {
+      const k = s.orderNo || '无LCL';
+      if (!byLcl[k]) { byLcl[k] = { s, box: 0, vol: 0, wt: 0 }; lclOrder.push(k); }
+      byLcl[k].box += Number(s.boxCount) || 0;
+      byLcl[k].vol += Number(s.totalVolume) || 0;
+      byLcl[k].wt += Number(s.totalWeight) || 0;
+    }
+    for (const k of lclOrder) {
+      const g = byLcl[k];
+      const rawCh = g.s.channel || '';
+      // channel 可能是完整 'dtXXX普船退税'，也可能是短 '普船'
+      const dt = rawCh.startsWith('dt') ? rawCh : 'dt' + (g.s.warehouse || '') + rawCh + (g.s.taxType || '');
+      lines.push(`${dt}，${num(g.box)}箱，${num(g.vol)}方，${num(g.wt)}kg——${k}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------- API
+
+const AUTH_TOKEN_KEY = 'fba-auth-v1';
+const authHeaders = (): Record<string, string> => {
+  const t = localStorage.getItem(AUTH_TOKEN_KEY) || '';
+  return t ? { Authorization: 'Bearer ' + t } : {};
+};
+async function api(path: string, opts: { method?: string; body?: any } = {}) {
+  const r = await fetch(path, {
+    method: opts.method || 'GET',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+  });
+  const text = await r.text();
+  let data: any = {};
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text.slice(0, 200) }; }
+  if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
+  return data;
+}
+
+// ---------------------------------------------------------------- 主组件
+
+export function ShipmentTracker() {
+  const [tab, setTab] = useState<'dashboard' | 'products'>('dashboard');
+  const [ships, setShips] = useState<Row[]>([]);
+  const [products, setProducts] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+  const [q, setQ] = useState('');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [editing, setEditing] = useState<Row | null>(null);
+  const [editingProduct, setEditingProduct] = useState<Row | null>(null);
+  const [summaryDate, setSummaryDate] = useState<string>('');
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const importRef = useRef<HTMLInputElement>(null);
+  const [importPreview, setImportPreview] = useState<any[] | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true); setErr('');
+    try {
+      const [a, b] = await Promise.all([
+        api('/api/shipment/shipments'),
+        api('/api/shipment/products'),
+      ]);
+      setShips(a.shipments || []);
+      setProducts(b.products || []);
+    } catch (e: any) {
+      setErr(e.message || '加载失败');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const flash = (t: string) => { setMsg(t); setTimeout(() => setMsg(''), 2600); };
+
+  // 搜索过滤（货件号/产品/单号/厂家/仓库）
+  const filtered = useMemo(() => {
+    const kw = q.trim().toLowerCase();
+    if (!kw) return ships;
+    return ships.filter(s =>
+      ['shipmentId', 'product', 'orderNo', 'supplier', 'warehouse', 'trackingNo', 'progress']
+        .some(k => String(s[k] || '').toLowerCase().includes(kw)));
+  }, [ships, q]);
+
+  // 看板分区
+  const groups = useMemo(() => {
+    const g: Record<string, Row[]> = {};
+    for (const s of filtered) {
+      const c = classify(s);
+      (g[c] ||= []).push(s);
+    }
+    for (const k of Object.keys(g)) {
+      g[k].sort((a, b) => String(a.etaDate || '9999').localeCompare(String(b.etaDate || '9999')));
+    }
+    return g;
+  }, [filtered]);
+
+  const counts = useMemo(() => ({
+    total: ships.length,
+    overdue: (groups.overdue || []).length,
+    thisweek: (groups.thisweek || []).length,
+    upcoming: (groups.upcoming || []).length,
+    checkup: (groups.checkup || []).length,
+    intransit: (groups.future || []).length,
+    done: (groups.done || []).length,
+  }), [ships, groups]);
+
+  // ---- 操作 ----
+  const saveShipment = async (data: Row) => {
+    setBusy(true);
+    try {
+      if (data.id) await api('/api/shipment/shipments', { method: 'PUT', body: data });
+      else await api('/api/shipment/shipments', { method: 'POST', body: data });
+      setEditing(null);
+      flash('已保存');
+      await load();
+    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  const removeShipment = async (id: string) => {
+    if (!confirm('确定删除这条货件？')) return;
+    setBusy(true);
+    try {
+      await api(`/api/shipment/shipments?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      flash('已删除');
+      await load();
+    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  const runAutoEta = async () => {
+    setBusy(true);
+    try {
+      const r = await api('/api/shipment/shipments/auto-calc-eta', { method: 'POST', body: {} });
+      flash(`自动算 ETA：更新 ${r.updated} 条，跳过 ${r.skipped} 条`);
+      await load();
+    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  const batchEta = async () => {
+    if (!selected.size) return;
+    const etaDate = prompt('预计送达时间（YYYY-MM-DD，留空则清空）', '');
+    if (etaDate === null) return;
+    setBusy(true);
+    try {
+      const r = await api('/api/shipment/shipments/batch-update', {
+        method: 'POST',
+        body: { ids: [...selected], etaDate, etaEndDate: etaDate },
+      });
+      flash(`批量更新 ${r.updated} 条`);
+      setSelected(new Set());
+      await load();
+    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  const saveProduct = async (data: Row) => {
+    setBusy(true);
+    try {
+      if (data.id) await api('/api/shipment/products', { method: 'PUT', body: data });
+      else await api('/api/shipment/products', { method: 'POST', body: data });
+      setEditingProduct(null);
+      flash('已保存');
+      await load();
+    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  const removeProduct = async (id: string) => {
+    if (!confirm('确定删除这个产品？')) return;
+    setBusy(true);
+    try {
+      await api(`/api/shipment/products?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      flash('已删除');
+      await load();
+    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  // Excel 导入：上传 → 后端转 TSV → 前端解析预览 → 确认导入
+  const onPickFile = async (f: File | null) => {
+    if (!f) return;
+    setBusy(true); setErr('');
+    try {
+      const b64 = await new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result || ''));
+        fr.onerror = () => reject(new Error('读取文件失败'));
+        fr.readAsDataURL(f);
+      });
+      const r = await api('/api/shipment/import/xlsx', { method: 'POST', body: { data: b64 } });
+      const sheets: { name: string; text: string }[] = r.sheets || [];
+      // 取第一个非空 sheet，按表头映射列 → 货件字段
+      const sh = sheets.find(s => s.text.trim()) || sheets[0];
+      if (!sh) throw new Error('工作簿里没有数据');
+      const rows = sh.text.split('\n').map(l => l.split('\t'));
+      if (rows.length < 2) throw new Error('表格至少需要表头 + 1 行数据');
+      const head = rows[0].map(h => String(h || '').trim());
+      const map: Record<string, string> = {
+        '发货时间': 'shipDate', '货件号': 'shipmentId', '厂家': 'supplier', '产品': 'product',
+        '仓库': 'warehouse', '长': 'length', '宽': 'width', '高': 'height',
+        '总重': 'totalWeight', '数量': 'totalQty', '预计到货': 'etaDate', '实际送达': 'actualDate',
+      };
+      const preview = rows.slice(1).filter(r => r.some(c => String(c).trim())).map(r => {
+        const o: Row = {};
+        head.forEach((h, i) => {
+          const k = map[h];
+          if (k) o[k] = String(r[i] ?? '').trim();
+        });
+        return o;
+      }).filter(o => o.shipmentId);
+      if (!preview.length) throw new Error('没解析出有效行（需要「货件号」列）');
+      setImportPreview(preview);
+    } catch (e: any) {
+      setErr('导入失败：' + (e.message || '未知错误'));
+    } finally { setBusy(false); }
+  };
+
+  const confirmImport = async () => {
+    if (!importPreview) return;
+    setBusy(true);
+    try {
+      const r = await api('/api/shipment/shipments/import', { method: 'POST', body: { items: importPreview } });
+      flash(`导入完成：新增 ${r.added}，重复 ${r.duplicated}，跳过 ${r.skipped}`);
+      setImportPreview(null);
+      await load();
+    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  // ---- 渲染 ----
+  const toggleSel = (id: string) => {
+    setSelected(prev => {
+      const n = new Set(prev);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  };
+
+  return (
+    <div className="ss-wrap">
+      <div className="ss-topbar">
+        <div className="ss-tabs">
+          <button type="button" className="ss-tab" data-active={tab === 'dashboard'} onClick={() => setTab('dashboard')}>
+            货件看板 <span className="ss-tab-n">{ships.length}</span>
+          </button>
+          <button type="button" className="ss-tab" data-active={tab === 'products'} onClick={() => setTab('products')}>
+            产品库 <span className="ss-tab-n">{products.length}</span>
+          </button>
+        </div>
+        <div className="ss-actions">
+          <input className="ss-search" placeholder="搜索货件号 / 产品 / LCL / 厂家…" value={q}
+            onChange={e => setQ(e.target.value)} />
+          {selected.size > 0 && (
+            <button type="button" className="btn btn-sm" disabled={busy} onClick={batchEta}>
+              批量改送达（{selected.size}）
+            </button>
+          )}
+          <button type="button" className="btn btn-sm" disabled={busy} onClick={runAutoEta} title="按渠道时效推算，只填空缺">
+            自动算 ETA
+          </button>
+          <button type="button" className="btn btn-sm" disabled={busy} onClick={() => importRef.current?.click()}>
+            导入 Excel
+          </button>
+          <input ref={importRef} type="file" accept=".xlsx,.xls" hidden
+            onChange={e => { onPickFile(e.target.files?.[0] || null); e.target.value = ''; }} />
+          <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={() => setEditing({})}>
+            + 新增货件
+          </button>
+        </div>
+      </div>
+
+      {err && <div className="ss-alert ss-alert-err" onClick={() => setErr('')}>{err}（点击关闭）</div>}
+      {msg && <div className="ss-alert ss-alert-ok">{msg}</div>}
+
+      {importPreview && (
+        <div className="ss-import-panel">
+          <div className="ss-import-head">
+            <strong>导入预览</strong>
+            <span>解析到 {importPreview.length} 条（按「货件号+产品+发货时间+仓库」去重）</span>
+            <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={confirmImport}>确认导入</button>
+            <button type="button" className="btn btn-sm" onClick={() => setImportPreview(null)}>取消</button>
+          </div>
+          <div className="ss-import-body">
+            <table className="ss-table">
+              <thead>
+                <tr><th>货件号</th><th>产品</th><th>发货</th><th>仓库</th><th>数量</th><th>预计到货</th></tr>
+              </thead>
+              <tbody>
+                {importPreview.slice(0, 30).map((r, i) => (
+                  <tr key={i}>
+                    <td>{r.shipmentId}</td><td>{r.product || '—'}</td><td>{r.shipDate || '—'}</td>
+                    <td>{r.warehouse || '—'}</td><td>{r.totalQty || '—'}</td><td>{r.etaDate || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="ss-empty">加载中…</div>
+      ) : tab === 'dashboard' ? (
+        <>
+          <div className="ss-kpis">
+            <div className="ss-kpi"><b>{counts.total}</b><span>全部货件</span></div>
+            <div className="ss-kpi ss-kpi-bad"><b>{counts.overdue}</b><span>逾期未入库</span></div>
+            <div className="ss-kpi ss-kpi-warn"><b>{counts.thisweek}</b><span>本周到货</span></div>
+            <div className="ss-kpi"><b>{counts.upcoming}</b><span>未来 7 天</span></div>
+            <div className="ss-kpi"><b>{counts.checkup}</b><span>下周核对</span></div>
+            <div className="ss-kpi"><b>{counts.intransit}</b><span>在途</span></div>
+            <div className="ss-kpi ss-kpi-ok"><b>{counts.done}</b><span>已入库</span></div>
+          </div>
+
+          {DASHBOARD_SECTIONS.map(sec => {
+            const rows = groups[sec.key] || [];
+            if (!rows.length) return null;
+            return (
+              <section key={sec.key} className="ss-section">
+                <div className="ss-section-head">
+                  <h4>{sec.label}</h4>
+                  <span className="ss-section-n">{rows.length} 票</span>
+                </div>
+                <div className="ss-cards">
+                  {rows.map(s => (
+                    <ShipCard key={s.id} s={s} selected={selected.has(s.id)}
+                      onSel={() => toggleSel(s.id)}
+                      onEdit={() => setEditing({ ...s })}
+                      onDelete={() => removeShipment(s.id)} />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+
+          {!ships.length && <div className="ss-empty">还没有货件，点右上角「+ 新增货件」或「导入 Excel」</div>}
+        </>
+      ) : (
+        <ProductsView products={products} onEdit={p => setEditingProduct({ ...p })}
+          onNew={() => setEditingProduct({})} onDelete={removeProduct} busy={busy} />
+      )}
+
+      {editing && (
+        <ShipmentForm initial={editing} busy={busy} onCancel={() => setEditing(null)} onSave={saveShipment}
+          summaryText={editing.shipDate ? generateSummary(ships, editing.shipDate) : ''} />
+      )}
+      {editingProduct && (
+        <ProductForm initial={editingProduct} busy={busy} onCancel={() => setEditingProduct(null)} onSave={saveProduct} />
+      )}
+
+      {summaryOpen && (
+        <div className="modal-backdrop" onClick={() => setSummaryOpen(false)}>
+          <div className="modal ss-modal" onClick={e => e.stopPropagation()}>
+            <div className="ss-modal-head"><strong>发货汇总</strong>
+              <button className="btn btn-sm" onClick={() => setSummaryOpen(false)}>关闭</button></div>
+            <pre className="ss-summary-pre">{summaryDate ? generateSummary(ships, summaryDate) : ''}</pre>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- 货件卡片
+
+function ShipCard({ s, selected, onSel, onEdit, onDelete }: {
+  s: Row; selected: boolean; onSel: () => void; onEdit: () => void; onDelete: () => void;
+}) {
+  const cls = classify(s);
+  const [txt, tone] = BADGE[cls] || BADGE.none;
+  const chCls = CHANNEL_CLASS[s.channel] || '';
+  return (
+    <div className="ss-card" data-tone={tone} data-selected={selected}>
+      <div className="ss-card-top">
+        <input type="checkbox" checked={selected} onChange={onSel} />
+        <span className="ss-badge" data-tone={tone}>{txt}</span>
+        {s.channel && <span className={`ss-chip ${chCls}`}>{s.channel}</span>}
+        {s.store && <span className="ss-chip ss-chip-store">{s.store}</span>}
+        <span className="ss-spacer" />
+        <button type="button" className="ss-link" onClick={onEdit}>编辑</button>
+        <button type="button" className="ss-link ss-link-danger" onClick={onDelete}>删除</button>
+      </div>
+      <div className="ss-card-title">{(s.product || '（未填产品）').slice(0, 80)}</div>
+      <div className="ss-card-meta">
+        <span className="ss-mono">{s.shipmentId || '—'}</span>
+        {s.orderNo && <span className="ss-dim">LCL {s.orderNo}</span>}
+      </div>
+      <div className="ss-card-dates">
+        <span>发货 {s.shipDate || '—'}</span>
+        <span className="ss-arrow">→</span>
+        <span className={cls === 'overdue' ? 'ss-bad' : ''}>{s.etaDate ? etaRange(s) : '未定'}</span>
+        {s.actualDate && <span className="ss-ok">实收 {s.actualDate}</span>}
+      </div>
+      {s.progress && <div className="ss-card-progress">{s.progress}</div>}
+      <div className="ss-card-foot">
+        <span>{s.warehouse || '—'}</span>
+        <span>{s.boxCount ? `${s.boxCount} 箱` : ''}</span>
+        <span>{s.totalQty ? `${s.totalQty} 件` : ''}</span>
+        <span>{s.totalWeight ? `${s.totalWeight} kg` : ''}</span>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- 货件表单
+
+function ShipmentForm({ initial, busy, onCancel, onSave, summaryText }: {
+  initial: Row; busy: boolean; onCancel: () => void; onSave: (d: Row) => void; summaryText: string;
+}) {
+  const [form, setForm] = useState<Row>({ ...initial });
+  const set = (k: string, v: any) => setForm(f => ({ ...f, [k]: v }));
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal ss-modal ss-modal-wide" onClick={e => e.stopPropagation()}>
+        <div className="ss-modal-head">
+          <strong>{form.id ? '编辑货件' : '新增货件'}</strong>
+          <span className="ss-spacer" />
+          <button type="button" className="btn btn-sm" onClick={onCancel}>取消</button>
+          <button type="button" className="btn btn-sm btn-primary" disabled={busy}
+            onClick={() => onSave(form)}>保存</button>
+        </div>
+        <div className="ss-form-body">
+          <label className="ss-check">
+            <input type="checkbox" checked={!!form.cancelled}
+              onChange={e => set('cancelled', e.target.checked)} /> 已取消（不参与提醒）
+          </label>
+          {FIELDS.map((f, i) => {
+            if (f.section) {
+              return <div key={'sec' + i} className="ss-form-section">{f.section}</div>;
+            }
+            const k = f.key as string;
+            const val = form[k] ?? '';
+            return (
+              <label key={k} className="ss-field">
+                <span>{f.label}{f.req && <em className="ss-req">*</em>}</span>
+                {f.textarea ? (
+                  <textarea rows={f.rows || 3} value={val} onChange={e => set(k, e.target.value)} />
+                ) : (
+                  <input type={f.type || 'text'} value={val} onChange={e => set(k, e.target.value)} />
+                )}
+              </label>
+            );
+          })}
+          {summaryText && (
+            <div className="ss-form-section">发货汇总（同发货日期的 FBA 货件，可复制）</div>
+          )}
+          {summaryText && <pre className="ss-summary-pre">{summaryText}</pre>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- 产品库
+
+function ProductsView({ products, onEdit, onNew, onDelete, busy }: {
+  products: Row[]; onEdit: (p: Row) => void; onNew: () => void;
+  onDelete: (id: string) => void; busy: boolean;
+}) {
+  return (
+    <div className="ss-products">
+      <div className="ss-section-head">
+        <h4>产品库（{products.length}）</h4>
+        <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={onNew}>+ 新增产品</button>
+      </div>
+      <div className="ss-table-wrap">
+        <table className="ss-table">
+          <thead>
+            <tr>
+              <th>产品</th><th>MSKU</th><th>英文类别</th><th>中文类别</th>
+              <th>每箱数量</th><th>单箱重量</th><th>尺寸</th><th>厂家</th><th>FNSKU</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {products.map(p => (
+              <tr key={p.id}>
+                <td>{p.product || '—'}</td>
+                <td className="ss-mono">{p.msku || '—'}</td>
+                <td>{p.categoryEn || '—'}</td>
+                <td>{p.categoryCn || '—'}</td>
+                <td>{p.qtyPerBox || '—'}</td>
+                <td>{p.singleBoxWeight || '—'}</td>
+                <td>{p.length && p.width && p.height ? `${p.length}×${p.width}×${p.height}` : '—'}</td>
+                <td>{p.supplier || '—'}</td>
+                <td className="ss-mono">{p.fnsku || '—'}</td>
+                <td>
+                  <button type="button" className="ss-link" onClick={() => onEdit(p)}>编辑</button>
+                  <button type="button" className="ss-link ss-link-danger" onClick={() => onDelete(p.id)}>删除</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!products.length && <div className="ss-empty">产品库为空</div>}
+      </div>
+    </div>
+  );
+}
+
+function ProductForm({ initial, busy, onCancel, onSave }: {
+  initial: Row; busy: boolean; onCancel: () => void; onSave: (d: Row) => void;
+}) {
+  const [form, setForm] = useState<Row>({ ...initial });
+  const set = (k: string, v: any) => setForm(f => ({ ...f, [k]: v }));
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal ss-modal" onClick={e => e.stopPropagation()}>
+        <div className="ss-modal-head">
+          <strong>{form.id ? '编辑产品' : '新增产品'}</strong>
+          <span className="ss-spacer" />
+          <button type="button" className="btn btn-sm" onClick={onCancel}>取消</button>
+          <button type="button" className="btn btn-sm btn-primary" disabled={busy}
+            onClick={() => onSave(form)}>保存</button>
+        </div>
+        <div className="ss-form-body">
+          {PRODUCT_FIELDS.map(f => (
+            <label key={f.key} className="ss-field">
+              <span>{f.label}{f.req && <em className="ss-req">*</em>}</span>
+              <input value={form[f.key] ?? ''} onChange={e => set(f.key, e.target.value)} />
+            </label>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -100,6 +100,11 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
     exports.py                  # /api/exports/*（新版后台导出任务）
     pdf.py                      # /api/pdf/*
     ai_analysis.py               # /api/ai/*
+    shipment.py                  # /api/shipment/*，货件跟踪（2026-10-19 由独立项目 shipment-tracker 迁入）：
+                                 #   货件/产品库 CRUD + 批量改 ETA + 按渠道时效自动算 ETA + JSON/Excel 导入。
+                                 #   出入参 camelCase、DB 用 snake_case（db.py 里机械互转）；
+                                 #   Excel 导入只把工作簿转成 TSV 文本，列映射解析留在前端（与原项目一致）。
+                                 #   权限 admin/root。
   rank_fetcher.py              # 关键词排名抓取器（正则解析，无 bs4 依赖）
   product_fetcher.py           # 产品详情抓取器（bs4 解析 + 反爬：会话池/令牌桶/CAPTCHA/Dog-page检测）；
                               #   含 parse_customers_say()——解析 Customers say（AI 摘要 + 各关注点计数/
@@ -173,6 +178,14 @@ src/
     table/TableView.tsx        # 数据表格视图（类 Excel）
     progress/ProgressView.tsx  # 进度总览（甘特图等）
     tweaks/TweaksPanel.tsx     # 右侧"Tweaks"调试面板（主题/布局微调，开发用）
+    shipment/
+      index.tsx                 # 业务：货件跟踪（由 shipment-tracker 迁移，单文件约 700 行）
+                                #   看板（逾期/本周/未来7天/下周核对，红黄绿左侧色条）+ 卡片 + 搜索
+                                #   + 货件表单（40 字段，物流进度 / 报关财务两段）+ 产品库
+                                #   + 批量改送达 + 按渠道时效自动算 ETA + Excel 导入预览
+                                #   ⚠️ classify/shipKind/detectStore/generateSummary 与
+                                #   原项目 app.js **逐行对齐**：判定顺序、阈值（diff<=6/13、
+                                #   逾期按 etaEndDate、本周以周日为界）都不要擅自"优化"
     tools/
       KeywordRank.tsx           # 工具：关键词排名监控
       ProductScrape.tsx         # 工具：产品采集（含详情预览弹窗 + 图片 Lightbox + ASIN搜索过滤 + 列头排序；
@@ -316,7 +329,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | POST | `/api/sif/preview` | body `{root,country,topN,withCompetitors}` 试查词根机会词+头部竞品（不落库） |
 | POST | `/api/sif/inspect` | body `{type,...}` 点查重接口，type ∈ competition·discover·root_competitors·root_trend·history·screen·asin_signals·asin_profile·asin_sales·listing_keywords·promotion·profit |
 
-路由对应的源文件：`/api/login`/`/api/logout`/`/api/me` → `routes/auth_routes.py`；`/api/products`/`/api/trash/*` → `routes/products.py`；`/api/rank/*` → `routes/rank.py`；`/api/scrape/*` → `routes/scrape.py`；`/api/review/*` → `routes/review.py`；`/api/exports/*` → `routes/exports.py`；`/api/pdf/*` → `routes/pdf.py`；`/api/ai/*` → `routes/ai_analysis.py`；`/api/sif/*` → `routes/sif_keywords.py`。
+路由对应的源文件：`/api/login`/`/api/logout`/`/api/me` → `routes/auth_routes.py`；`/api/products`/`/api/trash/*` → `routes/products.py`；`/api/rank/*` → `routes/rank.py`；`/api/scrape/*` → `routes/scrape.py`；`/api/review/*` → `routes/review.py`；`/api/exports/*` → `routes/exports.py`；`/api/pdf/*` → `routes/pdf.py`；`/api/ai/*` → `routes/ai_analysis.py`；`/api/sif/*` → `routes/sif_keywords.py`；`/api/shipment/*` → `routes/shipment.py`。
 
 ### 同步机制（详见 `docs/operations.md` 第7节）
 客户端每 4s 轮询 `version`，编辑后 600ms 防抖 PUT 带 `baseVersion`；后端乐观锁，冲突时返回服务器最新版本，客户端整体覆盖（`ProductContext.tsx` 中 `versionRef`/`syncedVersionRef` 相关逻辑）。
@@ -385,6 +398,59 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 
 - **`Sidebar.tsx` `sb-stats` 区块**：进行中/本月完成/30天到期/已逾期四项数字统计已注释，对应 `computeStats` 调用及 import 同步注释。
 - **`ProgressView.tsx` KPI**：进度总览顶部卡片中的「本月完成」「30天到期」「已逾期」三项已注释，其余（总产品/开发中/已上架/已暂停）保留。
+
+## 货件跟踪模块（`backend/routes/shipment.py` + `src/features/shipment/index.tsx`）
+
+2026-10-19 由独立 Node 项目 `../shipment-tracker` **整体迁入**，原项目已停用（目录只读保留）。
+
+**为什么要迁**：原项目是单机工具（Node + JSON 文件 + `localhost:8100`），局域网同事用不了；
+迁入后复用 fba2 的登录/权限/局域网访问。
+
+**数据**（SQLite 两张表，字段名与原 JSON 一一对应）：
+
+| 表 | 来源 | 条数 | 字段 |
+|---|---|---|---|
+| `shipments` | `data/shipments.json` | 84 | 44 个原字段 + `updated_at` |
+| `shipment_products` | `data/products.json` | 42 | 20 个原字段 + `updated_at` |
+
+- **所有列都是 TEXT**：原数据本身就是字符串（`"1500"`、`"9.83"`），不做类型转换以免丢精度
+- `cancelled` 存 0/1、接口层还原 bool；`history` 存 JSON 文本、接口层还原数组
+- camelCase(接口) ↔ snake_case(DB) 由 `db.py` 的 `_snake_key` / `_camel_key` 机械转换，
+  不维护 40+ 字段的手写映射
+
+**接口**（前缀 `/api/shipment`，权限 **admin / root**）：
+
+```
+GET/POST/PUT/DELETE  shipments
+POST  shipments/import | shipments/batch-update | shipments/auto-calc-eta
+GET/POST/PUT/DELETE  products
+POST  products/import
+POST  import/xlsx
+```
+
+**业务规则（移植自原项目，改之前先看原码）**：
+
+- 货件导入去重键 **`shipmentId|product|shipDate|warehouse`** —— 同一个 FBA 号可能含
+  多个厂家的多个产品、多个提货时间，**不能只按 FBA 号去重**
+- 产品库导入去重键 `fnsku || product`，已存在则**只补空字段**，不覆盖已有值
+- 自动算 ETA：`普船 45 / 加班 38 / 正班 36 / 空派 14` 天；
+  `etaDate = 发货日 + N`、`etaEndDate = 发货日 + N + 6`；
+  跳过：已取消 / 非 FBA 开头 / 已有 etaDate / 缺 channel 或 shipDate
+- 看板分类 `classify()`（**顺序即优先级，勿调整**）：
+  已取消 → 卫星仓(AL0) → 沃尔玛 → 已入库(有 actualDate) → 无日期 →
+  **逾期（按 `etaEndDate` 判断，送达是一个区间）** → 本周（以**周日**为界，美国周起始）→
+  未来 7 天（diff ≤ 6）→ 下周核对（diff ≤ 13）→ 在途
+- 店铺归属 `detectStore()`：产品名含「钻石画」→ 宁熙，其余 FBA → 谛听
+
+**数据导入脚本**：`scripts/import_shipment_tracker.py`
+（幂等 upsert + 逐条逐字段比对，可重复执行；WAL 模式下复制库文件要连 `-wal` 一起拷）
+
+**⚠️ 待办：Mac 定时提醒还没适配**
+原 `reminder.js` + launchd 仍读 `../shipment-tracker/data/shipments.json`，
+而该文件**已不再更新**（原项目停用）→ 提醒会一直基于旧数据。
+若要继续用每日弹窗，需把 `reminder.js` 的数据源改成调
+`http://localhost:8002/api/shipment/shipments`（用 root 账号登录拿 token），
+或改成直接读 `data/fba-data.db`。**此项未做**。
 
 ## 改前端代码的注意事项
 
