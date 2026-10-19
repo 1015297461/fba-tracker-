@@ -259,12 +259,16 @@ function ProductDetailDialog({ product, open, onClose, taskId }: ProductDetailPr
               </a>
             </div>
 
+            {/* 详情弹窗 tab 栏已整体下线（2026-10-19）：
+                Amazon 改版后评论媒体抓取失效，只剩「商品信息」一个 tab 时 tab 栏是多余的，
+                故整条隐藏、回到单页滚动。恢复时把这段和下面正文的 else 分支一起放开。
             <div className="ps-detail-tabs">
               <button type="button" className="ps-detail-tab"
                 data-active={tab === 'info'} onClick={() => setTab('info')}>商品信息</button>
               <button type="button" className="ps-detail-tab"
                 data-active={tab === 'media'} onClick={() => setTab('media')}>Customer photos and videos</button>
             </div>
+            */}
 
             <div className="ps-detail-body">
               {tab === 'info' ? (
@@ -420,7 +424,10 @@ function ProductDetailDialog({ product, open, onClose, taskId }: ProductDetailPr
               )}
               </>
               ) : (
-                <ReviewMediaPanel key={product.asin} product={product} taskId={taskId} />
+                /* 评论媒体面板已下线（2026-10-19）——Amazon 改版后抓取失效，
+                   恢复时改为：<ReviewMediaPanel key={product.asin} product={product} taskId={taskId} />
+                   （ReviewMediaPanel 组件本身保留在文件里，未删除） */
+                null
               )}
             </div>
           </div>
@@ -1505,7 +1512,7 @@ export function ProductScrape() {
                   </>
                 )}
               </div>
-              {/* 评论媒体批量预热：仅 root 可见——抓取走的是管理员本机浏览器 */}
+              {/* 评论媒体批量预热已下线（2026-10-19，Amazon 改版抓取失效）——恢复时去掉这圈注释
               {isRoot && (
                 <button
                   className="btn btn-sm"
@@ -1516,6 +1523,7 @@ export function ProductScrape() {
                   抓取评论媒体{selectedAsins.size > 0 ? `（已选 ${selectedAsins.size}）` : ''}
                 </button>
               )}
+              */}
               {/* 暂时隐藏「导出 Excel（含主图）」按钮（2026-10-15 用户要求）——恢复时去掉这圈注释
               <button
                 className="btn btn-sm"
@@ -1686,7 +1694,7 @@ export function ProductScrape() {
         )}
       </div>
 
-      {/* 批量抓取进度浮层（仅 root）：实时日志 + 停止 */}
+      {/* 批量抓取进度浮层已下线（2026-10-19，随评论媒体功能一起隐藏）——恢复时去掉这圈注释
       {isRoot && mediaPanelOpen && mediaBatch && (
         <div className="ps-media-batch">
           <div className="ps-media-batch-head">
@@ -1709,6 +1717,7 @@ export function ProductScrape() {
           </div>
         </div>
       )}
+      */}
 
       {detailOpen && (
         <ProductDetailDialog
