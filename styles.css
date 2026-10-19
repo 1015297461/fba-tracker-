@@ -3151,7 +3151,9 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
    货件跟踪（由 shipment-tracker 迁移）
    配色统一走主题变量 + color-mix，浅色/深色主题都能用
    ============================================================ */
-.ss-wrap { padding: 18px 22px 48px; }
+/* 主内容区 .main-area 是 height:100vh + overflow:hidden，所以每个 view 必须自己建立滚动容器；
+   原来只写了 padding，没有 height/overflow —— 数据一多就被裁掉且无法滚动 */
+.ss-wrap { padding: 18px 22px 48px; height: 100%; min-height: 0; overflow-y: auto; }
 .ss-topbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
 .ss-tabs { display: flex; gap: 6px; }
 .ss-tab { font: inherit; font-size: 13px; padding: 7px 14px; border: 1px solid var(--border); background: var(--card-bg); color: var(--ink-2); border-radius: var(--r-md); cursor: pointer; }
