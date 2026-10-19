@@ -646,21 +646,25 @@ export function ShipmentTracker() {
                       <span className="ss-section-n">{rows.length} 票</span>
                     </div>
                     {!folded && (
-                      sec.key === 'done' ? (
-                        <DoneMonthly rows={rows} selected={selected}
-                          onSel={toggleSel}
-                          onEdit={s => setEditing({ ...s })}
-                          onDelete={id => removeShipment(id)} />
-                      ) : (
-                        <div className="ss-cards">
-                          {rows.map(s => (
-                            <ShipCard key={s.id} s={s} selected={selected.has(s.id)}
-                              onSel={() => toggleSel(s.id)}
-                              onEdit={() => setEditing({ ...s })}
-                              onDelete={() => removeShipment(s.id)} />
-                          ))}
-                        </div>
-                      )
+                      <>
+                        {/* 筛选某个状态时，卡片上方给一张汇总表（可复制 FBA/LCL 号发给货代） */}
+                        {statusFilter && sec.key !== 'done' && <CategorySummary rows={rows} />}
+                        {sec.key === 'done' ? (
+                          <DoneMonthly rows={rows} selected={selected}
+                            onSel={toggleSel}
+                            onEdit={s => setEditing({ ...s })}
+                            onDelete={id => removeShipment(id)} />
+                        ) : (
+                          <div className="ss-cards">
+                            {rows.map(s => (
+                              <ShipCard key={s.id} s={s} selected={selected.has(s.id)}
+                                onSel={() => toggleSel(s.id)}
+                                onEdit={() => setEditing({ ...s })}
+                                onDelete={() => removeShipment(s.id)} />
+                            ))}
+                          </div>
+                        )}
+                      </>
                     )}
                   </section>
                 );
@@ -721,6 +725,87 @@ export function ShipmentTracker() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- 状态汇总表
+
+/** 筛选某个状态时，在卡片上方列出该组货件的汇总表（对齐原项目 categorySummary）。 */
+function CategorySummary({ rows }: { rows: Row[] }) {
+  const [copied, setCopied] = useState('');
+  // 与原项目一致：按发货日期倒序
+  const sorted = [...rows].sort((a, b) =>
+    String(b.shipDate || '').localeCompare(String(a.shipDate || '')));
+  const fbaList = [...new Set(sorted.map(s => s.shipmentId).filter(Boolean))] as string[];
+  const lclList = [...new Set(sorted.map(s => s.orderNo).filter(Boolean))] as string[];
+
+  const copy = async (text: string, tag: string) => {
+    let ok = false;
+    // 局域网 http 不是安全上下文 → navigator.clipboard 不可用，用隐藏 textarea 兜底
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch { ok = false; }
+    if (!ok) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+        document.body.appendChild(ta);
+        ta.focus(); ta.select();
+        ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch { ok = false; }
+    }
+    setCopied(ok ? tag : '复制失败，请手动选中');
+    setTimeout(() => setCopied(''), ok ? 1500 : 2400);
+  };
+
+  return (
+    <div className="ss-sumbox">
+      <div className="ss-sumhead">
+        <span>📋 汇总</span>
+        <span className="ss-spacer" />
+        {copied && (
+          <span className="ss-copied">
+            {copied === 'fba' ? '已复制 FBA 号' : copied === 'lcl' ? '已复制 LCL 号' : copied}
+          </span>
+        )}
+        <span className="ss-sum-n">{rows.length} 票</span>
+        <button type="button" className="btn btn-sm" disabled={!fbaList.length}
+          onClick={() => copy(fbaList.join('\n'), 'fba')}>复制 FBA 号</button>
+        <button type="button" className="btn btn-sm" disabled={!lclList.length}
+          onClick={() => copy(lclList.join('\n'), 'lcl')}>复制 LCL 号</button>
+      </div>
+      <div className="ss-sumtable-wrap">
+        <table className="ss-sumtable">
+          <thead>
+            <tr>
+              <th>FBA 号</th>
+              <th>LCL 号</th>
+              <th>发货日期</th>
+              <th>产品</th>
+              <th>当前状态</th>
+              <th>预计送达</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map(s => (
+              <tr key={s.id}>
+                <td className="ss-mono">{s.shipmentId || '—'}</td>
+                <td className="ss-mono">{s.orderNo || '—'}</td>
+                <td>{s.shipDate ? fmtShipDate(s.shipDate) : '—'}</td>
+                <td><span className="ss-sum-ell" title={s.product || ''}>{s.product || '—'}</span></td>
+                <td><span className="ss-sum-ell" title={s.progress || ''}>{s.progress || '—'}</span></td>
+                <td>{s.etaDate ? etaRange(s) : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
