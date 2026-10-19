@@ -88,7 +88,9 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
           ))}
         </div>
 
-        {/* 状态筛选只对上面三个产品视图生效 —— 收进本分组，切到其它模块时隐藏，避免"点了没反应" */}
+        {/* 状态筛选暂时下线（2026-10-19 用户反馈样式不满意，先整体注释）——恢复时去掉这圈注释
+            · filter 仍由 app.tsx 传入，默认 'all'，本块不渲染时产品列表照常显示全部
+            · 相关样式 .sb-filter / .sb-filter-group 与 PRODUCT_VIEWS 常量都保留
         {PRODUCT_VIEWS.includes(view) && (
           <div className="sb-filter-group">
             <div className="sb-filter-head">
@@ -110,6 +112,7 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
             </div>
           </div>
         )}
+        */}
       </div>
 
       <div className="sb-section">
