@@ -34,13 +34,35 @@ from .utils import _log
 # ---------------------------------------------------------------------------
 # CDP Proxy
 # ---------------------------------------------------------------------------
+# ⚠️ 2026-10-19：本模块的抓取路径已失效（Amazon 服务端改版）
+#
+# Amazon 移除了页面上的两个关键锚点：
+#   1. #cr-state-object   —— 原来从这里取 lazyWidgetCsrfToken
+#   2. cr-customer-videos —— 原来的评论媒体 lazy-widget 占位
+#
+# 实测（B0B49TY3RK / B0G6JYYML4，2026-10-19 15:00，登录态浏览器）：
+#   · 新加载的详情页 getElementById('cr-state-object') === null
+#   · HTML 中 "cr-customer-videos" 与 "lazyWidget" 均出现 0 次
+#   · 页面正文没有 "customer photos" 字样
+#   · 只剩空占位 <div data-testid="dp-reviews-btf-media-carousel-placement">，
+#     滚动到位 + 静置 20s 仍不填充
+#   · 三种 URL 变体（?language=en_US / 无参数 / ?th=1）结果一致
+#   · **改版前加载的旧标签页仍保留 cr-state-object** —— 说明是 Amazon 服务端
+#     改版，不是本地环境、登录态或参数问题
+#
+# 因此 fetch_review_media() 现在会在 PAGE_FAST_FAIL_AFTER_DONE 秒内返回
+# error="page_changed"（前端有对应文案），而不是傻等 40 秒超时。
+# 已有缓存（scrape_products.review_media 非 NULL）不受影响，仍可正常展示。
+# 要恢复抓取，需要重新适配新版媒体模块（未完成）。
+# ---------------------------------------------------------------------------
 
 PROXY_BASE = "http://127.0.0.1:3456"
 SKILL_DIR = os.path.expanduser("~/.workbuddy/skills/web-access/scripts")
 CHECK_DEPS = os.path.join(SKILL_DIR, "check-deps.mjs")
 PROXY_SCRIPT = os.path.join(SKILL_DIR, "cdp-proxy.mjs")
 
-PAGE_READY_TIMEOUT = 40      # 等待详情页出现 #cr-state-object 的上限（秒）
+PAGE_READY_TIMEOUT = 24      # 等待详情页出现 #cr-state-object 的上限（秒）
+PAGE_FAST_FAIL_AFTER_DONE = 3  # readyState=complete 后仍无锚点 -> 判定改版，立即失败
 PAGE_POLL_INTERVAL = 0.4     # 就绪轮询间隔：调小可明显减少平均等待（原来 1.0s）
 WIDGETS = [
     "cr-reviews-ai-pills-t1",
@@ -244,34 +266,64 @@ def _ensure_tab():
     return tid
 
 
+def _probe_page(tab, asin):
+    """一次 CDP 往返取三个状态：URL 命中 / 锚点存在 / readyState。
+
+    必须返回 JSON 字符串 —— _eval() 会把字符串再 json.loads 一次，
+    返回 "true|false|complete" 这种非 JSON 文本会被判成 eval_unparsable -> None。
+    """
+    js = ("JSON.stringify({u: location.href.indexOf(%s) >= 0, "
+          "s: !!document.getElementById('cr-state-object'), "
+          "r: document.readyState})") % json.dumps(asin)
+    val, _err = _eval(tab, js, timeout=10)
+    if not isinstance(val, dict):
+        return False, False, ""
+    return bool(val.get("u")), bool(val.get("s")), str(val.get("r") or "")
+
+
 def _navigate_and_wait(tab, asin, marketplace):
-    """在常驻标签里导航到目标详情页并等就绪；已经停在目标页就不再导航。"""
+    """在常驻标签里导航到目标详情页并等就绪。
+
+    返回 (ok, reason)，reason ∈ ready / page_changed / page_not_ready / navigate_failed。
+    必须同时满足「URL 已是目标 ASIN」和「cr-state-object 已渲染」——
+    只查元素会读到上一个页面的残留节点。
+
+    page_changed 是给 Amazon 改版留的快速失败通道：页面 readyState 已经是 complete，
+    但等 PAGE_FAST_FAIL_AFTER_DONE 秒仍找不到锚点 → 判定页面结构变更，
+    立即返回而不是耗满 40 秒总超时（否则用户点一次要等将近一分钟才看到失败）。
+    """
     def ready():
-        # 必须同时满足「URL 已是目标 ASIN」和「cr-state-object 已渲染」——
-        # 只查元素会读到上一个页面的残留节点
-        js = ("(location.href.indexOf(%s) >= 0 && "
-              "!!document.getElementById('cr-state-object'))" % json.dumps(asin))
-        val, _err = _eval(tab, js, timeout=15)
-        return val is True
+        url_ok, has_state, _rs = _probe_page(tab, asin)
+        return url_ok and has_state
 
     with _tab_lock:
         if _tab_state.get("asin") == asin and ready():
-            return True
+            return True, "ready"
 
     status, _text = _http(f"{PROXY_BASE}/navigate?target={urllib.parse.quote(tab)}",
                           data=_page_url(asin, marketplace).encode("utf-8"),
                           method="POST", timeout=45)
     if status != 200:
-        return False
+        return False, "navigate_failed"
 
     deadline = time.time() + PAGE_READY_TIMEOUT
+    complete_at = None
     while time.time() < deadline:
-        if ready():
+        url_ok, has_state, rs = _probe_page(tab, asin)
+        if url_ok and has_state:
             with _tab_lock:
                 _tab_state["asin"] = asin
-            return True
+            return True, "ready"
+        if rs == "complete":
+            if complete_at is None:
+                complete_at = time.time()
+            elif time.time() - complete_at >= PAGE_FAST_FAIL_AFTER_DONE:
+                _log(f"[review-media] {asin} 页面已加载但缺少 #cr-state-object，判定页面结构变更")
+                return False, "page_changed"
+        else:
+            complete_at = None
         time.sleep(PAGE_POLL_INTERVAL)
-    return False
+    return False, "page_not_ready"
 
 
 def _eval(target, expression, timeout=45):
@@ -327,8 +379,9 @@ def fetch_review_media(asin, marketplace="US"):
         return {"ok": False, "error": "open_tab_failed"}
     try:
         # 复用常驻标签：在其中导航到目标详情页（token 与 ASIN 绑定，这步省不掉）
-        if not _navigate_and_wait(tab, asin, marketplace):
-            return {"ok": False, "error": "page_not_ready"}
+        ok, reason = _navigate_and_wait(tab, asin, marketplace)
+        if not ok:
+            return {"ok": False, "error": reason}
 
         data, err = _eval(tab, _js(asin), timeout=45)
         if err or not isinstance(data, dict):

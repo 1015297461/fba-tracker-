@@ -63,6 +63,9 @@ _media_daily = {"date": "", "count": 0}
 _MEDIA_HINTS = {
     "cdp_unavailable": "评论媒体服务未就绪：请确认本机浏览器已打开、并已允许远程调试",
     "page_not_ready": "详情页加载超时，请稍后重试",
+    # 2026-10-19：Amazon 已移除 #cr-state-object 与 cr-customer-videos 懒加载 widget，
+    # 旧抓取路径整体失效，见 review_media.py 顶部说明
+    "page_changed": "Amazon 评论媒体模块已改版，当前版本抓不到（页面结构变更），需要适配新版结构",
     "open_tab_failed": "无法打开后台标签页，请确认浏览器远程调试可用",
     "bad_asin": "ASIN 格式不正确",
     "daily_limit": f"今日抓取已达上限（{MEDIA_DAILY_MAX} 个）",
