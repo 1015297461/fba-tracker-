@@ -3305,7 +3305,9 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 
 /* 卡片 */
 .ss-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
-.ss-card { background: var(--card-bg); border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: var(--r-lg); padding: 11px 13px; display: flex; flex-direction: column; gap: 6px; }
+.ss-card { background: var(--card-bg); border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: var(--r-lg); padding: 11px 13px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; transition: box-shadow .12s; }
+/* 整卡可点打开编辑：悬停给一点阴影反馈；已勾选的卡片保留蓝色高亮，不被覆盖 */
+.ss-card:not([data-selected="true"]):hover { box-shadow: var(--shadow-sm); }
 .ss-card[data-tone="bad"] { border-left-color: var(--red); }
 .ss-card[data-tone="warn"] { border-left-color: var(--orange); }
 .ss-card[data-tone="info"] { border-left-color: var(--blue); }

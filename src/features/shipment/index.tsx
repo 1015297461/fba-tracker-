@@ -1045,10 +1045,24 @@ function ShipCard({ s, selected, onSel, onEdit, onDelete }: {
   const [txt, tone] = BADGE[cls] || BADGE.none;
   const chCls = CHANNEL_CLASS[s.channel] || '';
   const dDays = deliverDays(s);          // 实际送达天数（实收 − 发货），未入库为 null
+
+  // 整卡可点打开编辑；但三件事必须让路：
+  //   ① 正在卡片内拖选文字（用户想复制 FBA 号/LCL 号）→ 不弹窗
+  //      注意要判断选区是否落在本卡片内，否则页面别处有残留选区时会误伤
+  //   ② 点在 input/button/a/label 上 → 交给元素自己处理（复选框、编辑、删除）
+  //   ③ 其余空白处 → 打开编辑
+  const onCardClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const sel = window.getSelection();
+    if (sel && sel.toString() && sel.anchorNode && e.currentTarget.contains(sel.anchorNode)) return;
+    const el = e.target as HTMLElement;
+    if (el.closest('input, button, a, label, textarea, select')) return;
+    onEdit();
+  };
+
   return (
-    <div className="ss-card" data-tone={tone} data-selected={selected}>
+    <div className="ss-card" data-tone={tone} data-selected={selected} onClick={onCardClick}>
       <div className="ss-card-top">
-        <input type="checkbox" checked={selected} onChange={onSel} />
+        <input type="checkbox" checked={selected} onChange={onSel} title="勾选后可批量改送达" />
         <span className="ss-badge" data-tone={tone}>{txt}</span>
         {s.channel && <span className={`ss-chip ${chCls}`}>{s.channel}</span>}
         {s.store && <span className="ss-chip ss-chip-store">{s.store}</span>}
