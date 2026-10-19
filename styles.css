@@ -3195,12 +3195,19 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .ss-clear:hover { background: var(--accent); color: #fff; }
 .ss-hint { font-size: 12px; color: var(--ink-3); }
 
-/* 按发货时间：左侧日期列表 + 右侧内容 */
-.ss-bydate { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 18px; align-items: start; }
-.ss-datelist { position: sticky; top: 0; max-height: calc(100vh - 220px); overflow-y: auto;
-  background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 6px; }
+/* 按发货时间：左侧日期列表 + 右侧内容
+   该视图下整页不滚动（overflow:hidden），改为「汇总框/标题固定 + 产品分组区内部滚动」 */
+.ss-wrap[data-viewmode="byDate"] { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 18px; }
+.ss-wrap[data-viewmode="byDate"] > *:not(.ss-bydate) { flex-shrink: 0; }
+
+.ss-bydate { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 18px; align-items: stretch; }
+.ss-wrap[data-viewmode="byDate"] .ss-bydate { flex: 1; min-height: 0; }
+
+.ss-datelist { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--r-lg);
+  padding: 6px; overflow-y: auto; min-height: 0; }
+.ss-wrap[data-viewmode="byDate"] .ss-datelist { height: 100%; }
 .ss-datelist-head { font-size: 11.5px; color: var(--ink-3); font-weight: 600; letter-spacing: .3px;
-  padding: 6px 9px 8px; }
+  padding: 6px 9px 8px; position: sticky; top: 0; background: var(--card-bg); z-index: 1; }
 .ss-dateitem { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent;
   font: inherit; font-size: 13px; color: var(--ink-2); padding: 7px 9px; border-radius: var(--r-sm);
   cursor: pointer; text-align: left; }
@@ -3212,9 +3219,14 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
   border: 1px solid var(--border); border-radius: 20px; padding: 0 7px; }
 .ss-dateitem[data-active="true"] .ss-dateitem-n { color: var(--accent); border-color: currentColor; background: transparent; }
 
-.ss-bydate-main { min-width: 0; }
-.ss-date-head { display: flex; align-items: center; gap: 10px; margin: 16px 0 10px; }
+.ss-bydate-main { min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.ss-bydate-main > .ss-summary-box,
+.ss-bydate-main > .ss-date-head { flex-shrink: 0; }
+.ss-date-head { display: flex; align-items: center; gap: 10px; margin: 14px 0 10px; }
 .ss-date-head h4 { font-size: 14px; margin: 0; display: flex; align-items: center; gap: 8px; }
+
+/* 产品分组滚动区（固定高度 = 剩余空间） */
+.ss-prodlist { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; }
 
 /* 发货汇总框 */
 .ss-summary-box { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 11px 13px; }

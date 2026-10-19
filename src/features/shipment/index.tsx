@@ -182,10 +182,11 @@ function fmtShort(d?: string): string {
   const x = parseDate(d);
   return x ? `${x.getMonth() + 1}/${x.getDate()}` : '';
 }
-// 2026-10-25 → 10.25（原项目 fmtShipDate 的显示格式）
+// 2026-10-25 → 2026.10.25（发货日期带年；月日补零，列表左对齐等宽更整齐）
 function fmtShipDate(d?: string): string {
-  const m = String(d || '').match(/^\d{4}-(\d{1,2})-(\d{1,2})$/);
-  return m ? `${Number(m[1])}.${Number(m[2])}` : String(d || '');
+  const m = String(d || '').match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!m) return String(d || '');
+  return `${m[1]}.${String(m[2]).padStart(2, '0')}.${String(m[3]).padStart(2, '0')}`;
 }
 const num = (n: any): number => Number((Number(n) || 0).toFixed(2));
 
@@ -499,7 +500,7 @@ export function ShipmentTracker() {
   };
 
   return (
-    <div className="ss-wrap">
+    <div className="ss-wrap" data-viewmode={tab === 'dashboard' ? viewMode : 'products'}>
       <div className="ss-topbar">
         <div className="ss-tabs">
           <button type="button" className="ss-tab" data-active={tab === 'dashboard'} onClick={() => setTab('dashboard')}>
@@ -806,36 +807,39 @@ function ByDateView({
           )}
         </div>
 
-        {prodGroups.map(([p, plist]) => {
-          const isCollapsed = collapsed.has(p);
-          const subFba = plist.filter(s => shipKind(s) === 'fba').map(s => s.id);
-          return (
-            <div key={p} className="ss-prodgroup" data-collapsed={isCollapsed}>
-              <div className="ss-prodhead" onClick={() => onToggleProduct(p)}>
-                <span className="ss-prodhead-arrow">{isCollapsed ? '▸' : '▾'}</span>
-                <span className="ss-prodhead-name">{p}</span>
-                <span className="ss-prodhead-n">{plist.length}</span>
-                {subFba.length > 0 && (
-                  <button type="button" className="btn btn-sm" onClick={e => { e.stopPropagation(); onBatchEta(subFba); }}>
-                    改送达
-                  </button>
+        {/* 产品分组：固定区域内滚动（汇总框与标题常驻可见） */}
+        <div className="ss-prodlist">
+          {prodGroups.map(([p, plist]) => {
+            const isCollapsed = collapsed.has(p);
+            const subFba = plist.filter(s => shipKind(s) === 'fba').map(s => s.id);
+            return (
+              <div key={p} className="ss-prodgroup" data-collapsed={isCollapsed}>
+                <div className="ss-prodhead" onClick={() => onToggleProduct(p)}>
+                  <span className="ss-prodhead-arrow">{isCollapsed ? '▸' : '▾'}</span>
+                  <span className="ss-prodhead-name">{p}</span>
+                  <span className="ss-prodhead-n">{plist.length}</span>
+                  {subFba.length > 0 && (
+                    <button type="button" className="btn btn-sm" onClick={e => { e.stopPropagation(); onBatchEta(subFba); }}>
+                      改送达
+                    </button>
+                  )}
+                </div>
+                {!isCollapsed && (
+                  <div className="ss-cards">
+                    {plist.map(s => (
+                      <ShipCard key={s.id} s={s} selected={selected.has(s.id)}
+                        onSel={() => onSel(s.id)}
+                        onEdit={() => onEdit(s)}
+                        onDelete={() => onDelete(s.id)} />
+                    ))}
+                  </div>
                 )}
               </div>
-              {!isCollapsed && (
-                <div className="ss-cards">
-                  {plist.map(s => (
-                    <ShipCard key={s.id} s={s} selected={selected.has(s.id)}
-                      onSel={() => onSel(s.id)}
-                      onEdit={() => onEdit(s)}
-                      onDelete={() => onDelete(s.id)} />
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
+            );
+          })}
 
-        {!list.length && <div className="ss-empty">该发货时间下没有货件</div>}
+          {!list.length && <div className="ss-empty">该发货时间下没有货件</div>}
+        </div>
       </div>
     </div>
   );
