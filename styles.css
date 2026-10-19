@@ -3169,6 +3169,31 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .ss-tab-n { font-size: 11px; opacity: .72; margin-left: 4px; }
 .ss-actions { display: flex; gap: 8px; align-items: center; margin-left: auto; flex-wrap: wrap; }
 .ss-search { font: inherit; font-size: 12.5px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--card-bg); color: var(--ink); width: 250px; }
+/* 搜索框清空按钮（对齐原项目搜索框右侧的 ×） */
+.ss-search-wrap { position: relative; display: inline-flex; align-items: center; }
+.ss-search-wrap .ss-search { padding-right: 26px; }
+.ss-search-x { position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
+  border: 0; background: transparent; color: var(--ink-4); cursor: pointer;
+  font-size: 11px; line-height: 1; padding: 3px 4px; border-radius: var(--r-sm); }
+.ss-search-x:hover { color: var(--ink); background: var(--bg-2); }
+
+/* 编辑货件：右侧抽屉式面板（对齐原项目 detail-pane 的形态） */
+.ss-drawer-backdrop { position: fixed; inset: 0; z-index: 100; display: flex; justify-content: flex-end;
+  background: rgba(0, 0, 0, 0.26); }
+.ss-drawer { width: min(520px, 100vw); height: 100%; display: flex; flex-direction: column;
+  background: var(--bg-2); border-left: 1px solid var(--border);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.14); animation: ss-drawer-in 0.16s ease-out; }
+@keyframes ss-drawer-in { from { transform: translateX(28px); opacity: 0.5; } to { transform: none; opacity: 1; } }
+.ss-drawer-head { display: flex; align-items: center; gap: 9px; flex-shrink: 0;
+  padding: 13px 16px; border-bottom: 1px solid var(--border); background: var(--card-bg); }
+.ss-drawer-sub { font-size: 11.5px; color: var(--ink-3); font-family: var(--font-mono); }
+.ss-drawer-x { border: 0; background: transparent; color: var(--ink-3); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 4px 6px; border-radius: var(--r-sm); }
+.ss-drawer-x:hover { color: var(--ink); background: var(--bg-2); }
+.ss-drawer .ss-form-body { flex: 1; min-height: 0; overflow-y: auto; }
+.ss-drawer .ss-summary-pre { grid-column: 1 / -1; margin: 0; }
+.ss-drawer-foot { display: flex; justify-content: flex-end; gap: 8px; flex-shrink: 0;
+  padding: 11px 16px; border-top: 1px solid var(--border); background: var(--card-bg); }
 .ss-search:focus { outline: none; border-color: var(--blue); }
 
 .ss-alert { padding: 8px 12px; border-radius: var(--r-md); font-size: 12.5px; margin-bottom: 12px; cursor: pointer; }

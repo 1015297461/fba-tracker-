@@ -543,8 +543,14 @@ export function ShipmentTracker() {
           </button>
         </div>
         <div className="ss-actions">
-          <input className="ss-search" placeholder="搜索货件号 / 产品 / LCL / 厂家…" value={q}
-            onChange={e => setQ(e.target.value)} />
+          <div className="ss-search-wrap">
+            <input className="ss-search" placeholder="搜索货件号 / 产品 / LCL / 厂家…" value={q}
+              onChange={e => setQ(e.target.value)} />
+            {q && (
+              <button type="button" className="ss-search-x" title="清空搜索"
+                onClick={() => setQ('')}>✕</button>
+            )}
+          </div>
           {selected.size > 0 && (
             <button type="button" className="btn btn-sm" disabled={busy} onClick={() => batchEta()}>
               批量改送达（{selected.size}）
@@ -1115,14 +1121,13 @@ function ShipmentForm({ initial, busy, onCancel, onSave, summaryText }: {
   const [form, setForm] = useState<Row>({ ...initial });
   const set = (k: string, v: any) => setForm(f => ({ ...f, [k]: v }));
   return (
-    <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal ss-modal ss-modal-wide" onClick={e => e.stopPropagation()}>
-        <div className="ss-modal-head">
+    <div className="ss-drawer-backdrop" onClick={onCancel}>
+      <aside className="ss-drawer" onClick={e => e.stopPropagation()}>
+        <div className="ss-drawer-head">
           <strong>{form.id ? '编辑货件' : '新增货件'}</strong>
+          {form.shipmentId && <span className="ss-drawer-sub">{form.shipmentId}</span>}
           <span className="ss-spacer" />
-          <button type="button" className="btn btn-sm" onClick={onCancel}>取消</button>
-          <button type="button" className="btn btn-sm btn-primary" disabled={busy}
-            onClick={() => onSave(form)}>保存</button>
+          <button type="button" className="ss-drawer-x" title="关闭" onClick={onCancel}>✕</button>
         </div>
         <div className="ss-form-body">
           <label className="ss-check">
@@ -1151,7 +1156,12 @@ function ShipmentForm({ initial, busy, onCancel, onSave, summaryText }: {
           )}
           {summaryText && <pre className="ss-summary-pre">{summaryText}</pre>}
         </div>
-      </div>
+        <div className="ss-drawer-foot">
+          <button type="button" className="btn btn-sm" onClick={onCancel}>取消</button>
+          <button type="button" className="btn btn-sm btn-primary" disabled={busy}
+            onClick={() => onSave(form)}>保存</button>
+        </div>
+      </aside>
     </div>
   );
 }
