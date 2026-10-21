@@ -281,9 +281,26 @@ function toCsv(name: string, rows: any[]) {
 
 interface Series { name: string; color: string; values: (number | null)[]; negative?: boolean }
 
-function LineChart({ dates, series, height = 200, money = false }:
+// 导出给「AI 分析 → 流量分析」复用（同一个打包产物，样式类共用 sif-chart）
+export function LineChart({ dates, series, height = 200, money = false }:
   { dates: string[]; series: Series[]; height?: number; money?: boolean }) {
   const [hov, setHov] = useState<number | null>(null);
+  // 宽度自适应：viewBox 必须等于容器实际宽度，否则 SVG 等比缩放后左右留白，
+  // 悬浮时按容器宽度算出的索引会和真实坐标错位（在窄卡片里尤其明显）。
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [wrapW, setWrapW] = useState(900);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const measure = () => {
+      const w = Math.round(el.clientWidth || 0);
+      if (w > 0) setWrapW(Math.max(320, w));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const lines = useMemo(() => series.map(s => ({
     ...s,
     values: s.values.map(v => (s.negative && v !== null && v !== undefined ? -v : v)) as (number | null)[],
@@ -292,7 +309,7 @@ function LineChart({ dates, series, height = 200, money = false }:
   if (dates.length < 2 || valid.length < 2) {
     return <div className="sif-chart-empty">数据不足（至少需要 2 天，随每日抓取自动累积）</div>;
   }
-  const W = 900, H = height, PL = 64, PR = 16, PT = 14, PB = 24;
+  const W = wrapW, H = height, PL = 64, PR = 16, PT = 14, PB = 24;
   const n = dates.length;
   let min = Math.min(...valid), max = Math.max(...valid);
   if (min === max) { min -= 1; max += 1; }
@@ -310,7 +327,7 @@ function LineChart({ dates, series, height = 200, money = false }:
     setHov(Math.max(0, Math.min(n - 1, i)));
   }
   return (
-    <div className="sif-chart-wrap" onMouseMove={onMove} onMouseLeave={() => setHov(null)}>
+    <div className="sif-chart-wrap" ref={wrapRef} onMouseMove={onMove} onMouseLeave={() => setHov(null)}>
       <svg className="sif-chart" viewBox={`0 0 ${W} ${H}`} style={{ height: H }}>
         {[0, 1, 2, 3, 4].map(k => {
           const v = min + ((max - min) * k) / 4;
@@ -354,7 +371,7 @@ function LineChart({ dates, series, height = 200, money = false }:
         ))}
       </div>
       {hov !== null && (
-        <div className="sif-chart-tip" style={{ left: `${Math.min(Math.max((x(hov) / W) * 100, 10), 90)}%`, top: 16 }}>
+        <div className="sif-chart-tip" style={{ left: `${Math.min(Math.max((x(hov) / W) * 100, 12), 88)}%`, top: 6 }}>
           <div className="sif-tip-date">{dates[hov]}</div>
           {lines.map((s, i) => {
             const raw = s.negative && s.values[hov] != null ? -(s.values[hov] as number) : s.values[hov];

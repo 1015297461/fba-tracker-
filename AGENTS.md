@@ -139,6 +139,12 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   密钥读环境变量 SIF_MCP_KEY 或 data/sif-config.json，见"SIF 爆品关键词监控模块"一节）
   sif_signals.py               # SIF 信号引擎（纯本地计算、不消耗 SIF 配额）：读已落库的日快照算出关键词异动与
                               #   ASIN 爆品信号并写 sif_signals；全部阈值取自 sif_settings.thresholds，前端设置页可改
+  traffic_compare.py           # AI 流量分析的「取数与指标层」：自身流量结构/趋势/变体/词覆盖 + 竞品自动推荐
+                              #   + 同口径对比指标，产出 data/ai-traffic/<id>.json 供 AI 只做解释（见 AI分析模块）
+  traffic_report.py            # 流量分析的「报告层」：把 data.json 裁成精简数据包（约 2.4KB）+ 红线 prompt
+                              #   → 调模型 → 输出 Markdown，存 data/traffic-reports/<id>.md
+  llm_client.py                # 通用模型调用（OpenAI 兼容，默认 DeepSeek）：读 data/ai-config.json，
+                              #   零第三方依赖（urllib）。换供应商只改配置，不动代码
   pdf_splitter.py              # PDF 拆分工具后端逻辑（依赖 pypdf，见 requirements.txt；
                               #   TMP_DIR 锚定在 PROJECT_ROOT/data/pdf_tmp，不是 backend/ 自己的目录）
 
@@ -320,6 +326,10 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | GET | `/api/ai/file?taskId=&name=&mode=inline\|download` | 读取AI分析产出文件；**不做 Bearer 头校验**（iframe/下载链接等浏览器原生导航不带自定义头，和 `/api/pdf/download` 一致），靠不可猜测的 taskId + 该任务的文件名白名单做访问控制 |
 | POST | `/api/ai/login` | body `{skillId}`，后台 fire-and-forget 跑一次 `amz_login.py`（本机弹出有头浏览器，人工登录一次即可，最长等5分钟），按 `(skillId, username)` 去重防止重复点击弹多个窗口 |
 | POST | `/api/ai/cancel` | body `{id}`，终止一个 `pending`/`running` 的AI分析任务（不可恢复）；`pending` 直接改状态，`running` 调 `AiAnalysisWorker.cancel()` 终止子进程 |
+| POST | `/api/ai/traffic/preview` | **流量分析取数预览**，body `{asin, periodType?, periodValue?, competitorAsins?, autoCompetitors?}`；同步调 SIF（约 18 次调用/9 秒）算好指标并落盘 `data/ai-traffic/<datasetId>.json`，返回 `{datasetId, data}`。**不创建 AI 任务、不产生 AI 费用**，供用户先确认数据与竞品选择。周期由 `normalize_period()` 归一化（见下），`competitorAsins` 为空且 `autoCompetitors!==false` 时走自动推荐（自身 Top 3 流量词 → 词根头部竞品 → 同类目/价格带过滤）。**不限角色**，任何登录用户可调 |
+| GET | `/api/ai/traffic/llm` | 模型配置摘要 `{configured, provider, base_url, model, key_hint}`（**不含 key**），前端据此决定「生成报告」按钮是否可用 |
+| POST | `/api/ai/traffic/report` | 生成 Markdown 报告，body `{datasetId, force?}`；**同步**调模型（DeepSeek 约 30~90 秒），返回 `{markdown, meta, cached}`。`force=false` 命中已生成文件时直接返回。错误码：`400 not_configured` / `404` 数据集不存在 / `429 rate_limit` / `502` 鉴权/网络/余额。**不限角色** |
+| GET | `/api/ai/traffic/report?datasetId=` | 读取已生成的 Markdown 报告（不存在返回 404） |
 | GET/POST/PUT/DELETE | `/api/sif/tasks` | SIF 爆品监控任务：列表/创建/更新/删除（删除连带清空该任务的快照、ASIN 池、日数据、信号与运行日志） |
 | GET | `/api/sif/board?taskId=&days=&date=` | 一次拉齐看板：任务列表 + 概览 + 当日关键词榜（含日环比/7日环比/画像/近7日 spark）+ 爆品榜（含 BSR/价格/月销环比、statDate）+ 信号 + 运行日志 + 可选日期 + 设置 |
 | POST | `/api/sif/run` | body `{id}`，立即运行一次（后台线程不阻塞；每日层必跑，每周层满 7 天附带；同任务运行中去重） |
@@ -352,6 +362,58 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 - **登录态自愈**：`POST /api/ai/run` 建任务前先用 `_check_login_state()`（逻辑照抄 `amz_alexa.py` 的 `check_state_validity()`）检查登录态，缺失/过期时不建任务、返回 `{code: "login_required"}`，前端展示专门的"去登录"状态块（调 `/api/ai/login`），而不是任由无人值守的 `Codex -p` 子进程自己决定要不要交互登录（`build_prompt` 里也显式告诉 Codex 不要在这个场景下自己跑 `amz_login.py`，作为预检查之外的兜底）。
 - **终止**：`_run_job` 用 `subprocess.Popen`（而非 `subprocess.run`）保留进程句柄，存进 `self._procs`；`cancel(task_id)` 调 `proc.terminate()` 并记入 `self._cancelled`，`_run_job` 收尾时按这个集合区分「用户终止」和「正常失败」两种终态，不可恢复（没有暂停/继续——活跃的 Playwright 会话/网络连接没法被操作系统级暂停后干净恢复，做不到）。
 - **root 专属**：目前"AI分析"整个功能只对 `role: "root"` 的账号开放（`AuthManager._ensure_default_users()` 幂等补充一个默认 `root` 账号，密码见 `data/fba-users.json` 或找部署者，不写进代码仓库文档；不影响已有的 `admin`/`editor`）。所有 `/api/ai/*` 路由（`/api/ai/file` 除外——它靠不可猜测的 taskId 做访问控制，不能挂 Bearer 校验）在登录校验之后都加了 `role != "root"` 时返回 403 的强制校验，前端 Sidebar/app.tsx/TweaksPanel 里的隐藏只是体验层面，真正的门禁在后端。
+
+#### 流量分析（`traffic-compare`）：Python 算数，AI 只写话
+
+和 `cosmo-diagnose`「让 AI 自己调 MCP」不同，流量分析是**两段式**：
+
+1. **取数预览**（`POST /api/ai/traffic/preview` → `traffic_compare.preview()`）：Python 调 SIF 把数据取全、把指标算死，落盘 `data/ai-traffic/<datasetId>.json`，前端画图给用户确认。此阶段**不花 AI 费用**。
+2. **生成分析**（待接入，复用 `datasetId`）：`claude -p` 只读这份 data.json 做归因与写建议，**不允许自己重算指标**。
+
+这么设计的原因：1 自身 + 5 竞品 ≈ 22 次工具调用，让 AI 自己调既慢又贵；且原始 JSON 进上下文后，AI 容易把「父体聚合分」和「子体明细」混着比，结论不可复现。指标算在代码里，才能做到「报告里每个数字都能复算」。
+
+**口径红线（已写进 `traffic_compare.py` 的模块 docstring 与 `meta.metric_notes`）**：
+
+- SIF 的 `score` 是**无量纲相对分**，只能讲占比/倍数/涨跌，不得换算成 UV 或绝对流量。
+- `overview.ad.<channel>.ratio` 是**占广告**的比例，不是占总量；占总量需 `ad.ratio × channel.ratio`，代码里分别命名为 `share_of_ad` / `share_of_total`。
+- 自身与全部竞品必须同 `listingSearch`（默认 `true` = 父体+全子体聚合）、同时间窗。
+- `latest_point_complete=false` 时最后一天不参与趋势与环比（否则会误报「今天暴跌」）。
+- 渠道/变体缺失 = 无数据，**不补 0、不进分母**。
+- 竞品可比性用 `category_id` 路径前缀判断（实测 `category_name` 层级不统一：自身 `Baby`、竞品 `Baby Burp Cloths`，直接字符串相等会误判跨类目）。
+
+**竞品自动推荐**：自身 Top 3 流量词（按 `traffic_share`）→ `market_get_keyword_root_competitors` → 按命中词数/覆盖搜索量聚合 → 排除自身与同品牌 → `market_get_asin_profile` 补价格/类目并标注「跨类目 / 价差 >50%」。**warnings 只做标注不做排除**（曾因把 warnings 当过滤器导致候选全被滤光、竞品数为 0）。
+
+**时间维度归一化（`normalize_period()`，所有时间入参的唯一入口）**
+
+SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的报错、有的静默空数据），因此前端不直接拼参数，统一交给 `normalize_period()` 纠正并在 `meta.period_notes` 里说明：
+
+| periodType | periodValue 合法值 | 实测行为（2026-10-21） |
+|---|---|---|
+| `latelyDay` | `'7'` / `'30'` | 传 14/45/90 直接「参数错误」→ 收敛到最近档位并提示 |
+| `week` | 该周**周日**日期 `'2026-10-11'` | 传周三**不报错**，返回 `total=None`（静默空数据）→ 自动对齐到周日 |
+| `month` | 月初 `'2026-10-01'`（`'2026-10'` 也接受） | 正常 |
+
+- 未指定周/月时默认取**上一个完整周/上个月**（当周当月因 T+1 延迟不完整，会额外提示）。
+- 前端 `AiAnalyze.tsx` 里同款对齐逻辑（`weekSundayOf()`）用于输入框旁的实时预览，后端仍会再校验一次，双保险。
+- 趋势接口走 `beginDate`/`endDate`（周/月）或 `lastDays`（近 N 天），保证概览/结构/词覆盖/趋势四个接口取的是**同一段时间**。
+
+**权限**：`routes/ai_analysis.py` 的 `PUBLIC_SKILLS = {"traffic-compare"}` 里的技能不挂 root 门禁（只用 SIF 公开数据、不碰 Amazon 登录态与本机文件），其余技能仍限 root；`/api/ai/tasks` 不带 `skillId` 时仍只给 root。前端 `AI_SKILLS` 用 `rootOnly` 标记，`visibleAiSkills(isRoot)` 统一算可见列表，Sidebar / app.tsx 视图路由 / Tweaks 下拉三处都从它派生。
+
+**报告层（`traffic_report.py` + `llm_client.py`）：直接调模型接口，不走 `claude -p`**
+
+流量分析只需要「读 JSON、写 Markdown」，不需要 agent 能力（不开浏览器、不调 MCP），所以**不用 claude 子进程**：
+
+- **配置**：`data/ai-config.json`（`{provider, base_url, api_key, model, temperature, max_tokens, timeout}`，data/ 已 gitignore）。默认 DeepSeek，任何 OpenAI 兼容服务都能用（换 `base_url` + `model` 即可）。环境变量 `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` 可覆盖。配置缓存 30 秒，改完不用重启。
+- **先裁剪再喂**：data.json 约 76KB，整份塞进模型既贵又容易抓错重点。`build_brief()` 压成约 2.4KB 的「精简化验单」，**所有比例已乘 100 并改成 `_pct` 字段**，模型只负责抄，不负责换算。
+- **红线写在 system prompt**：只准引用不给推算、不许把相对分换算成 UV/曝光、不许编因果、不许说「掉出前三页」、BSR 改善率已取正。
+- **输出 Markdown**（不是 HTML）：页面用现成的 `marked` 渲染，省 token 且不会跑版。落盘 `data/traffic-reports/<datasetId>.md` + 同名 `.json`（模型/耗时/token 元数据）。
+- **渲染前净化**：模型输出属于半可信内容，前端 `sanitizeHtml()` 会剥掉 `<script>` / `<iframe>` / `on*` 事件属性再塞进 `dangerouslySetInnerHTML`。
+- **成本参考**：一次生成约 2700 prompt token + 4200 completion token（其中约 2500 是思考），DeepSeek 约几分钱。
+- **推理型模型要留够输出额度**：`deepseek-flash` / `*-reasoner` 会先返回 `reasoning_content`（思考）再给 `content`（正文）。`max_tokens` 太小时 token 全被思考吃掉，`content` 为空且 `finish_reason=length` —— 这种"看着成功其实空"最容易误判成配置错。`llm_client.chat()` 已识别该情况并提示调大 `max_tokens`，默认值因此设为 8000（思考 + 2000 字正文）。
+
+**已知坑**：`sif_fetcher.asin_listing_keywords()` 曾把返回键误写成 `data.get("list")`（真实键是 `asins`），导致该函数恒返回空列表，2026-10-21 实测修正；同时补齐了 `listing_traffic_overview()` / `listing_traffic_structure()`（后者按 `chars.dims[i]` 与 `chars.nfs[i]/ads[i]/...` 同下标配对，调用方不会错位）和 `asin_traffic_trend_full()`（返回 `latest_point_date` / `latest_point_complete`，并支持 `begin_date`/`end_date`）。
+
+**限流**：SIF 有 **QPM 40/60秒** 限制。一次完整取数约 18 次调用，正常单次没问题，但连续快速点两次预览会撞「当期订阅QPM限制已达上限(40/40)」。竞品属性已改为批量取（省 4 次），其余不再激进优化；错误信息原样透传给前端。
 
 ### SIF 爆品关键词监控模块（`backend/sif_fetcher.py` 抓取器 + `backend/sif_signals.py` 信号引擎 + `backend/routes/sif_keywords.py` 路由/调度/编排 + `SifKeyword.tsx` 前端视图）
 

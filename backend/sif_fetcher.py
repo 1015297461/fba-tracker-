@@ -342,9 +342,32 @@ def asin_traffic_trend(asin: str, country: str = "US", last_days: int = 30) -> l
     [{date, price, buybox_price, bsr, sub_bsr, star, review, seller, bought_month,
       total_score, nf_score, ad_score, sp_score, sb_score, sbv_score, promotion, coupon}]
     注意：仅 granularity=day 返回价格/BSR/评价等字段。"""
-    data = call_tool("ops_get_asin_traffic_trend", {
-        "asin": asin, "country": country, "granularity": "day", "lastDays": int(last_days),
-    })
+    return asin_traffic_trend_full(asin, country, last_days)["points"]
+
+
+def asin_traffic_trend_full(asin: str, country: str = "US", last_days: int = 30,
+                            listing_search: bool = True,
+                            begin_date: str = None, end_date: str = None) -> dict:
+    """同 asin_traffic_trend，但额外返回序列元信息，供「趋势结论」做守卫：
+    {points, dates, latest_point_date, latest_point_complete, notice}
+
+    latest_point_complete=False 表示最后一天仍在采集/计算中 —— 做趋势判断、
+    环比或「最近一天涨跌」时必须排除该点，否则会误报「今天暴跌/暴涨」。
+
+    时间窗口二选一：传 begin_date（可选 end_date）走精确区间，否则用 last_days。
+    与 SIF 语义一致：beginDate/endDate 为 yyyy-MM-dd 且含当日。
+    """
+    args = {
+        "asin": asin, "country": country, "granularity": "day",
+        "listingSearch": bool(listing_search),
+    }
+    if begin_date:
+        args["beginDate"] = str(begin_date)[:10]
+        if end_date:
+            args["endDate"] = str(end_date)[:10]
+    else:
+        args["lastDays"] = int(last_days)
+    data = call_tool("ops_get_asin_traffic_trend", args)
     dates = data.get("dates") or []
 
     def arr(name):
@@ -386,7 +409,13 @@ def asin_traffic_trend(asin: str, country: str = "US", last_days: int = 30) -> l
             "promotion": (promo[i] if i < len(promo) else None),
             "coupon": (coupon[i] if i < len(coupon) else None),
         })
-    return points
+    return {
+        "points": points,
+        "dates": dates,
+        "latest_point_date": data.get("latest_point_date"),
+        "latest_point_complete": data.get("latest_point_complete"),
+        "notice": data.get("data_notice"),
+    }
 
 
 def asin_profiles(asins: list, country: str = "US") -> list:
@@ -446,26 +475,176 @@ def asin_sales_list(asins: list, country: str = "US", dimension: str = "asin",
 
 
 def asin_listing_keywords(asin: str, country: str = "US", recent_days: int = 7,
-                          dimension: str = "asin") -> list:
-    """Listing 各变体的关键词覆盖量（自然 / SP / SB / SBV 分渠道）。"""
+                          dimension: str = "asin",
+                          time_piece_type: str = None, time_piece_value: str = None) -> list:
+    """Listing 各变体的关键词覆盖量（自然 / SP / SB / SBV 分渠道）。
+
+    周期二选一：传 time_piece_type + time_piece_value 走精确周期；
+    只传 recent_days 时按 SIF 的 latelyDay 约束收敛到 7 / 30。
+
+    注意：SIF 返回的顶层键是 `asins`（不是 `list`），历史上这里误写为 `list`
+    导致恒返回空列表 —— 2026-10-21 实测修正。字段含义：
+      · `total`  该变体覆盖的总词数（不是行数）
+      · `brand`  是 **SB 广告词数**，不是品牌名；品牌名在 `brand_name`
+    """
+    if time_piece_type and time_piece_value:
+        tp, tv = time_piece_type, str(time_piece_value)
+    else:
+        tp, tv = _days_to_piece(recent_days)
     data = call_tool("ops_get_listing_keyword_distribution", {
-        "asin": asin, "country": country, "timePieceType": "latelyDay",
-        "timePieceValue": str(int(recent_days)), "dimension": dimension, "pageSize": 100,
+        "asin": asin, "country": country, "timePieceType": tp,
+        "timePieceValue": tv, "dimension": dimension, "pageSize": 100,
     })
     out = []
-    for a in data.get("list") or []:
+    for a in data.get("asins") or []:
         out.append({
             "asin": _clean(a.get("asin", "")),
-            "dimensionValue": a.get("dimensionValue"),
+            "features": a.get("features") or [],
+            "brand_name": a.get("brandName"),
+            "price": _num(a.get("price")),
+            "rating_num": _num(a.get("ratingNum")),
+            "star": _num(a.get("star")),
+            "is_best_seller": bool(a.get("isBestSeller")),
+            "first_available_day": a.get("firstAvailableDay"),
+            "dimensionValue": a.get("dimension"),
             "total": _num(a.get("total")),
             "natural": _num(a.get("natural")),
             "ad": _num(a.get("ad")),
             "sp": _num(a.get("sp")),
+            "sp_rec": _num(a.get("spRec")),
             "rec": _num(a.get("rec")),
             "brand": _num(a.get("brand")),
             "video": _num(a.get("vedio")),
+            "ac": _num(a.get("ac")),
         })
     return out
+
+
+def _days_to_piece(days) -> tuple:
+    """把「天数」收敛成 SIF 合法的 latelyDay 取值。
+
+    实测（2026-10-21）：`ops_get_listing_traffic_*` 的 timePieceValue 在
+    latelyDay 下**只接受 '7' / '30'**，传 14/45/90 会直接返回「参数错误」。
+    所以这里做收敛而不是透传，避免调用方传了别的天数就整条链路报错。
+    """
+    try:
+        d = int(days or 7)
+    except (TypeError, ValueError):
+        d = 7
+    return "latelyDay", ("30" if d > 7 else "7")
+
+
+def listing_traffic_overview(asin: str, country: str = "US",
+                             time_piece_type: str = "latelyDay",
+                             time_piece_value: str = "7",
+                             listing_search: bool = True) -> dict:
+    """Listing 流量构成（指定周期快照）。
+
+    time_piece_type / time_piece_value 必须与 SIF 要求严格一致，否则不是报错就是
+    静默空数据（实测 week 传非周日会返回 total=None 而不报错）：
+      · latelyDay → '7' 或 '30'
+      · week      → 该周周日日期，如 '2026-10-18'（SIF 以周日为每周第一天）
+      · month     → 月份首日，如 '2026-10-01'
+    归一化由 `traffic_compare.normalize_period()` 统一负责，调用方不要自己拼。
+
+    返回 {total, nf, ad, channels, recommend, notice}：
+      · nf / ad 各为 {name, score, ratio}，ratio 是占 total 的比例（0~1）
+      · channels 是广告内部按 SP(常规) / SP(推荐) / SB / SBV 的拆解
+      · recommend 是「推荐专栏来源分布」（如 Trending now / 4 stars and above），
+        **键名动态，必须遍历，不可假设固定渠道**
+    """
+    data = call_tool("ops_get_listing_traffic_overview", {
+        "asin": asin, "country": country,
+        "timePieceType": time_piece_type, "timePieceValue": str(time_piece_value),
+        "isListingSearch": bool(listing_search),
+    })
+    ov = data.get("overview") or {}
+
+    def node(d):
+        d = d or {}
+        return {"name": d.get("name"), "score": _num(d.get("score")), "ratio": _num(d.get("ratio"))}
+
+    ad_raw = data.get("ad") or {}
+    channels = {}
+    for key, label in (("sp", "SP(常规)"), ("recommend", "SP(推荐)"), ("sb", "SB"), ("sbv", "SBV")):
+        n = node(ad_raw.get(key))
+        if n["score"] is None and n["ratio"] is None:
+            continue   # 该渠道无数据，不补 0
+        channels[key] = {"name": n["name"] or label, "score": n["score"], "ratio": n["ratio"]}
+
+    rec = []
+    for k, v in (data.get("recommend") or {}).items():
+        n = node(v)
+        rec.append({"key": k, "name": n["name"] or k, "score": n["score"], "ratio": n["ratio"]})
+    rec.sort(key=lambda x: -(x["score"] or 0))
+
+    return {
+        "total": _num(data.get("total")),
+        "nf": node(ov.get("nf")),
+        "ad": node(ov.get("ad")),
+        "channels": channels,
+        "recommend": rec,
+        "notice": data.get("data_notice"),
+    }
+
+
+def listing_traffic_structure(asin: str, country: str = "US",
+                              time_piece_type: str = "latelyDay",
+                              time_piece_value: str = "7",
+                              dimension: str = "asin", page_size: int = 100) -> dict:
+    """各变体的流量结构拆解（周期参数约束同 listing_traffic_overview）。
+
+    SIF 返回的是**多条平行数组**：`chars.dims[i]` 与 `chars.nfs[i]/ads[i]/sps[i]/...`
+    同下标即同一变体，这里按配对标好再返回，避免调用方自己错位。
+    每个渠道行是 {score, ratio, dist}：
+      · ratio 是**纵向占比**（该渠道内部，各变体之间比）
+      · dist  是**横向占比**（该变体内部，各渠道之间比）
+      · None 表示该渠道无数据，不得当作 0
+    """
+    data = call_tool("ops_get_listing_traffic_structure", {
+        "asin": asin, "country": country,
+        "timePieceType": time_piece_type, "timePieceValue": str(time_piece_value),
+        "dimension": dimension, "pageSize": int(page_size),
+    })
+    chars = data.get("chars") or {}
+    dims = chars.get("dims") or []
+    keys = ("nfs", "ads", "sps", "sbs", "sbvs", "recs")
+    arrays = {k: (chars.get(k) or []) for k in keys}
+
+    def at(name, i):
+        lst = arrays.get(name) or []
+        if i >= len(lst):
+            return None
+        row = lst[i] or {}
+        if row.get("score") is None and row.get("ratio") is None and row.get("dist") is None:
+            return None
+        return {"score": _num(row.get("score")), "ratio": _num(row.get("ratio")),
+                "dist": _num(row.get("dist"))}
+
+    variants = []
+    for i, d in enumerate(dims):
+        if not isinstance(d, dict):
+            continue
+        variants.append({
+            "asin": _clean(d.get("val", "")),
+            "features": d.get("features") or [],
+            "img": d.get("img"),
+            "sum_score": _num(d.get("sumScore")),
+            "ratio": _num(d.get("ratio")),
+            "is_variant": bool(d.get("isVariant")),
+            "nf": at("nfs", i),
+            "ad": at("ads", i),
+            "sp": at("sps", i),
+            "sb": at("sbs", i),
+            "sbv": at("sbvs", i),
+            "rec": at("recs", i),
+        })
+    return {
+        "total_rows": _num(data.get("total")),
+        "total_score": _num(data.get("totalScore")),
+        "variants": variants,
+        "notice": data.get("data_notice"),
+    }
 
 
 def asin_keyword_signals(asin: str, country: str = "US", recent_days: int = 7,

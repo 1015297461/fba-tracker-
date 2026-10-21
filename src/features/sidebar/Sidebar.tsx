@@ -4,7 +4,7 @@ import { STATUS_LABELS } from '../../data/constants';
 import { useProducts } from '../../context/ProductContext';
 import type { Product } from '../../data/types';
 import { useExportBadge } from '../exports/MyExports';
-import { AI_SKILLS } from '../tools/AiAnalyze';
+import { visibleAiSkills } from '../tools/AiAnalyze';
 
 // 状态筛选只对这三个产品视图生效（filter 会影响它们的列表内容）
 const PRODUCT_VIEWS = ['list', 'progress', 'table'];
@@ -60,6 +60,8 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
   const trashCount = ctx?.trash?.length || 0;
   const { label: syncLabel, cls: syncCls } = useSyncLabel();
   const modeText = syncMode === 'server' ? '局域网协作' : syncMode === 'local' ? '本地存储' : '检测中';
+  // 非 root 角色也能看到不用 Amazon 登录态、只用 SIF 的技能（如流量分析）
+  const aiSkills = visibleAiSkills(currentUser?.role === 'root');
 
   return (
     <aside className="sidebar">
@@ -151,11 +153,11 @@ export function Sidebar({ view, setView, filter, setFilter, products, onExports 
         </div>
       )}
 
-      {currentUser?.role === 'root' && (
+      {aiSkills.length > 0 && (
         <div className="sb-section">
           <div className="sb-section-label">AI分析</div>
           <div className="sb-view-tabs">
-            {AI_SKILLS.map(s => (
+            {aiSkills.map(s => (
               <button key={s.id} className="sb-view-btn"
                 data-active={view === 'aiAnalyze:' + s.id}
                 onClick={() => setView('aiAnalyze:' + s.id)}>
@@ -227,7 +229,9 @@ export function TopBar({ view, product, theme, onToggleTheme, onNewProduct }: {
   const titles: Record<string, string> = { list: '产品列表', progress: '进度总览', table: '数据表格', keywordRank: '关键词排名', productScrape: '产品采集', reviewFetch: '评论采集', pdfSplit: 'PDF拆分', sifKeyword: 'SIF 爆品关键词监控', myExports: '我的导出', trash: '回收站' };
   const ctx = useProducts();
   const isRoot = ctx?.currentUser?.role === 'root';
-  const aiSkill = isRoot && view.startsWith('aiAnalyze:') ? AI_SKILLS.find(s => 'aiAnalyze:' + s.id === view) : null;
+  const aiSkill = view.startsWith('aiAnalyze:')
+    ? visibleAiSkills(isRoot).find(s => 'aiAnalyze:' + s.id === view) || null
+    : null;
   const viewTitle = aiSkill ? `AI分析 · ${aiSkill.label}` : titles[view];
   const { label: syncLabel, cls: syncCls, icon: syncIcon } = useSyncLabel();
   const currentUser = ctx?.currentUser;

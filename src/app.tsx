@@ -12,7 +12,7 @@ import { ReviewFetch } from './features/tools/ReviewFetch';
 import { PdfSplit } from './features/tools/PdfSplit';
 import { SifKeyword } from './features/tools/SifKeyword';
 import { ShipmentTracker } from './features/shipment';
-import { AiAnalyze, AI_SKILLS } from './features/tools/AiAnalyze';
+import { AiAnalyze, visibleAiSkills } from './features/tools/AiAnalyze';
 import { MyExports } from './features/exports/MyExports';
 import { Trash } from './features/trash/Trash';
 import { PRODUCTS } from './data/products';
@@ -92,6 +92,10 @@ function AppShell() {
 
   const { products, createProduct, currentUser } = useProducts() as any;
   const isRoot = currentUser?.role === 'root';
+  // AI分析视图只对「当前角色可见的技能」开放：root 看全部，其他角色只看非 rootOnly 的
+  const aiSkills = visibleAiSkills(isRoot);
+  const aiSkillId = view.startsWith('aiAnalyze:') ? view.slice('aiAnalyze:'.length) : null;
+  const canUseAiSkill = !!aiSkillId && aiSkills.some(s => s.id === aiSkillId);
   const filteredProducts = filter === 'all' ? products : products.filter((p: any) => p.status === filter);
   const activeProduct = filteredProducts.find((p: any) => p.id === activeId) || filteredProducts[0];
 
@@ -146,7 +150,7 @@ function AppShell() {
         {view === 'pdfSplit' && <PdfSplit />}
         {view === 'sifKeyword' && <SifKeyword />}
         {view === 'shipment' && <ShipmentTracker />}
-        {isRoot && view.startsWith('aiAnalyze:') && <AiAnalyze skillId={view.slice('aiAnalyze:'.length)} />}
+        {canUseAiSkill && <AiAnalyze skillId={aiSkillId!} />}
         {view === 'myExports' && <MyExports />}
         {view === 'trash' && <Trash />}
       </div>
@@ -175,7 +179,7 @@ function AppShell() {
             { value: 'reviewFetch', label: '💬 评论采集' },
             */
             { value: 'pdfSplit', label: '✂️ PDF拆分' },
-            ...(isRoot ? AI_SKILLS.map(s => ({ value: 'aiAnalyze:' + s.id, label: `${s.ic} ${s.label}` })) : []),
+            ...aiSkills.map(s => ({ value: 'aiAnalyze:' + s.id, label: `${s.ic} ${s.label}` })),
           ]}
           onChange={v => changeView(v)}
         />

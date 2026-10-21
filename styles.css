@@ -2908,6 +2908,101 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .ai-preview-md th, .ai-preview-md td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
 .ai-preview-md code { background: var(--bg-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 
+/* ---- AI 分析 · 流量取数预览（traffic-compare） ---- */
+.ai-textarea { resize: vertical; min-height: 58px; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; }
+
+/* 数据预览 / 分析报告 切换 */
+.tf-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.tf-tab { position: relative; background: none; border: 0; border-bottom: 2px solid transparent; padding: 7px 14px; font: inherit; font-size: 13px; font-weight: 500; color: var(--ink-3); cursor: pointer; }
+.tf-tab:hover { color: var(--ink); }
+.tf-tab[data-active="true"] { color: var(--blue); border-bottom-color: var(--blue); }
+.tf-tab-dot { position: absolute; top: 7px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+.tf-tabs-spacer { flex: 1; }
+.tf-tab-gen { margin: 0 0 5px; padding: 4px 12px; font: inherit; font-size: 12px; font-weight: 500; color: #fff; background: var(--blue); border: 0; border-radius: 6px; cursor: pointer; }
+.tf-tab-gen:hover { filter: brightness(1.08); }
+.tf-tab-gen:disabled { opacity: .55; cursor: not-allowed; }
+.tf-tab-gen-hint { font-size: 11px; color: var(--ink-4); margin: 0 0 5px; }
+
+.tf-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.tf-kpis-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.tf-metric { border: 1px solid var(--border); border-radius: 8px; background: var(--card-bg); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.tf-metric-label { font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tf-metric-value { font-size: 19px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.tf-metric-hint { font-size: 11px; color: var(--ink-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.tf-card { border: 1px solid var(--border); border-radius: 10px; background: var(--card-bg); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.tf-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 13px; font-weight: 600; color: var(--ink); }
+.tf-card-sub { font-size: 11px; font-weight: 400; color: var(--ink-4); text-align: right; }
+
+/* 结构堆叠条 */
+.tf-share { display: flex; flex-direction: column; gap: 8px; }
+.tf-share-bar { display: flex; height: 22px; border-radius: 5px; overflow: hidden; background: var(--bg-2); }
+.tf-share-seg { height: 100%; transition: width .25s; }
+.tf-share-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.tf-share-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--ink-3); }
+.tf-share-item i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; flex-shrink: 0; }
+.tf-share-item b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.tf-rec { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 11px; color: var(--ink-3); }
+.tf-rec-label { color: var(--ink-4); }
+.tf-rec-item { background: var(--bg-2); border: 1px solid var(--border); border-radius: 20px; padding: 1px 8px; }
+
+.tf-row2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 10px; }
+
+/* 表格 */
+.tf-table-wrap { overflow-x: auto; }
+.tf-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.tf-table th, .tf-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+.tf-table th { font-weight: 500; color: var(--ink-4); font-size: 11px; white-space: nowrap; }
+.tf-table td { color: var(--ink-2); }
+.tf-table tbody tr:last-child td { border-bottom: 0; }
+.tf-table-compact th, .tf-table-compact td { padding: 5px 6px; }
+.tf-tiny { font-size: 10.5px; color: var(--ink-4); line-height: 1.45; }
+.tf-err-cell { color: var(--red); font-size: 11px; }
+
+/* 候选池 */
+.tf-pool { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+.tf-pool-item { display: flex; align-items: flex-start; gap: 8px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; cursor: pointer; background: var(--bg-2); }
+.tf-pool-item:hover { border-color: var(--border-strong); }
+.tf-pool-item.is-checked { border-color: var(--blue); background: var(--blue-soft); }
+.tf-pool-item input { margin-top: 2px; flex-shrink: 0; }
+.tf-pool-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.tf-pool-top { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--ink); }
+
+.tf-note { font-size: 11px; color: var(--ink-4); line-height: 1.6; }
+.tf-warn { color: var(--orange); }
+.tf-bad { color: var(--orange); }
+.tf-up { color: var(--red); }
+.tf-down { color: var(--green); }
+
+/* 模型生成的 Markdown 报告 */
+.tf-report { font-size: 13px; line-height: 1.7; color: var(--ink-2); max-height: 640px; overflow-y: auto; padding-right: 4px; }
+.tf-report h1 { font-size: 17px; font-weight: 600; color: var(--ink); margin: 4px 0 12px; }
+.tf-report h2 { font-size: 14px; font-weight: 600; color: var(--ink); margin: 20px 0 8px; padding-bottom: 5px; border-bottom: 1px solid var(--border); }
+.tf-report h3 { font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 14px 0 6px; }
+.tf-report p { margin: 8px 0; }
+.tf-report ul, .tf-report ol { margin: 8px 0; padding-left: 20px; }
+.tf-report li { margin: 4px 0; }
+.tf-report strong { color: var(--ink); font-weight: 600; }
+.tf-report table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 12.5px; }
+.tf-report th, .tf-report td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; }
+.tf-report th { background: var(--bg-2); color: var(--ink-3); font-weight: 500; white-space: nowrap; }
+.tf-report tbody tr:nth-child(even) { background: color-mix(in srgb, var(--bg-2) 60%, transparent); }
+.tf-report td { font-variant-numeric: tabular-nums; }
+.tf-report code { background: var(--bg-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; font-family: var(--font-mono); }
+.tf-report blockquote { margin: 8px 0; padding: 6px 12px; border-left: 3px solid var(--border-strong); color: var(--ink-3); }
+
+/* 报告里的高亮（由模型输出的 class 控制，配色随主题） */
+.tf-report .hl-bad { color: var(--red); font-weight: 600; }
+.tf-report .hl-warn { color: var(--orange); font-weight: 600; }
+.tf-report .hl-good { color: var(--green); font-weight: 600; }
+
+@media (max-width: 1180px) {
+  .tf-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tf-row2 { grid-template-columns: minmax(0, 1fr); }
+}
+
+
 /* ============================================================
    SIF 关键词监测（工具：每日定时抓取 SIF 关键词数据）
    ============================================================ */
@@ -3005,7 +3100,7 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .sif-chart { display: block; width: 100%; height: auto; }
 .sif-chart-empty { color: var(--ink-3); font-size: 12px; }
 .sif-chart-wrap { position: relative; }
-.sif-chart-tip { position: absolute; transform: translate(-50%, -110%); pointer-events: none; background: var(--ink); color: var(--bg); border-radius: 8px; padding: 6px 10px; font-size: 11px; line-height: 1.55; white-space: nowrap; z-index: 6; box-shadow: 0 4px 14px rgba(0,0,0,.28); }
+.sif-chart-tip { position: absolute; transform: translate(-50%, 0); pointer-events: none; background: var(--ink); color: var(--bg); border-radius: 8px; padding: 6px 10px; font-size: 11px; line-height: 1.55; white-space: nowrap; z-index: 6; box-shadow: 0 4px 14px rgba(0,0,0,.28); }
 .sif-tip-date { font-weight: 700; }
 .sif-tip-val { opacity: .88; }
 .sif-note { font-size: 12px; color: var(--ink-2); line-height: 1.7; background: var(--bg-2); border-radius: 8px; padding: 9px 12px; }

@@ -295,6 +295,22 @@ class DbState:
                     completed_at TEXT
                 );
 
+                -- 流量分析报告历史（traffic-compare）：不走 AI 任务队列（报告是一次模型调用，
+                -- 不是后台跑几分钟的子进程），所以单独建表。id 就是 datasetId，和
+                -- data/traffic-reports/<id>.md 一一对应，便于删记录时连文件一起删。
+                CREATE TABLE IF NOT EXISTS traffic_reports (
+                    id           TEXT PRIMARY KEY,
+                    asin         TEXT NOT NULL,
+                    period_label TEXT,
+                    period_value TEXT,
+                    username     TEXT,
+                    model        TEXT,
+                    report_chars INTEGER DEFAULT 0,
+                    alert_count  INTEGER DEFAULT 0,
+                    md_path      TEXT,
+                    created_at   TEXT
+                );
+
                 -- ===== 货件跟踪（由独立项目 shipment-tracker 迁移而来）=====
                 -- 字段名与原 JSON 一一对应（camelCase -> snake_case 机械转换），
                 -- 全部 TEXT：原数据本身就是字符串（含 "1500"/"9.83" 这类），不做类型转换以免丢精度。
@@ -1551,6 +1567,55 @@ class DbState:
         with self.lock:
             with self._conn() as conn:
                 conn.execute("DELETE FROM ai_analysis_tasks WHERE id=?", [tid])
+                conn.commit()
+
+    # ---- 流量分析报告历史（traffic-compare）----
+    # 不走 ai_analysis_tasks：报告是一次模型调用（十几秒），不是后台跑几分钟的
+    # claude 子进程，塞进任务队列会被 AiAnalysisWorker 误当成待执行任务。
+
+    def upsert_traffic_report(self, record: dict):
+        """写入/覆盖一条报告记录（同一 datasetId 重新生成时覆盖）。"""
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO traffic_reports
+                       (id, asin, period_label, period_value, username, model,
+                        report_chars, alert_count, md_path, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(id) DO UPDATE SET
+                         model=excluded.model,
+                         report_chars=excluded.report_chars,
+                         alert_count=excluded.alert_count,
+                         md_path=excluded.md_path,
+                         created_at=excluded.created_at""",
+                    [record.get("id"), record.get("asin"), record.get("period_label"),
+                     record.get("period_value"), record.get("username"), record.get("model"),
+                     int(record.get("report_chars") or 0), int(record.get("alert_count") or 0),
+                     record.get("md_path"), record.get("created_at") or _now_iso()],
+                )
+                conn.commit()
+
+    def list_traffic_reports(self, asin: str = None, limit: int = 50) -> list:
+        with self._conn() as conn:
+            if asin:
+                rows = conn.execute(
+                    "SELECT * FROM traffic_reports WHERE asin=? ORDER BY created_at DESC LIMIT ?",
+                    [asin, limit]).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM traffic_reports ORDER BY created_at DESC LIMIT ?",
+                    [limit]).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_traffic_report(self, rid: str):
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM traffic_reports WHERE id=?", [rid]).fetchone()
+        return dict(row) if row else None
+
+    def delete_traffic_report(self, rid: str):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM traffic_reports WHERE id=?", [rid])
                 conn.commit()
 
     # ---- SIF 爆品关键词监控 v2：设置 ----
