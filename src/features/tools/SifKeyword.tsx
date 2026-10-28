@@ -279,12 +279,24 @@ function toCsv(name: string, rows: any[]) {
 
 // ---- 图表（手写 SVG） ----
 
-interface Series { name: string; color: string; values: (number | null)[]; negative?: boolean }
+interface Series {
+  name: string;
+  color: string;
+  values: (number | null)[];
+  negative?: boolean;
+  /** 该序列走哪一侧的 Y 轴。默认 left；量级差很大的两组（搜索量 vs 排名）要分左右轴 */
+  axis?: 'left' | 'right';
+  /** 自定义数值格式（tooltip 与轴刻度共用）。不传则按 money / fmtN 处理 */
+  format?: (v: number) => string;
+}
 
 // 导出给「AI 分析 → 流量分析」复用（同一个打包产物，样式类共用 sif-chart）
-export function LineChart({ dates, series, height = 200, money = false }:
-  { dates: string[]; series: Series[]; height?: number; money?: boolean }) {
+// legendClick：点图例只显示这一条，再点一次恢复全部（用于两条量级差很大的曲线）
+export function LineChart({ dates, series, height = 200, money = false, legendClick = false }:
+  { dates: string[]; series: Series[]; height?: number; money?: boolean; legendClick?: boolean }) {
   const [hov, setHov] = useState<number | null>(null);
+  // 图例点击后「只剩这一条」。点当前唯一可见的那条 = 恢复全部
+  const [only, setOnly] = useState<number | null>(null);
   // 宽度自适应：viewBox 必须等于容器实际宽度，否则 SVG 等比缩放后左右留白，
   // 悬浮时按容器宽度算出的索引会和真实坐标错位（在窄卡片里尤其明显）。
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -301,22 +313,44 @@ export function LineChart({ dates, series, height = 200, money = false }:
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  // 切换时间范围后只有态要清掉，否则新数据里「第 2 条」可能已经不存在
+  useEffect(() => { setOnly(null); }, [dates.length, series.length]);
+
   const lines = useMemo(() => series.map(s => ({
     ...s,
     values: s.values.map(v => (s.negative && v !== null && v !== undefined ? -v : v)) as (number | null)[],
   })), [series]);
-  const valid = lines.flatMap(s => s.values).filter(v => v !== null && v !== undefined) as number[];
-  if (dates.length < 2 || valid.length < 2) {
-    return <div className="sif-chart-empty">数据不足（至少需要 2 天，随每日抓取自动累积）</div>;
+
+  const visIdx = lines.map((_, i) => i).filter(i => only === null || i === only);
+  const act = visIdx.map(i => lines[i]);
+  const valsOf = (side: 'left' | 'right') =>
+    act.filter(s => (s.axis || 'left') === side)
+      .flatMap(s => s.values.filter(v => v !== null && v !== undefined)) as number[];
+  const mk = (vals: number[]): [number, number] | null => {
+    if (!vals.length) return null;
+    let mn = Math.min(...vals), mx = Math.max(...vals);
+    if (mn === mx) { mn -= 1; mx += 1; }
+    const p = (mx - mn) * 0.08;
+    return [mn - p, mx + p];
+  };
+  const dLeft = mk(valsOf('left'));
+  const dRight = mk(valsOf('right'));
+  if (!dates.length || (!dLeft && !dRight)) {
+    return <div className="sif-chart-empty">暂无可绘制的数据（随每次抓取自动累积）</div>;
   }
-  const W = wrapW, H = height, PL = 64, PR = 16, PT = 14, PB = 24;
+  const grid = dLeft || dRight!;          // 网格线按左轴（没左轴就用右轴）画
+  const hasRight = !!dRight;
+  const W = wrapW, H = height, PL = 64, PR = hasRight ? 62 : 16, PT = 14, PB = 24;
   const n = dates.length;
-  let min = Math.min(...valid), max = Math.max(...valid);
-  if (min === max) { min -= 1; max += 1; }
-  const pad = (max - min) * 0.08; min -= pad; max += pad;
   const iw = W - PL - PR, ih = H - PT - PB;
   const x = (i: number) => PL + (n === 1 ? iw / 2 : (i / (n - 1)) * iw);
-  const y = (v: number) => PT + ih - ((v - min) / (max - min)) * ih;
+  const yIn = (d: [number, number], v: number) => PT + ih - ((v - d[0]) / (d[1] - d[0])) * ih;
+  const yOf = (s: Series & { values: (number | null)[] }, v: number) => {
+    const side = s.axis === 'right' ? dRight : dLeft;
+    return yIn(side || dLeft || dRight!, v);
+  };
+  const fmtOf = (s?: Series) => (v: number) =>
+    s?.format ? s.format(Math.abs(v)) : (money ? fmtMoney(Math.abs(v)) : fmtN(Math.abs(v)));
   const fmt = (v: number) => (money ? fmtMoney(Math.abs(v)) : fmtN(Math.abs(v)));
   const shown = Math.min(7, n);
   const labelIdx = Array.from(new Set(Array.from({ length: shown }, (_, k) => Math.round((k * (n - 1)) / Math.max(1, shown - 1)))));
@@ -326,17 +360,30 @@ export function LineChart({ dates, series, height = 200, money = false }:
     const i = Math.round(((e.clientX - r.left) / r.width) * (n - 1));
     setHov(Math.max(0, Math.min(n - 1, i)));
   }
+  function clickLegend(i: number) {
+    if (!legendClick) return;
+    setOnly(cur => (cur === i ? null : i));
+  }
   return (
     <div className="sif-chart-wrap" ref={wrapRef} onMouseMove={onMove} onMouseLeave={() => setHov(null)}>
       <svg className="sif-chart" viewBox={`0 0 ${W} ${H}`} style={{ height: H }}>
         {[0, 1, 2, 3, 4].map(k => {
-          const v = min + ((max - min) * k) / 4;
+          const v = grid[0] + ((grid[1] - grid[0]) * k) / 4;
+          const yPos = yIn(grid, v);
           return (
             <g key={k}>
-              <line x1={PL} x2={W - PR} y1={y(v)} y2={y(v)} stroke="var(--border)" strokeWidth="0.6" strokeDasharray="3 3" />
-              <text x={PL - 8} y={y(v) + 3.5} fontSize="10" fill="var(--ink-4)" textAnchor="end">
-                {lines.some(s => s.negative) && v < 0 ? fmt(v) : fmt(v)}
-              </text>
+              <line x1={PL} x2={W - PR} y1={yPos} y2={yPos} stroke="var(--border)" strokeWidth="0.6" strokeDasharray="3 3" />
+              {dLeft && (
+                <text x={PL - 8} y={yPos + 3.5} fontSize="10" fill="var(--ink-4)" textAnchor="end">
+                  {fmt(v)}
+                </text>
+              )}
+              {hasRight && dRight && (
+                <text x={W - PR + 8} y={yPos + 3.5} fontSize="10" fill={series.find(s => s.axis === 'right')?.color || 'var(--ink-4)'}
+                  textAnchor="start" opacity="0.85">
+                  {fmtOf(series.find(s => s.axis === 'right'))(dRight[0] + ((dRight[1] - dRight[0]) * k) / 4)}
+                </text>
+              )}
             </g>
           );
         })}
@@ -345,38 +392,52 @@ export function LineChart({ dates, series, height = 200, money = false }:
             {(dates[i] || '').slice(5)}
           </text>
         ))}
-        {lines.map((s, si) => {
+        {visIdx.map(i => {
+          const s = lines[i];
           let started = false;
-          const d = s.values.map((v, i) => {
+          const d = s.values.map((v, j) => {
             if (v === null || v === undefined) return '';
-            const seg = `${started ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`;
+            const seg = `${started ? 'L' : 'M'}${x(j).toFixed(1)},${yOf(s, v).toFixed(1)}`;
             started = true;
             return seg;
           }).join('');
-          return <path key={si} d={d} fill="none" stroke={s.color} strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" />;
+          return <path key={i} d={d} fill="none" stroke={s.color} strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" />;
         })}
+        {/* 只有 1 个时间点时 path 只有一个 M 点，画不出线，用圆点表示 */}
+        {n === 1 && visIdx.map(i => (lines[i].values[0] != null && (
+          <circle key={'dot' + i} cx={x(0)} cy={yOf(lines[i], lines[i].values[0] as number)} r="4"
+            fill={lines[i].color} stroke="var(--card-bg)" strokeWidth="1.5" />
+        )))}
         {hov !== null && (
           <g>
             <line x1={x(hov)} x2={x(hov)} y1={PT} y2={PT + ih} stroke="var(--ink-4)" strokeWidth="0.8" strokeDasharray="2 2" />
-            {lines.map((s, si) => (s.values[hov] != null &&
-              <circle key={si} cx={x(hov)} cy={y(s.values[hov] as number)} r="3.4" fill={s.color} stroke="var(--card-bg)" strokeWidth="1.2" />))}
+            {visIdx.map(i => (lines[i].values[hov] != null &&
+              <circle key={i} cx={x(hov)} cy={yOf(lines[i], lines[i].values[hov] as number)} r="3.4"
+                fill={lines[i].color} stroke="var(--card-bg)" strokeWidth="1.2" />))}
           </g>
         )}
       </svg>
       <div className="sif-legend">
-        {series.map((s, i) => (
-          <span key={i} className="sif-legend-item">
-            <i style={{ background: s.color }} />{s.name}{s.negative ? '（越靠上=越好）' : ''}
-          </span>
-        ))}
+        {series.map((s, i) => {
+          const off = only !== null && only !== i;
+          return (
+            <span key={i}
+              className={legendClick ? `sif-legend-item sif-legend-click${off ? ' is-off' : ''}` : 'sif-legend-item'}
+              title={legendClick ? (only === i ? '再点一次恢复全部' : `只看「${s.name}」`) : undefined}
+              onClick={() => clickLegend(i)}>
+              <i style={{ background: s.color }} />{s.name}{s.negative ? '（越靠上=越好）' : ''}
+              {s.axis === 'right' ? '（右轴）' : ''}
+            </span>
+          );
+        })}
       </div>
       {hov !== null && (
         <div className="sif-chart-tip" style={{ left: `${Math.min(Math.max((x(hov) / W) * 100, 12), 88)}%`, top: 6 }}>
           <div className="sif-tip-date">{dates[hov]}</div>
-          {lines.map((s, i) => {
+          {act.map((s, k) => {
             const raw = s.negative && s.values[hov] != null ? -(s.values[hov] as number) : s.values[hov];
-            return <div key={i} className="sif-tip-val"><i style={{ background: s.color }} />
-              {s.name} {raw == null ? '—' : (money ? fmtMoney(raw) : fmtN(raw))}</div>;
+            return <div key={k} className="sif-tip-val"><i style={{ background: s.color }} />
+              {s.name} {raw == null ? '—' : (s.format ? s.format(raw) : (money ? fmtMoney(raw) : fmtN(raw)))}</div>;
           })}
         </div>
       )}

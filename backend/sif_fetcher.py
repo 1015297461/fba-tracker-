@@ -28,11 +28,53 @@ SIF (mcp.sif.com) 爆品关键词监控 —— 数据抓取器 v2
 import json
 import os
 import re
+import threading
 import time
 import urllib.request
 import urllib.error
 
-from .utils import PROJECT_ROOT, _now_iso
+from .utils import PROJECT_ROOT, _log, _now_iso
+
+# ---------------------------------------------------------------------------
+# 全局 QPM 闸门（所有入口共用一份额度）
+# ---------------------------------------------------------------------------
+# SIF 订阅限制 40 次/60 秒（实测：1 次 tools/call = 1 个额度，滑动窗口）。
+# 之前没有闸门，几条路各走各的：定时抓取 + 手动刷新 + 异步查询 + 批量查自然位，
+# 一旦叠加就冲破 40 → 报「当期订阅QPM限制已达上限(40/40)」。
+# 闸门的作用是**排队而不是失败**：超额的调用会在这里等，不往前打。
+#
+# 留 15% 余量（34/40）：给 SIF 侧的重试、另一个进程、或手动点查留空间。
+QPM_LIMIT = int(os.environ.get("SIF_QPM_LIMIT", "34"))
+QPM_WINDOW = 60.0
+_SLOT_GAP = QPM_WINDOW / max(1, QPM_LIMIT)      # 均匀铺开，避免每秒 34 次爆发
+
+_gate_lock = threading.Lock()
+_next_slot = [0.0]          # 下一次允许发车的时刻
+_call_count = [0]           # 累计调用数（日志用）
+
+
+def _acquire_slot():
+    """阻塞直到轮到自己。均匀铺开：任意两次调用间隔 >= 60/QPM_LIMIT 秒。"""
+    with _gate_lock:
+        now = time.time()
+        slot = max(now, _next_slot[0])
+        _next_slot[0] = slot + _SLOT_GAP
+        _call_count[0] += 1
+    delay = slot - time.time()
+    if delay > 0:
+        # 长时间等待（比如刚撞过限流）打一行日志，免得看起来像卡死
+        if delay > 3:
+            _log(f"[sif] 排队等待 {delay:.0f}s（QPM {QPM_LIMIT}/60s 已排满）")
+        time.sleep(delay)
+
+
+def call_stats() -> dict:
+    """给路由/日志用：累计调用数与下次可用时刻。"""
+    with _gate_lock:
+        return {"total": _call_count[0],
+                "next_in": max(0.0, _next_slot[0] - time.time()),
+                "qpm_limit": QPM_LIMIT}
+
 
 # ---------------------------------------------------------------------------
 # 配置
@@ -112,7 +154,7 @@ class SifError(Exception):
 # 底层 JSON-RPC 调用
 # ---------------------------------------------------------------------------
 
-def call_tool(name: str, arguments: dict, timeout: int = 60) -> dict:
+def _call_once(name: str, arguments: dict, timeout: int = 60) -> dict:
     """调用 SIF MCP 工具，返回结构化 JSON（dict）。失败抛 SifError。"""
     url, key = _load_config()
     if not key:
@@ -176,6 +218,79 @@ def call_tool(name: str, arguments: dict, timeout: int = 60) -> dict:
     return {}
 
 
+# 这些字样说明是网络/服务端临时问题，重试有机会成功
+_RETRY_HINTS = ("timed out", "TimeoutError", "Connection reset", "Connection aborted",
+                "RemoteDisconnected", "网络错误", "HTTP 500", "HTTP 502", "HTTP 503",
+                "HTTP 504")
+
+
+def _is_retryable(msg: str) -> bool:
+    m = str(msg)
+    return any(h in m for h in _RETRY_HINTS)
+
+
+# 限流专用：等一个窗口就能恢复，和「网络抖一下」不是一回事
+QPM_COOLDOWN_SEC = 15
+QPM_RETRIES = 3
+
+
+def _is_qpm(msg: str) -> bool:
+    m = str(msg)
+    return ("QPM" in m.upper()) or ("限制已达上限" in m) or ("rate limit" in m.lower())
+
+
+def is_qpm_error(msg: str) -> bool:
+    """供上层判断：这次失败是不是因为没额度了（而不是真的没数据）。"""
+    return _is_qpm(msg)
+
+
+def call_tool(name: str, arguments: dict, timeout: int = 60, retries: int = 0,
+              on_retry=None) -> dict:
+    """调用 SIF MCP 工具，失败抛 SifError。
+
+    retries > 0 时对**网络类**错误自动重试（超时 / 连接断开 / 5xx），间隔 2s、4s 递增。
+    SIF 按 tools/call 计费，超时那次服务端通常已收到，重试会再耗一次配额 ——
+    所以只给「重接口」开重试，普通调用保持 retries=0。
+    fatal 错误（配置缺失 / 鉴权被拒 / 工具不存在）一次都不重试。
+    """
+    attempt = 0
+    qpm_attempt = 0
+    while True:
+        _acquire_slot()             # 所有调用统一排队，不突破订阅 QPM
+        try:
+            return _call_once(name, arguments, timeout)
+        except SifError as e:
+            msg = str(e)
+            if getattr(e, "fatal", False):
+                raise
+
+            # 限流单独处理：等一个窗口再试，**不用 retries 参数控制**。
+            # 限流不是真失败，等一等就过去了；直接抛出去只会让上层把数据记成 None（假的"无自然位"）。
+            if _is_qpm(msg) and qpm_attempt < QPM_RETRIES:
+                qpm_attempt += 1
+                wait = QPM_COOLDOWN_SEC
+                _log(f"[sif] {name} 撞到 QPM 限流，{wait}s 后第 {qpm_attempt} 次重试")
+                if on_retry:
+                    try:
+                        on_retry(qpm_attempt, msg)
+                    except Exception:
+                        pass
+                time.sleep(wait)
+                continue
+
+            if attempt >= retries or not _is_retryable(msg):
+                raise
+            attempt += 1
+            wait = 2 * attempt
+            _log(f"[sif] {name} 第 {attempt} 次失败（{msg[:120]}），{wait}s 后重试")
+            if on_retry:
+                try:
+                    on_retry(attempt, msg)
+                except Exception:
+                    pass        # 进度回调失败不能影响主流程
+            time.sleep(wait)
+
+
 def _parse_mcp_response(raw: str):
     """兼容纯 JSON 与 SSE 两种响应格式。"""
     s = raw.strip()
@@ -211,6 +326,39 @@ def _clean(value):
         m = _LINK_RE.match(value.strip())
         return m.group(1) if m else value
     return value
+
+
+# SIF 的排名是复合串：'p{页},{页内位次}/{每页条数}'，例如 "p1,2/48"。
+# 绝不能走 _num()：它会把逗号去掉变成 "p12/48"，再正则取第一段数字 → 12，
+# 于是「第 1 页第 2 位」被存成「第 12 位」——整列自然位都是脏数据。
+_RANK_STR_RE = re.compile(r"^\s*p(\d+)\s*,\s*(\d+)\s*/\s*(\d+)\s*$", re.I)
+
+
+def parse_rank(v):
+    """把 SIF 的排名串解析成绝对位次。
+
+    返回 {"rank": 绝对位次, "page": 页, "pos": 页内位次, "total": 每页条数}；
+    纯数字/空值也兼容。无法识别返回 None。
+    """
+    if v is None or isinstance(v, bool):
+        return None
+    s = str(v).strip()
+    if not s or s.lower() in ("null", "none", "-", "n/a"):
+        return None
+
+    m = _RANK_STR_RE.match(s)
+    if m:
+        page, pos, total = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        per_page = total if total > 0 else 48
+        # total 实测恒为 48 = 每页条数，所以绝对位次 = (页-1)*48 + 页内位次
+        return {"rank": (page - 1) * per_page + pos, "page": page,
+                "pos": pos, "total": total}
+
+    try:
+        n = int(round(float(s.replace(",", ""))))
+        return {"rank": n, "page": None, "pos": None, "total": None} if n > 0 else None
+    except Exception:
+        return None
 
 
 def _num(value):
@@ -661,7 +809,11 @@ def asin_keyword_signals(asin: str, country: str = "US", recent_days: int = 7,
             "keyword":       _clean(i.get("keyword", "")),
             "traffic_share": _num(i.get("traffic_share")),
             "contri_change": _num(i.get("contri_change")),
-            "organic_rank":  _num(i.get("organic_rank")),
+            # organic_rank 原始是 "p1,2/48"，必须走 parse_rank（见上面的说明）
+            "organic_rank":  _rk["rank"] if (_rk := parse_rank(i.get("organic_rank"))) else None,
+            "organic_page":  _rk["page"] if _rk else None,
+            "organic_pos":   _rk["pos"] if _rk else None,
+            "organic_rank_time": i.get("organic_rank_time_cn") or i.get("organic_rank_time_us"),
             "rank_evolution": i.get("rank_evolution"),
             "health":        i.get("keyword_health"),
             "search_volume": _num(i.get("search_volume")),
@@ -675,6 +827,39 @@ def asin_keyword_signals(asin: str, country: str = "US", recent_days: int = 7,
         "gaining":     slim(ps.get("gaining")),
         "rank_gaps":   slim(ps.get("rank_gaps")),
         "top_keywords": slim(data.get("top_keywords")),
+    }
+
+
+def aba_footprint(asin: str, country: str = "US", top_n: int = 500) -> dict:
+    """ASIN 反查 ABA 卡位地图：它在哪些搜索词上进了 top3（买家点击口径）。
+
+    与 asin_keyword_signals 互补，别混用：
+      · 本接口 = **ABA 买家真实点击**视角（rank1/2/3 卡位强弱，词数少而准）
+      · signals  = **SIF 自建流量**视角（自然排名、广告位、健康度，词多而宽）
+    同一个 ASIN 可能「signals 里有 30 个词带自然排名，ABA 只卡住 4 个词的 top3」。
+    """
+    data = call_tool("market_get_asin_aba_footprint", {
+        "asin": asin, "country": country, "topN": int(top_n),
+    }, timeout=90, retries=1)
+    rd = data.get("rank_distribution") or {}
+    kws = []
+    for k in (data.get("keywords") or [])[:200]:
+        kws.append({
+            "keyword": k.get("keyword"),
+            "search_volume": _num_r(k.get("search_volume"), 0),
+            "aba_rank": _num_r(k.get("rank"), 0),
+        })
+    return {
+        "asin": asin,
+        "rank_distribution": {
+            "rank1": _num_r(rd.get("rank1"), 0),
+            "rank2": _num_r(rd.get("rank2"), 0),
+            "rank3": _num_r(rd.get("rank3"), 0),
+        },
+        "total_keyword_count": _num_r(data.get("total_keyword_count"), 0),
+        "total_covered_volume": _num_r(data.get("total_covered_volume"), 0),
+        "keywords": kws,
+        "notice": data.get("data_notice"),
     }
 
 
@@ -731,6 +916,145 @@ def keyword_competition(keyword: str, country: str = "US") -> dict:
     if isinstance(out.get("top_competitors"), list):
         out["top_competitors"] = out["top_competitors"][:20]
     return out
+
+
+def _num_r(value, nd=2):
+    """_num 的带精度版本。nd=0 时返回 int —— 排名、评论数这类整数指标不能返回 1.0。"""
+    x = _num(value)
+    if x is None:
+        return None
+    try:
+        return int(round(float(x))) if nd == 0 else round(float(x), nd)
+    except (TypeError, ValueError):
+        return None
+
+
+def _plain_asin(v) -> str:
+    """SIF 的 asin 字段常带 markdown 链接 `[B0XXX](url)`，这里只留 ASIN 本身。"""
+    s = str(v or "").strip()
+    m = re.match(r"\[([^\]]+)\]", s)
+    if m:
+        return m.group(1).strip().upper()
+    return s.upper()
+
+
+def keyword_competition_rank(keyword: str, country: str = "US", asin: str = None,
+                             time_type: str = None, time_value: str = None,
+                             top_n: int = 100, on_retry=None) -> dict:
+    """关键词竞争格局（排名监测专用）：精简版竞品榜 + 市场结构 + 我的卡位。
+
+    **三种「排名」口径不同，字段名刻意区分，不要混用**：
+      · `competitors[].share_rank` 该词下的**流量份额排名**（按 total_share 排序，1 起）
+      · `my_position.rank`         我方份额排名；null = 不在榜
+      · `my_position.rank_tier`    absent / top3 / ... 卡位分档
+    自然搜索位不在这里，在 `asin_keyword_signals().top_keywords[].organic_rank`。
+
+    time_type/time_value 走 ABA 周/月（week 需传周日日期），不传则取最新一期。
+    """
+    args = {"keyword": keyword, "country": country}
+    if asin:
+        args["asin"] = asin
+    if time_type:
+        args["time_type"] = time_type
+        if time_value:
+            args["time_value"] = time_value
+    data = call_tool("market_get_keyword_competition", args, timeout=90, retries=1,
+                    on_retry=on_retry)
+
+    comps = []
+    for c in (data.get("top_competitors") or [])[:int(top_n)]:
+        comps.append({
+            "asin":            _plain_asin(c.get("asin")),
+            "price":           _num_r(c.get("price")),
+            "rating":          _num_r(c.get("rating"), 1),
+            "review_count":    _num_r(c.get("review_count"), 0),
+            "monthly_orders":  c.get("monthly_orders"),
+            "organic_share":   _num_r(c.get("organic_share"), 4),
+            "sp_share":        _num_r(c.get("sp_share"), 4),
+            "brand_share":     _num_r(c.get("brand_share"), 4),
+            "video_share":     _num_r(c.get("video_share"), 4),
+            "total_share":     _num_r(c.get("total_share"), 4),
+            "share_rank":      _num_r(c.get("rank"), 0),
+            "competition_mode": c.get("competition_mode"),
+            "listed_age_days": _num_r(c.get("listed_age_days"), 0),
+        })
+    # 排序与「补名次」的原则：**以 SIF 给的 rank 为准**，不自己另起一套口径。
+    # 实测 SIF 的 rank 恒为 1..N 且与 total_share 严格降序一致；只有它真的缺了才兜底，
+    # 且必须打上 rank_derived 标记 —— 否则用户分不清哪是 SIF 给的、哪是我们算的。
+    comps.sort(key=lambda x: (x["share_rank"] if x["share_rank"] else 10 ** 6,
+                              -(x["total_share"] or 0)))
+    derived = 0
+    for i, c in enumerate(comps, 1):
+        if not c["share_rank"]:
+            c["share_rank"] = i
+            c["rank_derived"] = True
+            derived += 1
+    if derived:
+        _log(f"[sif] keyword_competition {keyword}: {derived} 条缺 rank，已按份额顺序兜底")
+
+    ms = data.get("market_structure") or {}
+    conc = (data.get("concentration_profile") or {})
+    cur = conc.get("current") or {}
+    trend = conc.get("trend") or {}
+    gap_hist = conc.get("conversion_gap_history") or {}
+    lead = conc.get("leadership") or {}
+    pos = data.get("my_position") or {}
+
+    # SIF 会回一个 query_context 告诉我们**这份数据是哪一期**。
+    # 不传 time_type 时它自动对齐到「最新一期 ABA 周」，同一周内每天抓到的都是同一份，
+    # 所以必须把这个周期存下来，否则用户看到「每天数据一模一样」会以为程序坏了。
+    qc = data.get("query_context") or {}
+    dw = qc.get("data_window") or {}
+    period = {
+        "granularity": dw.get("granularity") or qc.get("time_type"),
+        "start":       dw.get("week_start") or qc.get("time_value"),
+        "end":         dw.get("week_end"),
+        "auto_aligned": dw.get("auto_aligned"),
+    } if (dw or qc) else None
+
+    return {
+        "keyword":          keyword,
+        "country":          country,
+        "time":             {"type": time_type, "value": time_value} if time_type else None,
+        # 数据周期（例：{"granularity":"week","start":"2026-10-18","end":"2026-10-24"}）
+        "period":           period,
+        "data_notice":      data.get("data_notice"),
+        "competitor_count": len(comps),
+        "competitors":      comps,
+        "market_structure": {
+            "visible_asin_count":    _num_r(ms.get("visible_asin_count"), 0),
+            "concentration_level":   ms.get("concentration_level"),
+            "competition_mode":      ms.get("competition_mode"),
+            "top3_click_share":      _num_r(ms.get("top3_click_share"), 4),
+            "top3_conversion_share": _num_r(ms.get("top3_conversion_share"), 4),
+            "conversion_gap":        ms.get("conversion_gap"),
+            "insight":               ms.get("conversion_gap_insight"),
+        },
+        "concentration": {
+            "top3_click_share":      _num_r(cur.get("top3_click_share"), 4),
+            "top3_conversion_share": _num_r(cur.get("top3_conversion_share"), 4),
+            "click_direction":       (trend.get("click") or {}).get("direction"),
+            "click_annual_rate":     _num_r((trend.get("click") or {}).get("annual_rate"), 4),
+            "conversion_direction":  (trend.get("conversion") or {}).get("direction"),
+            "divergence":            conc.get("divergence"),
+            "divergence_insight":    conc.get("divergence_insight"),
+            "gap_open":              gap_hist.get("currently_open"),
+            "gap_weeks":             _num_r(gap_hist.get("consecutive_weeks"), 0),
+            "gap_insight":           gap_hist.get("gap_insight"),
+            "click_leader":          _plain_asin(lead.get("click_leader")),
+            "click_leader_stability": lead.get("click_leader_stability"),
+            "leader_diverge":        lead.get("leader_diverge"),
+            "leader_diverge_insight": lead.get("leader_diverge_insight"),
+        },
+        "my_position": {
+            "asin":      _plain_asin(pos.get("asin")) if pos.get("asin") else (asin or None),
+            "share_rank": _num_r(pos.get("rank"), 0),
+            "rank_tier": pos.get("rank_tier"),
+            "position":  pos.get("competition_position"),
+            "insight":   pos.get("key_insight"),
+        } if pos else None,
+        "notice": data.get("data_notice"),
+    }
 
 
 def assess_promotion(keywords: list, country: str = "US", own_price: float = None,

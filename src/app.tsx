@@ -13,6 +13,7 @@ import { PdfSplit } from './features/tools/PdfSplit';
 import { SifKeyword } from './features/tools/SifKeyword';
 import { ShipmentTracker } from './features/shipment';
 import { AiAnalyze, visibleAiSkills } from './features/tools/AiAnalyze';
+import { RankMonitor } from './features/tools/RankMonitor';
 import { MyExports } from './features/exports/MyExports';
 import { Trash } from './features/trash/Trash';
 import { PRODUCTS } from './data/products';
@@ -150,7 +151,9 @@ function AppShell() {
         {view === 'pdfSplit' && <PdfSplit />}
         {view === 'sifKeyword' && <SifKeyword />}
         {view === 'shipment' && <ShipmentTracker />}
-        {canUseAiSkill && <AiAnalyze skillId={aiSkillId!} />}
+        {canUseAiSkill && (aiSkillId === 'rank-monitor'
+          ? <RankMonitor />
+          : <AiAnalyze skillId={aiSkillId!} />)}
         {view === 'myExports' && <MyExports />}
         {view === 'trash' && <Trash />}
       </div>

@@ -13,7 +13,7 @@ from ..workers.ai_analysis_worker import (
 
 # 不限制角色的技能：这类技能只用 SIF 的公开数据、不碰 Amazon 登录态与本机文件，
 # 没必要挂 root 门禁。其余技能（如 cosmo-diagnose 要跑 Playwright 抓前台）仍限 root。
-PUBLIC_SKILLS = {"traffic-compare"}
+PUBLIC_SKILLS = {"traffic-compare", "rank-monitor"}
 
 
 def _can_use_skill(user: dict, skill_id: str) -> bool:

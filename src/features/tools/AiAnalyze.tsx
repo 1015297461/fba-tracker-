@@ -3,7 +3,7 @@ import { marked } from 'marked';
 import { LineChart } from './SifKeyword';
 
 const AUTH_TOKEN_KEY = 'fba-auth-v1';
-function authHeaders(): Record<string, string> {
+export function authHeaders(): Record<string, string> {
   const t = localStorage.getItem(AUTH_TOKEN_KEY) || '';
   return t ? { Authorization: 'Bearer ' + t } : {};
 }
@@ -14,6 +14,7 @@ function authHeaders(): Record<string, string> {
 export const AI_SKILLS = [
   { id: 'cosmo-diagnose', ic: '🩺', label: 'CosmoDiagnose', desc: 'Amazon Listing 诊断（COSMO）', rootOnly: true },
   { id: 'traffic-compare', ic: '📈', label: '流量分析', desc: '自身流量结构 + 竞品流量对比（SIF 数据源）', rootOnly: false },
+  { id: 'rank-monitor', ic: '📊', label: '排名监测', desc: '关键词下竞品排名 / ASIN 各词自然排名，支持每日监测', rootOnly: false },
 ];
 
 /** 当前角色可见的技能：root 看全部，其他角色只看非 rootOnly 的 */
@@ -40,6 +41,25 @@ interface AiTask {
 }
 
 // ---- 流量分析数据类型（对应 backend/traffic_compare.py 的 data.json） ----
+interface KeywordSignal {
+  keyword: string;
+  traffic_share: number | null;
+  contri_change: number | null;
+  organic_rank: number | null;
+  rank_evolution: string | null;
+  health: string | null;
+  search_volume: number | null;
+  natural_ratio: number | null;
+  top3_click_share: number | null;
+}
+interface PriceBand {
+  own_price: number;
+  competitor_count: number;
+  min: number;
+  median: number;
+  max: number;
+  premium_pct: number | null;
+}
 interface TrafficChannel {
   key: string; name: string;
   score: number | null; share_of_ad: number | null; share_of_total: number | null;
@@ -92,9 +112,17 @@ interface TrafficDataset {
     stats: TrafficStats;
     variants: any[];
     variant_concentration: { variant_count: number; variants_with_flow: number; top1_share: number | null; hhi: number | null } | null;
+    keywords?: any[];
+    keyword_signals?: {
+      top_keywords?: KeywordSignal[];
+      rank_gaps?: KeywordSignal[];
+      declining?: KeywordSignal[];
+      gaining?: KeywordSignal[];
+    };
     errors?: Record<string, string>;
   };
   competitors: any[];
+  price_band?: PriceBand | null;
   auto_competitor_pool: any[];
   auto_note?: string;
   auto_used_keywords?: string[];
@@ -367,6 +395,96 @@ function Metric({ label, value, hint, cls }: { label: string; value: React.React
   );
 }
 
+// ---- 关键词信号（报告里「调哪些词」的依据） ----
+type KwGroupKey = 'top_keywords' | 'rank_gaps' | 'declining' | 'gaining';
+const KW_GROUPS: { key: KwGroupKey; label: string; hint: string }[] = [
+  { key: 'top_keywords', label: 'Top 词', hint: '按流量占比排序' },
+  { key: 'rank_gaps', label: '排名断档', hint: '有流量但自然位缺失或靠后' },
+  { key: 'declining', label: '贡献下滑', hint: '流量贡献在下降' },
+  { key: 'gaining', label: '增长词', hint: '流量贡献在上升' },
+];
+
+/** 自然排名 → 人话。SIF 没有自然位时返回 null，不等于排名靠后，必须区分 */
+export function rankText(r: number | null | undefined): string {
+  if (r === null || r === undefined) return '无自然位';
+  // 排名必须取整：接口/历史数据里可能是 12.0，直接插值会显示成「#12.0 第2页」
+  const n = Math.round(Number(r));
+  if (!Number.isFinite(n) || n <= 0) return '无自然位';
+  if (n <= 10) return `#${n} 第1页`;
+  if (n <= 30) return `#${n} 前3页`;
+  return `#${n} 第${Math.ceil(n / 10)}页`;
+}
+export function rankCls(r: number | null | undefined): string {
+  if (r === null || r === undefined || r <= 0) return 'tf-rank-none';
+  if (r <= 10) return 'tf-rank-top';
+  if (r <= 30) return 'tf-rank-mid';
+  return 'tf-rank-low';
+}
+
+/** 价格带兜底：旧数据集没有 price_band 字段时前端自己算，保证历史记录也能显示。
+ *  算法与后端 statistics.median 一致（偶数个取中间两个的平均）。 */
+function computeBand(data: TrafficDataset): PriceBand | null {
+  const own = data.own?.profile?.price;
+  const prices = (data.competitors || [])
+    .filter((c: any) => !c.error && c.profile?.price != null)
+    .map((c: any) => Number(c.profile.price));
+  if (!own || !prices.length) return null;
+  const sorted = prices.sort((a, b) => a - b);
+  const mid = sorted.length % 2
+    ? sorted[(sorted.length - 1) / 2]
+    : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+  return {
+    own_price: own,
+    competitor_count: sorted.length,
+    min: sorted[0],
+    median: mid,
+    max: sorted[sorted.length - 1],
+    premium_pct: mid ? (own - mid) / mid * 100 : null,
+  };
+}
+
+function KeywordSignals({ signals }: {
+  signals: NonNullable<TrafficDataset['own']['keyword_signals']>;
+}) {
+  const groups = KW_GROUPS.filter(g => (signals[g.key] || []).length > 0);
+  const [active, setActive] = useState<KwGroupKey>(groups[0]?.key || 'top_keywords');
+  const rows = (signals[active] || []) as KeywordSignal[];
+  if (!groups.length) return <div className="ai-empty">本期未采集到关键词信号</div>;
+  return (
+    <>
+      <div className="tf-mini-tabs">
+        {groups.map(g => (
+          <button key={g.key} className="tf-mini-tab" data-active={active === g.key}
+            onClick={() => setActive(g.key)} title={g.hint}>
+            {g.label}<i>{(signals[g.key] || []).length}</i>
+          </button>
+        ))}
+      </div>
+      <div className="tf-table-wrap">
+        <table className="tf-table">
+          <thead>
+            <tr><th>关键词</th><th>流量占比</th><th>自然排名</th><th>自然位占比</th>
+              <th>Top3点击</th><th>搜索量</th><th>状态</th></tr>
+          </thead>
+          <tbody>
+            {rows.map(k => (
+              <tr key={k.keyword}>
+                <td className="tf-kw">{k.keyword}</td>
+                <td className="mono">{fmtShare(k.traffic_share)}</td>
+                <td className={'mono ' + rankCls(k.organic_rank)}>{rankText(k.organic_rank)}</td>
+                <td className="mono">{fmtShare(k.natural_ratio)}</td>
+                <td className="mono">{fmtShare(k.top3_click_share)}</td>
+                <td className="mono">{fmtNum(k.search_volume)}</td>
+                <td><span className={'tf-health tf-health-' + (k.health || 'none')}>{k.health || '—'}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
 /** 找渠道结构里差异最大的一项，用一句话表达 */
 function topChannelDiff(diff: Record<string, number | null> | undefined): string {
   if (!diff) return '—';
@@ -399,6 +517,7 @@ function TrafficPanel({ data, selected, onToggle, onApply, busy,
   const pool = data.auto_competitor_pool || [];
   const conc = own.variant_concentration;
   const lastIncomplete = data.meta.latest_point_complete === false;
+  const band = data.price_band || computeBand(data);
   // 数据预览 / 分析报告 两个 tab：报告不再压在所有数据下面，免得看完结论要一路滚回去
   const [tab, setTab] = useState<'data' | 'report'>('data');
   useEffect(() => {
@@ -567,6 +686,22 @@ function TrafficPanel({ data, selected, onToggle, onApply, busy,
             {data.auto_used_keywords?.length ? ` · 推荐依据：${data.auto_used_keywords.join(' / ')}` : ''}
           </span>
         </div>
+
+        {band && (
+          <div className="tf-band">
+            <span>自身 <b>${fmtNum(band.own_price, 2)}</b></span>
+            <span>竞品中位 <b>${fmtNum(band.median, 2)}</b></span>
+            <span className="tf-band-range">
+              区间 ${fmtNum(band.min, 2)} ~ ${fmtNum(band.max, 2)}（n={band.competitor_count}）
+            </span>
+            <span>对中位溢价{' '}
+              <b className={(band.premium_pct ?? 0) > 20 ? 'tf-bad' : ''}>
+                {fmtSigned(band.premium_pct)}
+              </b>
+            </span>
+          </div>
+        )}
+
         {comps.length === 0 ? (
           <div className="ai-empty">
             {data.auto_note || '暂无竞品。可在左侧填写竞品 ASIN，或从下方候选里勾选。'}
@@ -613,6 +748,21 @@ function TrafficPanel({ data, selected, onToggle, onApply, busy,
           自然占比差为竞品减自身，单位百分点。
         </div>
       </div>
+
+      {/* 关键词信号 */}
+      {own.keyword_signals && (
+        <div className="tf-card">
+          <div className="tf-card-head">
+            <span>关键词信号</span>
+            <span className="tf-card-sub">报告里「调哪些词」的依据 · 近 30 天</span>
+          </div>
+          <KeywordSignals signals={own.keyword_signals} />
+          <div className="tf-note">
+            「无自然位」表示该词有流量但 listing 没进自然结果，不等于排名靠后；
+            排名为页内位置，数字越小越好。状态为 SIF 的健康度判定（core 稳 / volatile 波动 / at_risk 有风险）。
+          </div>
+        </div>
+      )}
 
       {/* 候选池 */}
       {pool.length > 0 && (

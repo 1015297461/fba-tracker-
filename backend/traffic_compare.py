@@ -491,6 +491,8 @@ def own_snapshot(asin, country="US", period=None, listing_search=True):
     """
     period = period or normalize_period()
     tp, tv = period["type"], period["value"]
+    # 关键词信号接口只认 lately 7/30 天，按周期就近取档
+    kw_days = 30 if period["days"] > 7 else 7
 
     def get_overview():
         _count_call()
@@ -510,17 +512,24 @@ def own_snapshot(asin, country="US", period=None, listing_search=True):
         return sf.asin_listing_keywords(asin, country, dimension="asin",
                                         time_piece_type=tp, time_piece_value=tv)
 
+    def get_keyword_signals():
+        _count_call()
+        return sf.asin_keyword_signals(asin, country, kw_days, 30)
+
     def get_profile():
         _count_call()
         rows = sf.asin_profiles([asin], country)
         return rows[0] if rows else {}
 
-    results = _pmap(lambda fn: fn(), [get_overview, get_trend, get_structure, get_keywords, get_profile], 3)
+    results = _pmap(lambda fn: fn(),
+                    [get_overview, get_trend, get_structure, get_keywords,
+                     get_keyword_signals, get_profile], 3)
     ov, ov_err = results[0]
     tf, tf_err = results[1]
     st, st_err = results[2]
     kw, kw_err = results[3]
-    prof, prof_err = results[4]
+    kws, kws_err = results[4]
+    prof, prof_err = results[5]
 
     # 概览与趋势是报告主干，取不到就没法分析 → 直接抛给上层报错
     if ov_err:
@@ -559,8 +568,11 @@ def own_snapshot(asin, country="US", period=None, listing_search=True):
         "variants": variants,
         "variant_concentration": _variant_concentration(variants),
         "keywords": kw if not kw_err else [],
+        # 关键词级信号：报告里「调哪些词」的唯一依据，没有它模型只能写空话
+        "keyword_signals": kws if not kws_err else {},
         "period": period,
         "errors": {k: v for k, v in (("structure", st_err), ("keywords", kw_err),
+                                      ("keyword_signals", kws_err),
                                       ("profile", prof_err)) if v},
     }
 
@@ -808,6 +820,25 @@ def _new_dataset_id():
     return uuid.uuid4().hex[:12]
 
 
+def _price_band(own: dict, competitors: list):
+    """自身价格 vs 可比竞品价格带。报告与预览页共用同一份数，避免两边算得不一样。"""
+    own_price = (own.get("profile") or {}).get("price")
+    prices = [((c.get("profile") or {}).get("price")) for c in (competitors or [])
+              if not c.get("error")]
+    prices = [p for p in prices if p is not None]
+    if not own_price or not prices:
+        return None
+    med = statistics.median(prices)
+    return {
+        "own_price": _r(own_price, 2),
+        "competitor_count": len(prices),
+        "min": _r(min(prices), 2),
+        "median": _r(med, 2),
+        "max": _r(max(prices), 2),
+        "premium_pct": _r((own_price - med) / med * 100 if med else None, 1),
+    }
+
+
 def build_dataset(asin, country="US", period=None, competitor_asins=None,
                   auto_competitors=True, listing_search=True, counter=None):
     """组装完整数据包：自身 + 竞品（用户指定优先，否则用自动推荐）+ 元数据。
@@ -894,6 +925,7 @@ def build_dataset(asin, country="US", period=None, competitor_asins=None,
         },
         "own": own,
         "competitors": competitors,
+        "price_band": _price_band(own, competitors),
         "auto_competitor_pool": auto.get("candidates") or [],
         "auto_note": auto.get("note") or "",
         "auto_used_keywords": auto.get("used_keywords") or [],

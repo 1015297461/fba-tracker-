@@ -145,6 +145,15 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   → 调模型 → 输出 Markdown，存 data/traffic-reports/<id>.md
   llm_client.py                # 通用模型调用（OpenAI 兼容，默认 DeepSeek）：读 data/ai-config.json，
                               #   零第三方依赖（urllib）。换供应商只改配置，不动代码
+  rank_monitor.py              # 排名监测的抓取/快照/变动检测/定时调度。rmon_* 共 8 张表：
+                              #   SIF 链路 targets/snapshots/events/settings/queries；
+                              #   前台实测链路 srps（榜单快照）/srp_cfg（每词页数）/srp_targets（每天定时）
+  routes/rank_monitor_routes.py # 排名监测路由：SIF 即时查询/监测目标 CRUD/快照/事件/导出
+                              #   + 前台实测 `/api/rank/scrape/*`（异步抓取/进度/日期快照/趋势/异动/定时目标）
+  search_fetcher.py            # 前台实测：抓亚马逊搜索结果页整页榜单（自然位/广告位/标题/价格），
+                              #   复用 product_fetcher 的会话（i18n-prefs 货币 + 令牌桶），见「前台实测」
+  rank_fetcher.py              # 老版「逐个 ASIN 定位排名」（裸 urllib，无会话，仅 routes/rank.py 在用）
+
   pdf_splitter.py              # PDF 拆分工具后端逻辑（依赖 pypdf，见 requirements.txt；
                               #   TMP_DIR 锚定在 PROJECT_ROOT/data/pdf_tmp，不是 backend/ 自己的目录）
 
@@ -383,6 +392,243 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 
 **竞品自动推荐**：自身 Top 3 流量词（按 `traffic_share`）→ `market_get_keyword_root_competitors` → 按命中词数/覆盖搜索量聚合 → 排除自身与同品牌 → `market_get_asin_profile` 补价格/类目并标注「跨类目 / 价差 >50%」。**warnings 只做标注不做排除**（曾因把 warnings 当过滤器导致候选全被滤光、竞品数为 0）。
 
+### 排名监测（`rank_monitor.py`）
+
+两个方向、三种「排名」口径，**字段名刻意分开，页面也必须分开标注**：
+
+| 字段 | 来源 | 含义 |
+|---|---|---|
+| `share_rank` | `market_get_keyword_competition` | 该词下的**流量份额排名**（按 total_share 排） |
+| `organic_rank` | `market_get_asin_keyword_signals` | SIF 观测的**自然搜索位**（null = 无自然位，不等于排名靠后） |
+| `aba_rank` | `market_get_asin_aba_footprint` | ABA **买家实际点击**的第 1/2/3 位 |
+
+同一个 ASIN 在同一个词上可以同时「不在份额榜 + 自然第 130 位 + ABA 未进 top3」。
+`total_share` 量级与市场 Top3 点击份额对不上（前者 Top3 合计 1.4%、后者 61.2%），
+**只能用于排序，不可当百分比展示**。
+
+- **表**：`rmon_targets` / `rmon_snapshots` / `rmon_events` / `rmon_settings` / `rmon_queries`
+  （SIF 链路）+ `rmon_srps` / `rmon_srp_cfg` / `rmon_srp_targets` / `rmon_asin_meta`
+  （前台实测链路 + ASIN 静态属性缓存，见下一节）。
+  **前缀 rmon_ 是必须的**：项目里已有 SIF 爆品监控用的 `rank_snapshots`，同名建表会被
+  `IF NOT EXISTS` 静默跳过，然后索引报 `no such column`。
+- **阈值**集中在 `rank_monitor.py` 顶部：`RANK_STEP_ALERT=10`（自然排名变差位数）、
+  `SHARE_RANK_STEP=5`（份额排名变化位）、`TOP3_SHARE_STEP=0.05`（Top3 点击份额变化）。
+- **首次抓取不产生事件**（没有基准，产生全是噪音）；同一天重跑覆盖当日快照，不累积。
+- **定时**：`RankMonitorWorker` 每 5 分钟检查一次。
+  因为 SIF 的份额榜与 `organic_rank` 都是**周维度**（同一周期内重复抓结果完全一样，官方口径：
+  自然位是「周期内最后一次抓取值」），所以 `daily` 目标**也按「距上次 ≥6 天」限制**，
+  `weekly` 只在周一跑；目标之间 `RUN_GAP_SEC=1.5` 秒串行，防撞 SIF 的 QPM 40。
+  早先 daily 是真每天跑，结果是同一周内存七份完全一样的快照、趋势图上一串重合点。
+- **左栏只有一个「记录」列表**（2026-10-28 简化）：`rmon_queries`（SIF）与 `rmon_srps`（前台实测）  混排、按时间倒序，每项带来源标签 + 结果摘要 + 单条导出（CSV / Excel）+ 删除。
+  定时信息**挂成记录上的徽章**（`每天 09:00` / `每周一`），不再单独占一块「定时监控」区域 ——
+  曾经是「定时监控（折叠）+ 查询记录」双层结构，用户抓完榜单在两个地方都找不到，看着像数据没变。
+  · 只加了定时、还没跑过的词补一条「待首次抓取」，否则加完监测在列表里看不到它
+  · 徽章上的暂停/删除直接作用于对应的 target（`toggleSrpTarget` / `toggleSifTarget`）
+  · 切换记录时按词判断清空对侧数据，避免出现「上下两块显示不同词的数据」。
+- **监测详情页已删除**（`MonitorDetail` / `Fold` / 「返回双栏」）。点任何记录，右栏直接显示
+  A/B 两块；不再有「点进去看详情 → 再返回」这一层，也就不需要返回按钮。
+  原先详情页里的历史快照、变动记录、采集设置，现在分别由左侧记录列表、A 区异动流、配置弹窗承担。
+- **快照存全量 100 条**（`TOP_N_KEEP=100`），前端默认显示 20 行 + 「展开全部」，别在后端截断。
+- **我的卡位有两级兜底**：`my_position` 判 `absent` 时先扫份额榜（可能仍在榜内，只是卡位不足），
+  榜内也没有就**额外查一次 `asin_keyword_signals` 补自然搜索位**（`asin_organic_rank`）——
+  用户问「我这个 ASIN 在这个词排第几」，十有八九想问的是这个，不是份额名次。
+- **额外指定的 ASIN（`rmon_targets.extra_asins`）**：用户可以在「采集设置」里手填任意 ASIN，
+  和「我的 ASIN + 份额前 N 名」一起采自然位。库里存 JSON 数组串，
+  统一用 `rank_monitor.parse_extra_asins()` 解析（兼容 list / JSON / 逗号 / 空格 / 中文顿号，
+  自动大写去重，上限 `MAX_EXTRA_ASINS=10`）。
+  · 采集范围顺序：我的 ASIN → 份额前 n → 额外 ASIN（去重）
+  · 快照里同时写 `extra_asins` 字段，**趋势图靠它才知道要画这几条线**（它们不在 `top` 里）
+  · 每个额外 ASIN = **+1 次 SIF 调用/次**，前端在采集设置里实时显示总调用量
+- **查询历史按天去重**（`add_rank_query`）：同一天、同一目标**只保留一条**，
+  重查会先删当日旧行再插入。之前是纯 INSERT，早上查一次下午再查一次，列表里就是
+  **两条一模一样的记录**，看起来像「点一下刷新多出一条」。趋势按天取点，本来也只用最后一条。
+- **变动记录同日重跑不重复**（`_run_target_locked`）：同日刷新时基准仍是「上一个不同日期」，
+  diff 结果和第一次相同，所以写之前先 `clear_rank_events_on(tid, today)`；
+  不清理就会每刷一次追加一遍（症状同样是「两条一样的记录」）。
+- **⚠ `organic_rank` 是复合串，必须走 `sif_fetcher.parse_rank()`**：SIF 原始值是
+  `"p{页},{页内位次}/{每页条数}"`（如 `"p1,2/48"`）。用 `_num()` 会先把逗号去掉变成
+  `"p12/48"`、再正则取第一段数字 → **12**，于是「第 1 页第 2 位」被存成「第 12 位」，
+  整列自然位全是脏数据（2026-10-28 修复）。绝对位次 = `(页-1)*48 + 页内位次`，
+  换算后与 SIF 官方 `rankAvg` 逐词吻合（`p1,2`→2 vs rankAvg 2；`p2,42`→90 vs 84）。
+- **`organic_rank` 的口径（官方 schema 原文）**：「自然排名 = 所选周期内**最后一次抓取值**，
+  与官网列表「最新自然排名」列同口径；`null` 表示该周期内未出现在自然位」。
+  配套字段 `organic_rank_time_cn/us` 是该值的**抓取时间**。
+  所以它不是日均值、也不是当日实时排名——**同一周期内重复抓取值不变**，
+  这正是「每天抓到的自然位完全一样」的原因（先用时间字段确认，别急着当 bug 修）。
+- **MCP 没有「每词每日自然排名」序列**：`ops_get_asin_traffic_trend_detail` 虽支持
+  `granularity=day`，但日粒度下 `pchangeReason.nfInfo.rankAvg` 为 `null`，只给
+  `change`（如 `"11_10"`，官方 schema 未定义其格式）；周粒度才有 `rankAvg`（期内均值）
+  + `inFre`（期内出现天数）。要做每日曲线只能等 SIF 开放或自行爬前台。
+- **竞品份额榜有「自然位」列**：直接读快照里的 `data.organic`（`{asin: rank|null}`），
+  采集范围内 **0 次额外调用**即显示；范围外的行才显示「查」按钮按需查 1 次。
+  注意 `organic` 里**没有 key 表示没采集**，`key=null` 表示「查了确实没有自然位」，两者不能混。
+- **趋势条数跟随采集设置**：`/api/rank/trend` 的 `topN` 默认取该目标的 `competitor_n`（1~15），
+  前端 `apiTrend(id, cn)` 把「采集设置」里的 cn 直接传过去，cn 变化会立刻重画。
+  曾经前端写死 `topN=5`、后端又 `min(5, …)` 截断，结果配了 10 个竞品也只画 5 条。
+  前端还会**过滤掉全 null 的线**（配大了但还没采到的末尾竞品），否则图例有、图上没有，像丢数据。
+- **大块 JSX 重排后要统计渲染点数量**：`KeywordKpis` / `KeywordResult` / `AsinResult` 曾被
+  重复渲染成「两套 KPI + 两张竞品份额榜」，这类重复 tsc/build 都不报错，只有肉眼能发现。
+- **折线图支持单点**（`LineChart`）：守卫从「至少 2 天」放宽到「至少 1 个点」，
+  `n===1` 时 path 只有一个 M 点画不出线，额外渲染圆点。
+- **查询也留痕**：`/api/rank/query` 成功后自动写 `rmon_queries`（kind/value/own_asin/summary/data/username），
+  支持列表、详情回看、单条删除、清空；导出 Excel 走 `/api/rank/export?id=`（单条）或 `?all=1`。
+
+#### 前台实测（爬虫抓搜索结果页，`search_fetcher.py`）
+
+**与上面的 SIF 链路完全隔离**：数据存 `rmon_srps`，接口全在 `/api/rank/scrape/*`，
+页面上也不做交叉对比。同一个 ASIN 两边数字不一样是**正常的**——
+SIF 是周期内最后一次采样值，爬虫是点击那一刻的实测值，中间排名变了就会不同；
+何况亚马逊本身给不同 IP/会话的顺序就有差异。加「差异列」只会让人纠结该信哪个。
+
+- **必须复用 `product_fetcher` 的 `SessionState`**，不能裸 `urllib` 请求：
+  · 会话里预置 `i18n-prefs=USD` + `warm_up_session()` 先拿 cookie，
+    否则本机出口 IP 被地理定位成日本用户，`amazon.com` 也返回 **JPY 价格**（实测 8,995/11,520）
+  · 每次响应后要**覆写回 `i18n-prefs`**（Amazon 会改它）
+  · 令牌桶限流 + Cookie 池是躲 503 的前提
+- **页数 1~5，默认 3，且是「每个关键词一份」**（`rmon_srp_cfg`）：每页实测 48 个卡片，
+  所以**页数 = 请求数**。5 页 = 240 位是上限，再往后基本是无关长尾，且请求越多越容易被拦。
+  不同词的榜单深度需求不一样（头部词 2 页够、长尾词要多翻几页），所以不再用全局一个值：
+  抓取时传了就存到该词名下；不传则依次回落「该词配置 → 全局默认 `scrape_pages` → 3」。
+- **结果页是上下两块并列，不是 tab 切换**：`A · 前台实测（爬虫）` / `B · SIF 平台数据`，
+  各自带独立空状态（没抓过 / 没查过都会提示下一步该点哪个按钮）。
+  曾经做成 tab 互斥，用户只看到一块，以为另一块的数据没出来 —— 这两块要「同时可见」。
+- **限速实测**（US 站，本机住宅 IP）：短间隔连发 3~4 次即 503，静默 60~90s 恢复；
+  页间 14~24s 随机、首次退避 25s、二次 60s、三次 120s 都能过。
+  **同一时间只允许一个抓取任务**（`scrape_busy()`），并发只会互相加剧限流。
+- **软限流降级页要识别**：200 但 `s-search-result` 为空 → 记 `no_cards` 并重试，
+  不能当「这个词没结果」；真没结果页有明确文案（`No results for` / `did not match any products`）→ 记 `empty` 且**不重试**。
+  卡片数 < 10 视为异常，整页丢弃不写脏数据。
+- **广告判定**用多重信号（本地化「赞助」词 + `s-sponsored-label` / `AdHolder` / `puis-sponsored`）。
+  注意页面上还有大量 `Sponsored Ad - xxx` 的**独立广告横幅模块**，它们不在搜索结果流里，
+  本就不该计入 —— 曾据此误判「广告识别失灵」，实际是搜索流里只有 1 个广告位。
+- **榜单表每行带「页数」和「销量」**：`page` 在 `fetch_srp` 跨页合并时写入（`it["page"] = page`），
+  `sales` 由 `_SALES_RE` 从卡片里抽「`500+ bought in past month`」得到，只留量级（`500+`）。
+  实测一页 60 个卡片里约 22 个有销量 —— **其余是亚马逊本来就不展示**，`None` 不是 0，页面显示「—」。
+  两者的意义不同：自然位是跨页累加的全局位次，页数是这条结果落在第几页（每页约 48~60 个卡位）。
+- **首屏自动选中必须等四个列表都加载完**（`initDone`）：`queries` 常比 `srpList` 先返回，
+  若「records 一非空就选第一条」，会选中一条只有 SIF 的临时记录，A 区被 `setScrapeSnap(null)` 清空，
+  表现为「第一次进来 A 没数据、再点一次才出来」。选中时优先挑 `scrape && !scrape.pending` 的那条。
+- **上架日期搜索页拿不到**（实测 1.6MB 原始 HTML 里 `Date First Available` 出现 **0 次**），
+  它只在商品详情页。但「一个词 60 个 ASIN = 60 次网页请求」必被封，所以改走 SIF。
+  · ⚠ **`market_get_asin_profile` 的 `first_available_day` 覆盖率极低**：实测某词 145 个
+    ASIN 只有 **6 个**有值，连 2013 年的老品都是空串（不是新品才缺）。所以它只能当兜底。
+  · **主源改成竞品份额榜的 `listed_age_days`（上架天数）**：实测 100/100 齐全，
+    而且这份数据 B 区本来就要拉，从已存的 `rmon_queries.data.top` 里读 —— **零额外调用**。
+    日期 = 今天 − 天数，所以 `rmon_asin_meta.src` 记 `age` 表示「换算式」，
+    tooltip 必须注明「可能差 1 天」，不能当亚马逊原文。
+  · 三路取数顺序：缓存 → 竞品榜天数 → asin_profile。**竞品榜要能覆盖缓存里的空值**，
+    否则早期把「没有日期」写进负缓存后永远补不上（踩过）。
+  · 实测补齐率：4%（只用 asin_profile）→ **58%**（144 个里 84 个）。剩下的都是
+    排名 100 以后、不在竞品榜里的长尾 ASIN，SIF 确实没有。
+  · 详情页兜底**已验证不可行**：抓回来 2.1MB 但可见文本为空（降级页），且成本是每 ASIN 1 次请求。
+- **榜单表点表头排序**（`sort` state）：循环「升序 → 降序 → 恢复原始顺序」。
+  空值（广告位没有自然位 / 商品没展示销量 / SIF 无上架日期）**无论升降都恒排最后**，
+  否则降序时它们会全部冒到第一屏。销量列要按数值排，不能按字符串：
+  `1.2K+` 必须大于 `500+`（正则取数字+单位换算）。
+- **「获取最新数据」按天分组去重**（`save_rmon_srp` / `add_rank_query` 返回 `{changed, id}`）：
+  · **跨天**：每天至少一条，保证趋势/热力图不断点
+  · **同天**：与当天最后一条比对指纹 —— 相同则只更新 `checked_at`（不新增），不同则**追加**一条
+  · 指纹只取**结构**（榜单 = ASIN 顺序 + 自然位 + 广告标记；SIF = 份额 + 自然位），
+    **不含价格/评分/销量**：这三样每次抓都在变，纳入比对等于每次都是「有变化」，
+    一天点 5 次就 5 条，去重形同虚设。
+  · ⚠ 老库有 `UNIQUE INDEX ux_rmon_srps(keyword,country,snap_date)`，**必须 DROP**，
+    否则同日第二条直接报 `UNIQUE constraint failed`（一开始就是这么踩的）
+  · 升级前的老记录 `fingerprint` 为 NULL：保存时会用它自己的 data 现算一次补上，
+    否则第一次点击会误判成「有变化」而凭空多一条
+  · 实现在 `backend/fingerprint.py`（单独成文件是为了 db 层也能用，避免循环依赖）
+  · 「无变化」那几次写 `rmon_checks` 留痕（只存时间+一句话，不存快照），
+    前端显示「上次检查 15:22」
+- **暂停/继续是 A、B 各自一份**（`.rk-li-pause`，就在各自那行末尾的徽章右侧）：
+  · A 走 `apiSaveScrapeTarget({enabled: !enabled})`，只停「每天自动抓取」，已抓到的榜单不动
+  · B 走 `apiUpdateTarget({id, paused})`，只置暂停，不删目标（历史快照要留）
+  · ⚠ 列表项主区从 `<button>` 改成了 `<div role="button">`：行内要放暂停按钮，
+    按钮套按钮是非法 HTML，点击还会连带触发「打开记录」。改完要保留键盘可达（Enter/Space）
+  · `.rk-li-row` 的网格从 3 列改成 4 列（来源 / 摘要 / 徽章 / 暂停），没有定时的行补一个空
+    `<span />` 占位，否则列会错位
+- **趋势在定时任务跑完时顺带刷新**（`RankMonitorWorker._refresh_trend`，`force=True` 绕过 12h 缓存）：
+  否则定时跑完趋势还是旧的，只有你打开页面才会去取。
+- **关键词搜索趋势走 `market_get_keyword_history`**（不是 `root_trend`）：
+  要的是「这个词自己」的周搜索量与 ABA 排名，`root_trend` 是词根含长尾的盘子，两者口径不同。
+  · 缓存 12 小时落 `rmon_kw_trend`（ABA 是周数据，一天内不该反复变化，也不该反复烧调用）
+  · 前端 `KeywordTrendCard`：**两条曲线同图 + 左右双 Y 轴**。搜索量 0~20 万、排名 0~5000，
+    共用一根轴时排名线会被压成贴地直线，所以 `Series` 加了 `axis: left|right`，
+    `LineChart` 按左右各自算值域（`dLeft` / `dRight`），右侧刻度用橙色、右列留 62px。
+  · 排名用 `negative` 反转，让「名次靠前」显示成「线在上」；右轴刻度因此是
+    「越往上数字越小」—— 别照着数值大小去改，会反。
+  · **点图例单独查看**（`legendClick`）：点一条只画这一条，再点同一恢复两条。
+    关键点：只画一条时另一侧值域为 `null`，网格必须退化成「有哪侧用哪侧」，
+    否则单看排名时整张图空白。切换时间范围时要重置 `only`，不然索引可能越界。
+- **自然位是跨页累加的**：`org` 只对非广告卡片 +1，广告卡片 `org=None`。
+  所以「自然位 92 / 总条目 96」是正常的（4 个广告位不占自然位）。
+- **趋势聚合只留常驻者**（`build_srp_trend`）：一个词一天 144 条，直接按 ASIN 画线会糊成一片。
+  只保留「出现 ≥2 天」或「最近一次仍在榜」的 ASIN，其余只出现在榜单表和异动里。
+  **主视图用热力图（日期 × ASIN）而不是折线** —— 位次是「存在/缺失」的离散事件，
+  折线要么断开、要么连出误导性的直线，热力图空白格天然表达「掉榜」。
+- **异动流阈值**：`SRP_TOP_N=20`（只看前 20 名的进出）、`SRP_STEP_ALERT=10`（位次变化 ≥10 位才算）。
+  设太小会天天报警 —— 亚马逊自身排序就有 ±2~3 位抖动，同一时刻不同 IP 抓到的顺序都不完全一样；
+  报警一多用户就再也不看了。事件类型：`drop_out` / `enter_top` / `down` / `up`，
+  按严重度排序后返回（掉榜 > 新进 > 下跌 > 上升）。
+- **异步任务必须**：3 页要 1~2 分钟（页间限速），同步请求浏览器早就超时了。
+  任务记录放内存（15 分钟过期），结果本身落 `rmon_srps`，过期不影响数据。
+- **定时抓取走独立表 `rmon_srp_targets`**（keyword / pages / daily_at / enabled），
+  与 SIF 的 `rmon_targets` 分开：那条是周数据 + SIF 配额，这条是每天爬搜索页 + IP 限流，
+  节奏约束完全不同。`RankMonitorWorker` 里单独一段处理，同一天只跑一次、到点才跑，
+  且与手动异步抓取共用 `_SRP_RUN_LOCK` 互斥锁（若用户正在手动抓，定时抓取自动顺延至下一轮，防止并发撞 503）。
+- **双入口交互**：
+  · 左栏「查询 / 抓取」按钮或回车键：弹出 `RunConfigModal`，支持 A/B 两组同时勾选并配置每日自动抓取 / 每周 SIF 监测；
+  · 右栏顶部 `.rk-setup` 卡片：A 区「立即抓取」直接按所选页数抓搜索页，B 区「立即查询」直接查一次 SIF，无需重复弹窗。
+- **A 区支持「我的 ASIN」卡位识别、商品主图与 CSV 导出**：
+  · 填写「我的 ASIN」后，A 区 KPI 第四格直接展示自然位次/广告位状态，表格对应行 `.rk-mine` 高亮；
+  · 表格渲染商品主图缩略图（悬停放大）、评论数，并支持按 ASIN/标题实时过滤及一键导出 UTF-8 BOM CSV。
+
+  **注意**：`_user(self)` 只判空、返回 user，需要记发起人时必须接住返回值 `user = _user(self)`，
+  否则 except 会把 `name 'user' is not defined` 吞掉，表现为「逻辑没生效但不报错」。
+- **导出分两个 sheet**（`rank_export.py`，openpyxl）：关键词竞品榜 / ASIN自然排名。
+  两种结果列结构不同，不硬塞一张表。
+- **趋势画的是自然位，不是份额排名**：`fetch_keyword` 抓完份额榜后会额外查
+  「我的 ASIN + 份额前 N 名」的自然搜索位，存进快照的 `organic: {asin: rank}`；
+  `_series_from_docs` 关键词维度只读 `organic`，**不读 `share_rank`**。
+  调用量从 1 次变 1+N 次（`track_organic` 默认 **5**，即「我的 ASIN + 份额前 5 名」= 最多 6 次，
+  实测整词抓取约 24 秒；传 0 可关掉省配额）。
+  ⚠ `track_organic` 必须 ≥ 趋势图要显示的竞品数（`build_trend` 的 `top_n`，默认 5，路由上限也收到 5），
+  否则多出来的线永远是空的——曾经一个 3 一个 5，图上就是两条永久空线。
+  补采之前的老快照没有 `organic` 字段 → 曲线全空，UI 要明确提示"下一次抓取后才有"，别画空图。
+  ⚠ **采集失败绝不能写 `None`**：`None` 的语义是「查了，确实没有自然位」，失败写成 None
+  会让趋势变成「自然位消失」，是假数据。失败一律记进 `organic_failed`，key 不进 `organic`，
+  前端在 B 区提示「N 个竞品没采到，图上空白 ≠ 没有自然位」。
+  ⚠ 自然位/份额排名**一律取整**（`_rank_of` / `_rank_int` / 前端 `Math.round`）：
+  SIF 返回 `12.0` 这种浮点，直接插值会显示成「#12.0 第2页」。
+- **配置全部下沉到单个关键词**（2026-10 交互改版）：
+  · `rmon_targets.run_at`（HH:MM，空=当天首次检查即采集）、`competitor_n`（1~15，默认 10）、
+    `freq`（daily/weekly）、`paused`
+  · 全局只保留 `rmon_settings.default_competitor_n`，仅用于「加入监测」弹层的预填值，不参与调度
+  · **`get_rmon_settings()` 只返回白名单键** —— 老库可能残留已废弃行（如 `daily_at`），
+    不过滤会跟着返回，UI 上像"删了还在"（实际踩过一次）
+  · `competitor_n` 同时决定「采集几个竞品的自然位」和「趋势图画几条线」，**两者必须是同一个数**
+- **采集时刻**：`RankMonitorWorker` 每 5 分钟检查，`paused=1` 跳过，到该目标自己的 `run_at` 之后才跑；
+  weekly 仍限周一。
+- **加入监测也走同一个配置弹窗**（`RunConfigModal`）：竞品数/时刻/频率/我的 ASIN 都在里面，
+  不再有独立的 `AddTargetModal`。弹窗里会算「每次约 N 次 SIF 调用」（`1 份额榜 + (n+1) 自然位 + 1 批量档案`）。
+  ⚠ **打开时必须带出该词已有的定时配置**（`srpSched` / `sifSched` 两个 prop）。曾经硬编码
+  `setSrpDaily(false)`，结果顶部显示「已加入每天 07:00 抓取」而弹窗里没勾上 —— 用户看到的是自相矛盾。
+  ⚠ **取消勾选 = 停掉定时**：爬虫侧写 `enabled:false`（保留已抓到的榜单），SIF 侧设 `paused:true`（不删目标，
+  历史快照要留）。早先只处理「勾上」，取消勾选点了确定后台还在跑。
+- 错误提示统一用顶部 toast（4.5 秒自动消失），不占左栏空间。
+- **ASIN 悬浮弹窗**：档案来自 `asin_profiles`（批量 ≤20 个/批，**1 次调用**，查词时预取进
+  `data.profiles`），不用产品采集爬虫（那个每个 3~10 秒还有反爬）。
+  浮层必须 `createPortal` 挂到 body —— 表格容器是 `overflow:auto`，普通 absolute 会被裁掉；
+  鼠标从 ASIN 移到浮层靠「220ms 延迟关闭」保住。点击弹窗用 `/api/rank/asin-history` 拉逐日记录。
+- **排名趋势有两个数据源**（`build_trend()` + `/api/rank/trend`）：
+  ① 传 `targetId` → 用每日快照 `rmon_snapshots`（间隔规则，最准）；
+  ② 传 `kind` + `value` → 用该目标的**查询历史** `rmon_queries`（间隔不规则，同一天只取最后一次）。
+  后者让「没建监测目标」的用户也能看趋势——反复查同一个词本身就是时间序列。
+  关键词维度出「我方份额排名 + 前 N 名竞品排名」，ASIN 维度出「主要 N 个词的自然排名」。
+  ⚠ 排名的数字**越小越好**，折线往下是变好，UI 必须写清楚，否则会被读反。
+- **SIF 前台的「变体自然位排名趋势」MCP 没有开放**（24 个工具里无变体级自然位接口），
+  别去找；能做的是 ASIN 级排名趋势，自己算。
+- **两种动作别混**：`/api/rank/query` 是即时查询（抓一次直接返回，结果只进 `rmon_queries` 历史，
+  不建监测目标、不产生每日快照）；`/api/rank/targets` 才是加入监测（之后每天抓并存快照做变动检测）。
+
 **时间维度归一化（`normalize_period()`，所有时间入参的唯一入口）**
 
 SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的报错、有的静默空数据），因此前端不直接拼参数，统一交给 `normalize_period()` 纠正并在 `meta.period_notes` 里说明：
@@ -413,7 +659,33 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
 
 **已知坑**：`sif_fetcher.asin_listing_keywords()` 曾把返回键误写成 `data.get("list")`（真实键是 `asins`），导致该函数恒返回空列表，2026-10-21 实测修正；同时补齐了 `listing_traffic_overview()` / `listing_traffic_structure()`（后者按 `chars.dims[i]` 与 `chars.nfs[i]/ads[i]/...` 同下标配对，调用方不会错位）和 `asin_traffic_trend_full()`（返回 `latest_point_date` / `latest_point_complete`，并支持 `begin_date`/`end_date`）。
 
-**限流**：SIF 有 **QPM 40/60秒** 限制。一次完整取数约 18 次调用，正常单次没问题，但连续快速点两次预览会撞「当期订阅QPM限制已达上限(40/40)」。竞品属性已改为批量取（省 4 次），其余不再激进优化；错误信息原样透传给前端。
+**登录态持久化（2026-10-27）**：Token 落在 `data/fba-tokens.json`（与 `fba-users.json` 同目录，
+`data/` 已 gitignore），启动时 `_load_tokens()` 恢复未过期的登录态，有效期 `TOKEN_TTL_DAYS=30`。
+**早期 Token 只在内存里，服务一重启全员被登出**：前端拿不到数据 → 各列表变空，
+表现像「数据被清空」，实际是读不到。`_save_tokens()` 用 `.tmp` + `os.replace` 原子写。
+前端 `api()` 抛错带 `status`，401 转成 **sticky toast**（不自动消失），文案明确说
+「不是数据被删了，是登录态过期」，不再让用户误判。
+
+**超时与重试**：`call_tool(name, args, timeout=60, retries=0)` —— 默认不重试。
+重接口（`market_get_keyword_competition`、`market_get_asin_aba_footprint`）自带
+`timeout=90, retries=1`：`competePattern` 要拉前 100 名竞品，**实测 51 秒**才返回，
+60 秒超时线很容易踩到，报错形如 `请求失败：/api/search/competePattern?... Read timed out`。
+重试只对网络类错误生效（超时/连接断开/5xx）；**fatal 错误（配置/鉴权/工具不存在）一次都不重试**；
+限流与配额耗尽也不重试（交给调度层退避）。注意 SIF 按 tools/call 计费，超时那次通常已计费，
+重试会再花一次，所以只给重接口开。
+
+**限流**：SIF 有 **QPM 40/60秒** 限制（实测 1 次 `tools/call` = 1 个额度，滑动窗口）。
+
+**全局 QPM 闸门（`_acquire_slot()`，2026-10-27 加）**：所有调用（定时抓取 / 手动刷新 / 异步查询 /
+批量查自然位 / 悬浮档案）**共用同一份额度**，按 `60/QPM_LIMIT`（默认 34/分 → 间隔 1.76s）均匀排队。
+超额的调用是**排队等待**，不是失败 —— 之前各条路各走各的，一叠加就报
+`当期订阅QPM限制已达上限(40/40)`。可用 `SIF_QPM_LIMIT` 环境变量调整。
+撞到限流时 `call_tool` 会等 `QPM_COOLDOWN_SEC=15` 秒重试，最多 `QPM_RETRIES=3` 次，
+**不受 `retries` 参数控制**（限流不是真失败，抛出去只会让上层写出假数据）。
+
+**抓取互斥（`_capture_lock`）**：`run_target` 同一时间只允许一个在跑，拿不到锁就返回
+`{"busy": True}`（路由回 429）。定时、手动刷新、批量查询并发时会互相烧额度，
+而且会覆盖同一目标的快照。一次完整取数约 18 次调用，正常单次没问题，但连续快速点两次预览会撞「当期订阅QPM限制已达上限(40/40)」。竞品属性已改为批量取（省 4 次），其余不再激进优化；错误信息原样透传给前端。
 
 ### SIF 爆品关键词监控模块（`backend/sif_fetcher.py` 抓取器 + `backend/sif_signals.py` 信号引擎 + `backend/routes/sif_keywords.py` 路由/调度/编排 + `SifKeyword.tsx` 前端视图）
 

@@ -311,6 +311,164 @@ class DbState:
                     created_at   TEXT
                 );
 
+                -- 排名监测：监测目标（一个关键词 或 一个 ASIN）
+                CREATE TABLE IF NOT EXISTS rmon_targets (
+                    id          TEXT PRIMARY KEY,
+                    kind        TEXT NOT NULL,          -- keyword | asin
+                    value       TEXT NOT NULL,          -- 关键词 或 ASIN
+                    label       TEXT,
+                    country     TEXT DEFAULT 'US',
+                    own_asin    TEXT,                   -- 查词时可指定「我的 ASIN」以算卡位
+                    freq        TEXT DEFAULT 'daily',   -- daily | weekly
+                    enabled     INTEGER DEFAULT 1,
+                    username    TEXT,
+                    created_at  TEXT,
+                    last_run_at TEXT,
+                    last_status TEXT,
+                    last_error  TEXT
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_rmon_targets
+                    ON rmon_targets(kind, value, country);
+
+                -- 排名监测：每日快照（同一目标同一天只保留一条，重跑覆盖）
+                CREATE TABLE IF NOT EXISTS rmon_snapshots (
+                    id         TEXT PRIMARY KEY,
+                    target_id  TEXT NOT NULL,
+                    snap_date  TEXT NOT NULL,
+                    data       TEXT,
+                    created_at TEXT
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_rmon_snap
+                    ON rmon_snapshots(target_id, snap_date);
+
+                -- 排名监测：变动事件（规则判定，供页面高亮与提醒）
+                CREATE TABLE IF NOT EXISTS rmon_events (
+                    id          TEXT PRIMARY KEY,
+                    target_id   TEXT NOT NULL,
+                    detected_at TEXT,
+                    level       TEXT,                   -- high | mid | low
+                    kind        TEXT,                   -- rank_drop/rank_rise/new_entrant/drop_out/tier_change/share_shift
+                    subject     TEXT,
+                    detail      TEXT,
+                    prev_value  TEXT,
+                    curr_value  TEXT,
+                    acked       INTEGER DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS ix_rmon_events_target
+                    ON rmon_events(target_id, detected_at DESC);
+
+                -- 排名监测：全局设置（采集时刻、默认竞品数）
+                CREATE TABLE IF NOT EXISTS rmon_settings (
+                    k TEXT PRIMARY KEY,
+                    v TEXT
+                );
+
+                -- 排名监测：即时查询历史（查询也留痕，可删可导出）
+                CREATE TABLE IF NOT EXISTS rmon_queries (
+                    id         TEXT PRIMARY KEY,
+                    kind       TEXT NOT NULL,          -- keyword | asin
+                    value      TEXT NOT NULL,
+                    country    TEXT DEFAULT 'US',
+                    own_asin   TEXT,
+                    summary    TEXT,                   -- 列表页一句话摘要
+                    data       TEXT,                   -- 完整结果 JSON
+                    username   TEXT,
+                    created_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS ix_rmon_queries_time
+                    ON rmon_queries(created_at DESC);
+
+                -- 关键词搜索页快照（爬虫实测榜单，与 SIF 链路完全独立）
+                -- 一个词一次抓取 = 一行，data 里是整页 144 条（含广告标记与自然位）
+                -- 同词同日只留最新一条：趋势按天取点，同日多条没有意义
+                CREATE TABLE IF NOT EXISTS rmon_srps (
+                    id          TEXT PRIMARY KEY,
+                    keyword     TEXT NOT NULL,
+                    country     TEXT DEFAULT 'US',
+                    snap_date   TEXT NOT NULL,          -- YYYY-MM-DD
+                    pages       INTEGER,                -- 成功抓取页数
+                    org_total   INTEGER,                -- 自然位条数
+                    ad_total    INTEGER,                -- 广告位条数
+                    elapsed     REAL,                   -- 耗时（秒）
+                    warn        TEXT,
+                    data        TEXT,                   -- 完整榜单 JSON
+                    username    TEXT,
+                    created_at  TEXT
+                );
+                -- 注意：**不要**再给 (keyword, country, snap_date) 建唯一索引。
+                -- 现在允许同一天多条（内容有变化才追加），唯一约束会让第二条直接报
+                -- UNIQUE constraint failed。老库里的 ux_rmon_srps 由迁移代码 DROP 掉。
+                CREATE INDEX IF NOT EXISTS ix_rmon_srps_kw
+                    ON rmon_srps(keyword, country, created_at DESC);
+                CREATE INDEX IF NOT EXISTS ix_rmon_srps_time
+                    ON rmon_srps(created_at DESC);
+
+                -- 每个关键词自己的抓取页数（配置下沉到词一级，不是全局一个值）
+                -- 不同词的榜单深度需求不一样：头部词看前 2 页就够，长尾词要多翻几页
+                CREATE TABLE IF NOT EXISTS rmon_srp_cfg (
+                    keyword    TEXT NOT NULL,
+                    country    TEXT DEFAULT 'US',
+                    pages      INTEGER,
+                    updated_at TEXT,
+                    PRIMARY KEY (keyword, country)
+                );
+
+                -- 前台实测的定时监测目标（每个词一条：抓几页、每天几点、是否启用）
+                -- 与 SIF 的 rmon_targets 分开：那条链路是周数据 + SIF 配额，
+                -- 这条是每天爬亚马逊搜索页，节奏和限流约束完全不同
+                CREATE TABLE IF NOT EXISTS rmon_srp_targets (
+                    id          TEXT PRIMARY KEY,
+                    keyword     TEXT NOT NULL,
+                    country     TEXT DEFAULT 'US',
+                    pages       INTEGER DEFAULT 3,
+                    daily_at    TEXT,                   -- HH:MM，空 = 当天首次检查即抓
+                    enabled     INTEGER DEFAULT 1,
+                    last_run_at TEXT,
+                    last_status TEXT,
+                    last_error  TEXT,
+                    username    TEXT,
+                    created_at  TEXT
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_rmon_srp_targets
+                    ON rmon_srp_targets(keyword, country);
+
+                -- ASIN 静态属性缓存（上架日期/品牌）。**只在缓存缺失时才问 SIF**：
+                -- 上架日期一旦确定就不会变，所以每个 ASIN 一辈子只查一次，
+                -- 榜单每天换的那点新面孔才是真正的开销（20 个/次调用）。
+                -- first_available_day 为空串 = 查过但 SIF 没有这个字段（负缓存，避免反复查）。
+                CREATE TABLE IF NOT EXISTS rmon_asin_meta (
+                    asin                TEXT PRIMARY KEY,
+                    first_available_day TEXT,
+                    brand               TEXT,
+                    fetched_at          TEXT,
+                    src                 TEXT            -- age = 上架天数换算 / asin = SIF 档案原始日期
+                );
+
+                -- 关键词搜索趋势缓存（SIF ABA 周数据）。周数据每天只会微调，
+                -- 所以缓存 12 小时：同一天反复打开同一个词不再打 SIF。
+                CREATE TABLE IF NOT EXISTS rmon_kw_trend (
+                    keyword     TEXT NOT NULL,
+                    country     TEXT DEFAULT 'US',
+                    granularity TEXT DEFAULT 'week',
+                    payload     TEXT,
+                    fetched_at  TEXT,
+                    PRIMARY KEY (keyword, country, granularity)
+                );
+
+                -- 「检查过但没变化」的留痕。不存快照（省空间），只记时间与一句话，
+                -- 让用户点完「获取最新数据」能看到自己确实点过、且知道结果一致。
+                CREATE TABLE IF NOT EXISTS rmon_checks (
+                    id         TEXT PRIMARY KEY,
+                    source     TEXT NOT NULL,          -- scrape | sif
+                    keyword    TEXT NOT NULL,
+                    country    TEXT DEFAULT 'US',
+                    checked_at TEXT,
+                    note       TEXT,
+                    username   TEXT
+                );
+                CREATE INDEX IF NOT EXISTS ix_rmon_checks_kw
+                    ON rmon_checks(source, keyword, checked_at DESC);
+
                 -- ===== 货件跟踪（由独立项目 shipment-tracker 迁移而来）=====
                 -- 字段名与原 JSON 一一对应（camelCase -> snake_case 机械转换），
                 -- 全部 TEXT：原数据本身就是字符串（含 "1500"/"9.83" 这类），不做类型转换以免丢精度。
@@ -581,6 +739,19 @@ class DbState:
                 conn.execute("ALTER TABLE scrape_tasks ADD COLUMN with_customers_say INTEGER DEFAULT 1")
                 conn.execute("UPDATE scrape_tasks SET with_customers_say=1 WHERE with_customers_say IS NULL")
 
+            # 排名监测目标：竞品数可配（默认 10）+ 暂停开关
+            _rmon_cols = {r[1] for r in conn.execute("PRAGMA table_info(rmon_targets)")}
+            if "competitor_n" not in _rmon_cols:
+                conn.execute("ALTER TABLE rmon_targets ADD COLUMN competitor_n INTEGER DEFAULT 10")
+            if "paused" not in _rmon_cols:
+                conn.execute("ALTER TABLE rmon_targets ADD COLUMN paused INTEGER DEFAULT 0")
+            if "run_at" not in _rmon_cols:
+                # 每个关键词自己的采集时刻（HH:MM）；空 = 当天首次检查就跑
+                conn.execute("ALTER TABLE rmon_targets ADD COLUMN run_at TEXT")
+            if "extra_asins" not in _rmon_cols:
+                # 用户额外指定要跟踪自然位的 ASIN（JSON 数组字符串，如 ["B0...","B0..."]）
+                conn.execute("ALTER TABLE rmon_targets ADD COLUMN extra_asins TEXT")
+
             # Customers say 落库：summary 复用既有 customers_say 列，另补 tags / aspects 两列
             _scrape_prod_cols = {r[1] for r in conn.execute("PRAGMA table_info(scrape_products)")}
             for col in ("customers_say_tags", "customers_say_aspects"):
@@ -596,6 +767,25 @@ class DbState:
                              ("error", "TEXT")):
                 if col not in _scrape_cols:
                     conn.execute(f"ALTER TABLE scrape_tasks ADD COLUMN {col} {ddl}")
+
+            # 「获取最新数据」去重：同一词同一天允许多条，但内容没变就不新增。
+            # fingerprint 存榜单/份额的结构摘要，比对时不用解析 1~2MB 的 JSON；
+            # checked_at 是「最后一次确认过内容相同」的时间（无变化时只更新它）。
+            # 老库里的唯一索引 ux_rmon_srps 必须拆掉，否则同日第二条插入直接报错。
+            conn.execute("DROP INDEX IF EXISTS ux_rmon_srps")
+            _meta_cols = {r[1] for r in conn.execute("PRAGMA table_info(rmon_asin_meta)")}
+            if _meta_cols and "src" not in _meta_cols:
+                # 来源标记：age = 由 SIF 上架天数换算（可能差 1 天）/ asin = 档案原始日期
+                conn.execute("ALTER TABLE rmon_asin_meta ADD COLUMN src TEXT")
+            for _tbl in ("rmon_srps", "rmon_queries"):
+                _cols = {r[1] for r in conn.execute(f"PRAGMA table_info({_tbl})")}
+                if _cols:
+                    if "fingerprint" not in _cols:
+                        conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN fingerprint TEXT")
+                    if "changed" not in _cols:
+                        conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN changed INTEGER DEFAULT 1")
+                    if "checked_at" not in _cols:
+                        conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN checked_at TEXT")
 
             # 采集结果去重：早期「重试失败项」走 INSERT 而非 UPSERT，同一 (task_id, asin)
             # 会累积多行。先导出备份再清理（每对只保留最新一次），随后建唯一索引，
@@ -1618,6 +1808,212 @@ class DbState:
                 conn.execute("DELETE FROM traffic_reports WHERE id=?", [rid])
                 conn.commit()
 
+    # ---- 排名监测：目标 / 快照 / 变动事件 ----
+
+    def upsert_rank_target(self, kind: str, value: str, country: str = "US",
+                           label: str = None, own_asin: str = None,
+                           freq: str = "daily", username: str = None,
+                           competitor_n: int = None, run_at: str = None,
+                           extra_asins=None) -> str:
+        """加监测目标。同一 (kind, value, country) 已存在时复用并更新配置，
+        避免用户重复添加同一词导致每次抓两遍。"""
+        kind = (kind or "").strip().lower()
+        value = (value or "").strip()
+        country = (country or "US").upper()[:4]
+        with self.lock:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT id FROM rmon_targets WHERE kind=? AND value=? AND country=?",
+                    [kind, value.upper() if kind == "asin" else value, country],
+                ).fetchone()
+                if row:
+                    tid = row["id"] if isinstance(row, dict) or hasattr(row, "keys") else row[0]
+                    conn.execute(
+                        """UPDATE rmon_targets
+                           SET label=COALESCE(?, label), own_asin=COALESCE(?, own_asin),
+                               freq=?, competitor_n=COALESCE(?, competitor_n),
+                               run_at=COALESCE(?, run_at),
+                               extra_asins=COALESCE(?, extra_asins), enabled=1
+                           WHERE id=?""",
+                        [label, own_asin, freq, competitor_n, run_at,
+                         json.dumps(extra_asins, ensure_ascii=False) if extra_asins is not None else None,
+                         tid],
+                    )
+                    conn.commit()
+                    return tid
+                tid = "rt" + secrets.token_hex(6)
+                conn.execute(
+                    """INSERT INTO rmon_targets
+                       (id, kind, value, label, country, own_asin, freq, competitor_n,
+                        run_at, extra_asins, enabled, username, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)""",
+                    [tid, kind, value.upper() if kind == "asin" else value, label, country,
+                     own_asin, freq, competitor_n if competitor_n else 10, run_at or None,
+                     json.dumps(extra_asins, ensure_ascii=False) if extra_asins else None,
+                     username, _now_iso()],
+                )
+                conn.commit()
+        return tid
+
+    def list_rank_targets(self, kind: str = None, enabled_only: bool = True) -> list:
+        sql = "SELECT * FROM rmon_targets"
+        cond, args = [], []
+        if kind:
+            cond.append("kind=?")
+            args.append(kind)
+        if enabled_only:
+            cond.append("enabled=1")
+        if cond:
+            sql += " WHERE " + " AND ".join(cond)
+        sql += " ORDER BY created_at DESC"
+        with self._conn() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_rank_target(self, tid: str):
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM rmon_targets WHERE id=?", [tid]).fetchone()
+        return dict(row) if row else None
+
+    def update_rank_target(self, tid: str, **kwargs):
+        allowed = {"label", "own_asin", "freq", "enabled", "competitor_n", "paused",
+                   "run_at", "extra_asins", "last_run_at", "last_status", "last_error"}
+        fields = {k: v for k, v in kwargs.items() if k in allowed}
+        if not fields:
+            return
+        sets = ", ".join(f"{k}=?" for k in fields)
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(f"UPDATE rmon_targets SET {sets} WHERE id=?",
+                             list(fields.values()) + [tid])
+                conn.commit()
+
+    def delete_rank_target(self, tid: str):
+        """删目标时连快照与事件一起删，避免孤儿数据。"""
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM rmon_snapshots WHERE target_id=?", [tid])
+                conn.execute("DELETE FROM rmon_events WHERE target_id=?", [tid])
+                conn.execute("DELETE FROM rmon_targets WHERE id=?", [tid])
+                conn.commit()
+
+    def add_rank_snapshot(self, target_id: str, snap_date: str, data: dict):
+        """写当日快照；同一天重跑时覆盖（不累积重复行）。"""
+        sid = f"{target_id}_{snap_date}"
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO rmon_snapshots (id, target_id, snap_date, data, created_at)
+                       VALUES (?,?,?,?,?)
+                       ON CONFLICT(target_id, snap_date) DO UPDATE SET
+                         data=excluded.data, created_at=excluded.created_at""",
+                    [sid, target_id, snap_date, json.dumps(data, ensure_ascii=False), _now_iso()],
+                )
+                conn.commit()
+
+    def _snap_row(self, row):
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["data"] = json.loads(d.get("data") or "{}")
+        except Exception:
+            d["data"] = {}
+        return d
+
+    def get_latest_snapshot(self, target_id: str):
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM rmon_snapshots WHERE target_id=? ORDER BY snap_date DESC LIMIT 1",
+                [target_id],
+            ).fetchone()
+        return self._snap_row(row)
+
+    def get_snapshot_before(self, target_id: str, before_date: str):
+        """取 before_date 之前（不含）最近一条，用于算变动。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT * FROM rmon_snapshots WHERE target_id=? AND snap_date<?
+                   ORDER BY snap_date DESC LIMIT 1""",
+                [target_id, before_date],
+            ).fetchone()
+        return self._snap_row(row)
+
+    def list_rank_snapshots(self, target_id: str, limit: int = 30) -> list:
+        """快照列表（新→旧）。data 不返回，列表页只要日期与摘要。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT id, target_id, snap_date, created_at FROM rmon_snapshots
+                   WHERE target_id=? ORDER BY snap_date DESC LIMIT ?""",
+                [target_id, limit],
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_rank_snapshots_full(self, target_id: str, limit: int = 90) -> list:
+        """快照（含 data，旧→新）。趋势图要用逐日数据，所以这里必须带 data。
+
+        注意顺序：返回**旧→新**，方便直接喂给折线图；列表页那个 list_rank_snapshots
+        是新→旧（最近的在上面）。
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM rmon_snapshots WHERE target_id=?
+                   ORDER BY snap_date DESC LIMIT ?""",
+                [target_id, limit],
+            ).fetchall()
+        out = [self._snap_row(r) for r in rows]
+        out.reverse()
+        return [x for x in out if x]
+
+    def add_rank_event(self, target_id: str, level: str, kind: str, subject: str,
+                       detail: str, prev_value=None, curr_value=None):
+        eid = "re" + secrets.token_hex(6)
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    """INSERT INTO rmon_events
+                       (id, target_id, detected_at, level, kind, subject, detail,
+                        prev_value, curr_value, acked)
+                       VALUES (?,?,?,?,?,?,?,?,?,0)""",
+                    [eid, target_id, _now_iso(), level, kind, subject, detail,
+                     None if prev_value is None else str(prev_value),
+                     None if curr_value is None else str(curr_value)],
+                )
+                conn.commit()
+        return eid
+
+    def list_rank_events(self, target_id: str = None, limit: int = 100) -> list:
+        with self._conn() as conn:
+            if target_id:
+                rows = conn.execute(
+                    "SELECT * FROM rmon_events WHERE target_id=? ORDER BY detected_at DESC LIMIT ?",
+                    [target_id, limit],
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM rmon_events ORDER BY detected_at DESC LIMIT ?", [limit]
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def clear_rank_events_on(self, target_id: str, day: str):
+        """清掉某一天产生的变动事件（同日重跑时先清再写，避免重复行）。"""
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "DELETE FROM rmon_events WHERE target_id=? AND substr(detected_at, 1, 10)=?",
+                    [target_id, day],
+                )
+                conn.commit()
+
+    def clear_rank_events(self, target_id: str = None):
+        with self.lock:
+            with self._conn() as conn:
+                if target_id:
+                    conn.execute("DELETE FROM rmon_events WHERE target_id=?", [target_id])
+                else:
+                    conn.execute("DELETE FROM rmon_events")
+                conn.commit()
+
     # ---- SIF 爆品关键词监控 v2：设置 ----
 
     SIF_DEFAULT_SETTINGS = {
@@ -1646,6 +2042,513 @@ class DbState:
             "country":     "US",
         },
     }
+
+
+    # ---- 排名监测：全局设置 ----
+
+    # 全局只保留「新目标的默认竞品数」用于预填；采集时刻已下沉到每个关键词（rmon_targets.run_at）
+    RMON_DEFAULT_SETTINGS = {
+        "default_competitor_n": "10",
+        # 爬虫抓搜索页的默认页数（每页 48 条，5 页 = 240 位是安全上限）
+        "scrape_pages": "3",
+    }
+
+    def get_rmon_settings(self) -> dict:
+        """只返回白名单里的键。老库里可能残留已废弃的配置行（如 daily_at），
+        不过滤的话会跟着返回，UI 上看起来像"删了还在"。"""
+        out = dict(self.RMON_DEFAULT_SETTINGS)
+        try:
+            with self._conn() as conn:
+                rows = conn.execute("SELECT k, v FROM rmon_settings").fetchall()
+            for r in rows:
+                k = r["k"] if hasattr(r, "keys") else r[0]
+                v = r["v"] if hasattr(r, "keys") else r[1]
+                if k in self.RMON_DEFAULT_SETTINGS:
+                    out[k] = v
+        except Exception:
+            pass
+        return out
+
+    def set_rmon_settings(self, **kw):
+        allowed = set(self.RMON_DEFAULT_SETTINGS)
+        fields = {k: ("" if v is None else str(v)) for k, v in kw.items() if k in allowed}
+        if not fields:
+            return
+        with self.lock:
+            with self._conn() as conn:
+                for k, v in fields.items():
+                    conn.execute(
+                        "INSERT INTO rmon_settings (k, v) VALUES (?,?) "
+                        "ON CONFLICT(k) DO UPDATE SET v=excluded.v", [k, v])
+                conn.commit()
+
+    # ---- 排名监测：即时查询历史 ----
+
+    def add_rank_query(self, kind: str, value: str, country: str, own_asin,
+                       summary: str, data: dict, username: str = None,
+                       fingerprint: str = None) -> dict:
+        """写一条查询历史。**同一天内：内容没变就不新增，变了才追加一条。**
+
+        早期是纯 INSERT（点一次刷新就多一条），后来改成「同词同日先删后插」（覆盖）。
+        覆盖的副作用是没有旧记录可比对，于是「有没有变化」无从判断。现在按内容指纹比对：
+          · 与当天最后一条指纹相同 -> 只把 checked_at 改到现在，不新增快照
+          · 不同（或当天还没有记录）-> 追加一条新记录
+        返回 {changed, id, checked_at}，调用方据此给「已更新 / 无变化」回执。
+        """
+        now = _now_iso()
+        day = now[:10]
+        with self.lock:
+            with self._conn() as conn:
+                last = conn.execute(
+                    "SELECT id, fingerprint FROM rmon_queries "
+                    "WHERE kind=? AND UPPER(value)=UPPER(?) AND UPPER(country)=UPPER(?) "
+                    "AND substr(created_at, 1, 10)=? ORDER BY created_at DESC LIMIT 1",
+                    [kind, value, country or "US", day],
+                ).fetchone()
+                if last and fingerprint and last["fingerprint"] == fingerprint:
+                    conn.execute("UPDATE rmon_queries SET checked_at=? WHERE id=?",
+                                 [now, last["id"]])
+                    conn.commit()
+                    return {"changed": False, "id": last["id"], "checked_at": now}
+
+                # 老数据没有指纹（升级前写入的）：拿它自己的 data 现算一次补上，
+                # 否则第一次点「获取最新数据」会误判成「有变化」而多出一条。
+                if last and fingerprint and not last["fingerprint"]:
+                    try:
+                        from .fingerprint import sif_fingerprint
+                        old = conn.execute("SELECT data FROM rmon_queries WHERE id=?",
+                                           [last["id"]]).fetchone()
+                        legacy = sif_fingerprint(json.loads(old["data"] or "{}"))
+                    except Exception:
+                        legacy = None
+                    if legacy == fingerprint:
+                        conn.execute(
+                            "UPDATE rmon_queries SET fingerprint=?, checked_at=? WHERE id=?",
+                            [fingerprint, now, last["id"]])
+                        conn.commit()
+                        return {"changed": False, "id": last["id"], "checked_at": now}
+
+                qid = "rq" + secrets.token_hex(6)
+                conn.execute(
+                    """INSERT INTO rmon_queries
+                       (id, kind, value, country, own_asin, summary, data, username,
+                        created_at, fingerprint, changed, checked_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,1,?)""",
+                    [qid, kind, value, country or "US", own_asin, summary,
+                     json.dumps(data, ensure_ascii=False), username, now, fingerprint, now],
+                )
+                conn.commit()
+        return {"changed": True, "id": qid, "checked_at": now}
+
+    def list_rank_queries(self, limit: int = 100) -> list:
+        """列表不返回 data（大字段），只给摘要。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT id, kind, value, country, own_asin, summary, username, created_at
+                   FROM rmon_queries ORDER BY created_at DESC LIMIT ?""", [limit]
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_rank_query(self, qid: str):
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM rmon_queries WHERE id=?", [qid]).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["data"] = json.loads(d.get("data") or "{}")
+        except Exception:
+            d["data"] = {}
+        return d
+
+    def list_rank_queries_by_target(self, kind: str, value: str, limit: int = 60) -> list:
+        """同一目标的所有查询记录（旧→新，含 data）。
+
+        没建监测目标时，趋势就用它算 —— 用户反复查同一个词，本身就是一条时间序列。
+        """
+        with self._conn() as conn:
+            # 两边都 UPPER 再比：关键词有大小写混写（用户可能改动过），ASIN 本来该全大写，
+            # 只对一边做 UPPER 会漏掉另一侧（曾因此查不到任何记录）。
+            rows = conn.execute(
+                """SELECT * FROM rmon_queries WHERE kind=? AND UPPER(value)=UPPER(?)
+                   ORDER BY created_at ASC LIMIT ?""",
+                [kind, value, limit],
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["data"] = json.loads(d.get("data") or "{}")
+            except Exception:
+                d["data"] = {}
+            out.append(d)
+        return out
+
+    def delete_rank_query(self, qid: str):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM rmon_queries WHERE id=?", [qid])
+                conn.commit()
+
+    def clear_rank_queries(self):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM rmon_queries")
+                conn.commit()
+
+    # ------------------------------------------------------------------
+    # 关键词搜索页快照（爬虫实测）—— 与上面 SIF 的 rmon_queries 完全隔离，
+    # 两套数据各自存、各自查，页面上不交叉比较（口径与采集时刻都不同）。
+    # ------------------------------------------------------------------
+    def save_rmon_srp(self, keyword: str, country: str, result: dict,
+                      username: str = None, fingerprint: str = None) -> dict:
+        """存一次抓取结果。**同一天内：内容没变就不新增，变了才追加一条。**
+
+        曾经的写法是「同词同日先删后插」，覆盖的副作用是没有旧记录可比对，
+        根本判断不了「这次和上次一不一样」。现在按内容指纹比对：
+          · 与当天最后一条指纹相同 -> 只更新 checked_at，不新增快照
+          · 不同（或当天还没有记录）-> 追加一条
+        跨天仍是每天至少一条，所以趋势图/热力图不会因去重而缺日。
+        返回 {changed, id, checked_at}。
+        """
+        now = _now_iso()
+        day = now[:10]
+        with self.lock:
+            with self._conn() as conn:
+                last = conn.execute(
+                    "SELECT id, fingerprint FROM rmon_srps "
+                    "WHERE UPPER(keyword)=UPPER(?) AND UPPER(country)=UPPER(?) "
+                    "AND snap_date=? ORDER BY created_at DESC LIMIT 1",
+                    [keyword, country, day],
+                ).fetchone()
+                if last and fingerprint and last["fingerprint"] == fingerprint:
+                    conn.execute("UPDATE rmon_srps SET checked_at=? WHERE id=?",
+                                 [now, last["id"]])
+                    conn.commit()
+                    return {"changed": False, "id": last["id"], "checked_at": now}
+
+                # 老数据没有指纹（升级前写入的）：现算一次补上，
+                # 否则第一次点「获取最新数据」会误判成「有变化」而多出一条。
+                if last and fingerprint and not last["fingerprint"]:
+                    try:
+                        from .fingerprint import srp_fingerprint
+                        old = conn.execute("SELECT data FROM rmon_srps WHERE id=?",
+                                           [last["id"]]).fetchone()
+                        legacy = srp_fingerprint(json.loads(old["data"] or "{}"))
+                    except Exception:
+                        legacy = None
+                    if legacy == fingerprint:
+                        conn.execute(
+                            "UPDATE rmon_srps SET fingerprint=?, checked_at=? WHERE id=?",
+                            [fingerprint, now, last["id"]])
+                        conn.commit()
+                        return {"changed": False, "id": last["id"], "checked_at": now}
+
+                sid = "sr" + secrets.token_hex(6)
+                conn.execute(
+                    """INSERT INTO rmon_srps
+                       (id, keyword, country, snap_date, pages, org_total, ad_total,
+                        elapsed, warn, data, username, created_at, fingerprint, changed, checked_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+                    [sid, keyword, country, day, result.get("pages_ok"),
+                     result.get("org_total"), result.get("ad_total"),
+                     result.get("elapsed"), result.get("warn"),
+                     json.dumps(result, ensure_ascii=False), username, now,
+                     fingerprint, now],
+                )
+                conn.commit()
+        return {"changed": True, "id": sid, "checked_at": now}
+
+    def add_rmon_check(self, source: str, keyword: str, country: str = "US",
+                       note: str = "", username: str = None) -> str:
+        """记一条「检查过、内容没变」的留痕（不存快照，只记时间与说明）。"""
+        cid = "ck" + secrets.token_hex(6)
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO rmon_checks (id, source, keyword, country, checked_at, note, username) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    [cid, source, keyword, country or "US", _now_iso(), note, username],
+                )
+                conn.commit()
+        return cid
+
+    def list_rmon_checks(self, source: str, keyword: str, country: str = "US",
+                         limit: int = 20) -> list:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, checked_at, note FROM rmon_checks "
+                "WHERE source=? AND UPPER(keyword)=UPPER(?) AND UPPER(country)=UPPER(?) "
+                "ORDER BY checked_at DESC LIMIT ?",
+                [source, keyword, country or "US", limit],
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_rmon_srps(self, keyword: str = None, country: str = None,
+                       limit: int = 60) -> list:
+        """抓取历史列表，不返回 data（大字段）。"""
+        sql = ("SELECT id, keyword, country, snap_date, pages, org_total, ad_total, "
+               "elapsed, warn, username, created_at FROM rmon_srps WHERE 1=1")
+        args = []
+        if keyword:
+            sql += " AND UPPER(keyword)=UPPER(?)"
+            args.append(keyword)
+        if country:
+            sql += " AND UPPER(country)=UPPER(?)"
+            args.append(country)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        args.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_rmon_srp(self, sid: str):
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM rmon_srps WHERE id=?", [sid]).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["data"] = json.loads(d.get("data") or "{}")
+        except Exception:
+            d["data"] = {}
+        return d
+
+    def get_rmon_srp_latest(self, keyword: str, country: str = "US"):
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT * FROM rmon_srps
+                   WHERE UPPER(keyword)=UPPER(?) AND UPPER(country)=UPPER(?)
+                   ORDER BY created_at DESC LIMIT 1""",
+                [keyword, country],
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["data"] = json.loads(d.get("data") or "{}")
+        except Exception:
+            d["data"] = {}
+        return d
+
+    def list_rmon_srp_series(self, keyword: str, country: str = "US",
+                             limit: int = 60) -> list:
+        """按时间正序返回每日榜单（含 data），供趋势与热力图聚合用。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM rmon_srps
+                   WHERE UPPER(keyword)=UPPER(?) AND UPPER(country)=UPPER(?)
+                   ORDER BY created_at DESC LIMIT ?""",
+                [keyword, country, limit],
+            ).fetchall()
+        out = []
+        for r in reversed(rows):
+            d = dict(r)
+            try:
+                d["data"] = json.loads(d.get("data") or "{}")
+            except Exception:
+                d["data"] = {}
+            out.append(d)
+        return out
+
+    def delete_rmon_srp(self, sid: str):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM rmon_srps WHERE id=?", [sid])
+                conn.commit()
+
+    def get_srp_cfg(self, keyword: str, country: str = "US"):
+        """该关键词自己保存的抓取页数；没配过返回 None（调用方回落到默认值）。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT pages FROM rmon_srp_cfg "
+                "WHERE UPPER(keyword)=UPPER(?) AND UPPER(country)=UPPER(?)",
+                [keyword, country],
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            return int(row[0])
+        except (TypeError, ValueError):
+            return None
+
+    def set_srp_cfg(self, keyword: str, country: str, pages: int) -> None:
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "DELETE FROM rmon_srp_cfg "
+                    "WHERE UPPER(keyword)=UPPER(?) AND UPPER(country)=UPPER(?)",
+                    [keyword, country],
+                )
+                conn.execute(
+                    "INSERT INTO rmon_srp_cfg (keyword, country, pages, updated_at) "
+                    "VALUES (?,?,?,?)",
+                    [keyword, country, pages, _now_iso()],
+                )
+                conn.commit()
+
+    def list_srp_cfg(self, limit: int = 200) -> list:
+        """所有已配置过的词（前端显示「这个词配了几页」用）。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT keyword, country, pages, updated_at FROM rmon_srp_cfg "
+                "ORDER BY updated_at DESC LIMIT ?", [limit],
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # ASIN 静态属性缓存（上架日期/品牌）：先读缓存，缺了才问 SIF
+    # ------------------------------------------------------------------
+    def get_rmon_asin_meta(self, asins: list) -> dict:
+        """批量读缓存，返回 {ASIN: {first_available_day, brand, fetched_at}}。
+
+        只返回**库里已有**的（含负缓存：first_available_day == ""）。
+        调用方据此判断哪些还需要去问 SIF。
+        """
+        keys = [str(a or "").upper() for a in (asins or []) if a]
+        if not keys:
+            return {}
+        out = {}
+        with self._conn() as conn:
+            # SQLite 变量数上限 999，分批查（一次最多 60 个，够用，仍按 200 切）
+            for i in range(0, len(keys), 200):
+                chunk = keys[i:i + 200]
+                ph = ",".join("?" * len(chunk))
+                rows = conn.execute(
+                    f"SELECT asin, first_available_day, brand, fetched_at, src "
+                    f"FROM rmon_asin_meta WHERE UPPER(asin) IN ({ph})", chunk,
+                ).fetchall()
+                for r in rows:
+                    out[str(r["asin"]).upper()] = {
+                        "first_available_day": r["first_available_day"] or "",
+                        "brand": r["brand"] or "",
+                        "fetched_at": r["fetched_at"],
+                        "src": r["src"] or "",
+                    }
+        return out
+
+    def upsert_rmon_asin_meta(self, rows: list):
+        """写缓存。rows = [{asin, first_available_day, brand}]，已存在就覆盖。"""
+        if not rows:
+            return
+        now = _now_iso()
+        with self.lock:
+            with self._conn() as conn:
+                for r in rows:
+                    asin = str(r.get("asin") or "").upper()
+                    if not asin:
+                        continue
+                    conn.execute(
+                        "INSERT INTO rmon_asin_meta (asin, first_available_day, brand, fetched_at, src) "
+                        "VALUES (?,?,?,?,?) ON CONFLICT(asin) DO UPDATE SET "
+                        "first_available_day=excluded.first_available_day, "
+                        "brand=excluded.brand, fetched_at=excluded.fetched_at, "
+                        "src=COALESCE(excluded.src, rmon_asin_meta.src)",
+                        [asin, r.get("first_available_day") or "",
+                         r.get("brand") or "", now, r.get("src")],
+                    )
+                conn.commit()
+
+    # ------------------------------------------------------------------
+    # 关键词搜索趋势缓存（SIF ABA 周数据，周维度、每天只微调）
+    # ------------------------------------------------------------------
+    def get_rmon_kw_trend(self, keyword: str, country: str = "US",
+                          granularity: str = "week", max_age_hours: int = 12):
+        """返回 (payload, fetched_at)；不存在或已过期返回 (None, None)。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT payload, fetched_at FROM rmon_kw_trend "
+                "WHERE UPPER(keyword)=UPPER(?) AND UPPER(country)=UPPER(?) "
+                "AND granularity=?",
+                [keyword, country, granularity],
+            ).fetchone()
+        if not row:
+            return None, None
+        fetched = row["fetched_at"] or ""
+        if max_age_hours > 0:
+            try:
+                t = datetime.datetime.strptime(fetched[:19], "%Y-%m-%dT%H:%M:%S")
+                if (datetime.datetime.now() - t).total_seconds() > max_age_hours * 3600:
+                    return None, fetched
+            except ValueError:
+                return None, fetched
+        try:
+            return json.loads(row["payload"] or "{}"), fetched
+        except json.JSONDecodeError:
+            return None, fetched
+
+    def save_rmon_kw_trend(self, keyword: str, country: str, granularity: str, payload: dict):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO rmon_kw_trend (keyword, country, granularity, payload, fetched_at) "
+                    "VALUES (?,?,?,?,?) ON CONFLICT(keyword, country, granularity) DO UPDATE SET "
+                    "payload=excluded.payload, fetched_at=excluded.fetched_at",
+                    [keyword, country.upper(), granularity, json.dumps(payload, ensure_ascii=False),
+                     _now_iso()],
+                )
+                conn.commit()
+
+    # ------------------------------------------------------------------
+    # 前台实测的定时监测目标（每天自动抓某个词的搜索页榜单）
+    # ------------------------------------------------------------------
+    def upsert_srp_target(self, keyword: str, country: str = "US", pages: int = 3,
+                          daily_at: str = "", enabled: bool = True,
+                          username: str = None) -> dict:
+        tid = "st" + secrets.token_hex(6)
+        now = _now_iso()
+        with self.lock:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT id FROM rmon_srp_targets "
+                    "WHERE UPPER(keyword)=UPPER(?) AND UPPER(country)=UPPER(?)",
+                    [keyword, country],
+                ).fetchone()
+                if row:
+                    tid = row[0]
+                    conn.execute(
+                        "UPDATE rmon_srp_targets SET pages=?, daily_at=?, enabled=? WHERE id=?",
+                        [pages, daily_at or "", 1 if enabled else 0, tid],
+                    )
+                else:
+                    conn.execute(
+                        """INSERT INTO rmon_srp_targets
+                           (id, keyword, country, pages, daily_at, enabled, username, created_at)
+                           VALUES (?,?,?,?,?,?,?,?)""",
+                        [tid, keyword, country, pages, daily_at or "",
+                         1 if enabled else 0, username, now],
+                    )
+                conn.commit()
+        return self.get_srp_target(tid)
+
+    def get_srp_target(self, tid: str):
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM rmon_srp_targets WHERE id=?", [tid]).fetchone()
+        return dict(row) if row else None
+
+    def list_srp_targets(self, enabled_only: bool = False) -> list:
+        sql = "SELECT * FROM rmon_srp_targets"
+        if enabled_only:
+            sql += " WHERE enabled=1"
+        sql += " ORDER BY created_at DESC"
+        with self._conn() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_srp_target(self, tid: str):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM rmon_srp_targets WHERE id=?", [tid])
+                conn.commit()
+
+    def mark_srp_target_run(self, tid: str, status: str, error: str = None):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE rmon_srp_targets SET last_run_at=?, last_status=?, last_error=? WHERE id=?",
+                    [_now_iso(), status, (error or "")[:200], tid],
+                )
+                conn.commit()
 
     def get_sif_settings(self) -> dict:
         """读取全局设置（信号阈值 + 默认配额），缺失项用内置默认补齐。"""

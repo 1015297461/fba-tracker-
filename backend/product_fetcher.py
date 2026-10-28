@@ -296,7 +296,10 @@ def _http_get(url, headers, timeout=30):
             raw = b""
         resp_headers = e.headers
     except Exception as e:
-        return None, None, None, f"neterr:{type(e).__name__}"
+        # 只记异常类型名（neterr:URLError）永远查不出「为什么偶尔失败」，
+        # 真原因在 e.reason 里：timeout / ConnectionResetError / SSLError…
+        reason = getattr(e, "reason", None) or e
+        return None, None, None, f"neterr:{type(e).__name__}:{str(reason)[:80]}"
 
     body = _decompress(raw, resp_headers.get("Content-Encoding") if resp_headers else None)
     text = body.decode("utf-8", "replace")

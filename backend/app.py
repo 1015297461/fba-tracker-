@@ -36,7 +36,9 @@ from .auth import AuthManager
 from .workers.export_worker import ExportWorker
 from .workers.ai_analysis_worker import AiAnalysisWorker
 from . import pdf_splitter
-from .routes import auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis, sif_keywords, shipment
+from .routes import (auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis,
+                     sif_keywords, shipment, rank_monitor_routes)
+from .rank_monitor import RankMonitorWorker
 
 
 # 正常 HTTP 请求行的起始标记。用 HTTPS 打到 HTTP 端口时，服务端读到的其实是
@@ -90,7 +92,8 @@ def get_lan_ip():
 
 
 ROUTE_MODULES = (
-    auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis, sif_keywords, shipment,
+    auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis, sif_keywords,
+    shipment, rank_monitor_routes,
 )
 
 
@@ -238,6 +241,10 @@ def main():
 
     ai_worker = AiAnalysisWorker(db_state)
     ai_worker.start()
+
+    # 排名监测：每 30 分钟检查一次当天没跑过的目标（首次启动会补齐当天）
+    rank_monitor_worker = RankMonitorWorker(db_state, interval_sec=300)
+    rank_monitor_worker.start()
 
     handler  = make_handler(db_state, auth_mgr, ai_worker)
     server   = ThreadingServer((args.host, args.port), handler)

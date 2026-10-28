@@ -22,6 +22,7 @@
 
 import json
 import os
+import statistics
 
 from . import llm_client
 from .utils import PROJECT_ROOT, _now_iso, _log
@@ -77,6 +78,51 @@ def _fmt_change(d):
     if d.get("improve_pct") is not None:
         out["改善"] = _pct_str(_num(d.get("improve_pct"), 2))
     return out
+
+
+def _kw_row(k: dict) -> dict:
+    """单个关键词 → 报告可直接引用的行。排名为空说明该词没有自然位。"""
+    return {
+        "词": k.get("keyword"),
+        "流量占比": _pct_str(_pct(k.get("traffic_share"))),
+        "自然排名": _num(k.get("organic_rank"), 0),
+        "自然位占比": _pct_str(_pct(k.get("natural_ratio"))),
+        "搜索量": k.get("search_volume"),
+        "Top3点击占比": _pct_str(_pct(k.get("top3_click_share"))),
+        "健康度": k.get("health"),
+    }
+
+
+def build_keyword_rows(signals: dict, limit=10) -> dict:
+    """关键词信号：Top 词 / 排名断档 / 贡献下滑。
+
+    这是「广告该调哪些词」的唯一数据依据 —— 没有它，行动建议只能写空话。
+    """
+    s = signals or {}
+    out = {}
+    for key, label in (("top_keywords", "Top词"), ("rank_gaps", "排名断档"),
+                       ("declining", "贡献下滑"), ("gaining", "增长词")):
+        rows = [_kw_row(k) for k in (s.get(key) or [])[:limit]]
+        if rows:
+            out[label] = rows
+    return out
+
+
+def build_price_band(competitors: list, own_price) -> dict:
+    """自身价格 vs 可比竞品价格带。价格带差距常是自然位弱的直接原因，
+    但 brief 里如果只列单个竞品价格，模型看不出这条线。"""
+    prices = [c.get("价格") for c in (competitors or []) if c.get("价格")]
+    if not prices or own_price is None:
+        return None
+    med = statistics.median(prices)
+    return {
+        "自身价格": _num(own_price, 2),
+        "可比竞品数": len(prices),
+        "竞品最低": _num(min(prices), 2),
+        "竞品中位": _num(med, 2),
+        "竞品最高": _num(max(prices), 2),
+        "自身对中位溢价": _pct_str(_num((float(own_price) - med) / med * 100, 1) if med else None),
+    }
 
 
 def _bar(pct, width=18):
@@ -175,10 +221,17 @@ def build_alerts(own: dict, meta: dict, competitors: list) -> list:
 # 逐日表
 # ---------------------------------------------------------------------------
 
-def build_daily(trend: dict, limit=MAX_DAILY_ROWS) -> dict:
-    """最近 N 天逐日数据（最多 14 行，超出只取最近 14 天并标注）。"""
-    dates = trend.get("dates") or []
+def build_daily(trend: dict, limit=MAX_DAILY_ROWS, drop_last=False) -> dict:
+    """最近 N 天逐日数据（最多 14 行，超出只取最近 14 天并标注）。
+
+    drop_last=True 时去掉最后一天：SIF 当天数据未结算完（latest_point_complete=False），
+    留着会让读者把「还没采完」当成「暴跌」。
+    """
+    dates = list(trend.get("dates") or [])
     n = len(dates)
+    if drop_last and n > 1:
+        dates = dates[:-1]
+        n -= 1
     if not n:
         return {}
     idx = list(range(max(0, n - limit), n))
@@ -197,7 +250,9 @@ def build_daily(trend: dict, limit=MAX_DAILY_ROWS) -> dict:
                 v = 0.0
             row[label] = _num(v, nd)
         rows.append(row)
-    return {"展示天数": len(rows), "仅展示最近": limit if n > limit else None, "数据": rows}
+    return {"展示天数": len(rows), "仅展示最近": limit if n > limit else None,
+            "已排除末点": bool(drop_last and n < len(trend.get("dates") or [])),
+            "数据": rows}
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +367,7 @@ def build_brief(data: dict) -> dict:
             "价格": _fmt_change(st.get("price")),
             "BSR": _fmt_change(st.get("bsr")),
             "评论": _fmt_change(st.get("review")),
-            "逐日": build_daily(trend),
+            "逐日": build_daily(trend, drop_last=meta.get("latest_point_complete") is False),
         },
         "变体": {
             "变体总数": conc.get("variant_count"),
@@ -322,6 +377,8 @@ def build_brief(data: dict) -> dict:
             "明细": variants,
         },
         "竞品": comps,
+        "竞品价格带": build_price_band(comps, prof.get("price")),
+        "关键词信号": build_keyword_rows(own.get("keyword_signals")),
     }
 
     return _clean(brief)
@@ -357,9 +414,27 @@ SYSTEM_PROMPT = """你是一名给电商团队做日常复盘的数据分析师�
 4. **不许说「掉出前三页」「被降权」**。排名缺失只能写「本期未采集到」。
 5. BSR 数值越小越好，数据包已把变化换算成「改善」口径（正数=变好），直接引用。
 
-## 表格里的状态标记
+## 行动建议的写法（整份报告最重要的一节）
 
-在需要标记趋势的列里，用 `▲` 表示变好、`▼` 表示变差、`—` 表示无变化或缺失，紧跟在数值后面。
+每条动作必须四要素齐全，缺任何一条就是空话：
+
+1. **对象**：具体到某个词、某个变体、某个渠道。不许写「listing」「广告」这种整体词。
+2. **动作**：一个可执行的操作——改什么、加什么、关什么、调多少。
+3. **依据**：数据包里的一个具体数字。
+4. **预期**：一个能用数据观察到的变化（例如「该词自然排名进前 10 后，其流量占比应从 2.1% 往上走」）。
+
+可用的运营抓手（只能从这里选，不许发明新概念）：
+
+- **自然位**：标题/五点/A+ 的关键词布局、后台 Search Terms、类目节点、主图与价格竞争力、评论积累（Vine、售后卡）、变体合并把评价集中到主变体
+- **SP 广告**：关键词分层（精准/词组/广泛）、否定无效流量词、按词调竞价、TOS 位置溢价、预算再分配
+- **SB/SBV**：素材与落地页匹配度、视频卖点、人群定向、投放词选择
+- **变体**：把广告预算从自然占比极低的变体挪到有自然承接力的变体
+
+数据包里有「关键词信号」（Top词 / 排名断档 / 贡献下滑 / 增长词），**必须从中挑具体词名写进动作**。
+哪类信号缺失就写「本期数据未覆盖」，不许拿别的词凑数。
+
+若「竞品价格带」显示自身对中位溢价超过 20%，必须评估价格是否为自然位弱的直接原因，
+并给出具体动作（例如调整券后价、换规格组合、或在文案里强化差异化卖点）。
 """
 
 OUTLINE = """## 输出结构（严格照此，标题文字不要改）
@@ -416,10 +491,12 @@ OUTLINE = """## 输出结构（严格照此，标题文字不要改）
 
 **归因**（不超过 2 句）：把上面的线索收敛成一个主因，并说明排除了什么。数据不足以定论时，直接写「需要 X 数据才能确认」。
 
-| 优先级 | 动作 | 依据 |
+| 优先级 | 动作（对象 + 操作 + 预期） | 依据 |
 |---|---|---|
 
-最多 3 行。优先级用 P0/P1/P2。「依据」必须是一个具体数字或预警项，不许写「提升曝光」这类空话。
+最多 3 行。优先级用 P0/P1/P2。
+「依据」必须是数据包里的一个具体数字，含关键词信号里的词名或自然排名。
+「动作」必须带具体对象与可观察的预期，不许写「补自然位」「优化 listing」这类没有对象的话。
 """
 
 
