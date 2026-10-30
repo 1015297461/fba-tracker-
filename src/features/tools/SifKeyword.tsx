@@ -288,6 +288,10 @@ interface Series {
   axis?: 'left' | 'right';
   /** 自定义数值格式（tooltip 与轴刻度共用）。不传则按 money / fmtN 处理 */
   format?: (v: number) => string;
+  /** 悬浮提示里显示的缩略图（位次趋势用：ASIN 主图） */
+  img?: string;
+  /** 悬浮提示里的补充说明（位次趋势用：商品标题） */
+  title?: string;
 }
 
 // 导出给「AI 分析 → 流量分析」复用（同一个打包产物，样式类共用 sif-chart）
@@ -436,8 +440,18 @@ export function LineChart({ dates, series, height = 200, money = false, legendCl
           <div className="sif-tip-date">{dates[hov]}</div>
           {act.map((s, k) => {
             const raw = s.negative && s.values[hov] != null ? -(s.values[hov] as number) : s.values[hov];
-            return <div key={k} className="sif-tip-val"><i style={{ background: s.color }} />
-              {s.name} {raw == null ? '—' : (s.format ? s.format(raw) : (money ? fmtMoney(raw) : fmtN(raw)))}</div>;
+            const shownVal = raw == null ? '—' : (s.format ? s.format(raw) : (money ? fmtMoney(raw) : fmtN(raw)));
+            return (
+              <div key={k} className="sif-tip-row">
+                {s.img
+                  ? <img className="sif-tip-thumb" src={s.img} alt="" loading="lazy" />
+                  : <i className="sif-tip-dot" style={{ background: s.color }} />}
+                <div className="sif-tip-body">
+                  <div className="sif-tip-name">{s.name} <b>{shownVal}</b></div>
+                  {s.title && <div className="sif-tip-title" title={s.title}>{s.title}</div>}
+                </div>
+              </div>
+            );
           })}
         </div>
       )}

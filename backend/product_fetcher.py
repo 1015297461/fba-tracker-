@@ -185,6 +185,7 @@ class SessionState:
         self.last_request_time = 0.0
         self.request_count = 0
         self.initialized = False
+        self.warmup_failed_at = 0.0
         self.token_bucket = TOKEN_BUCKET_CAPACITY
         self.last_token_refill = time.monotonic()
 
@@ -363,10 +364,23 @@ def is_dog_page(html_text):
 # ============================================================
 # 会话预热：先访问首页收集 Cookie（session-id / i18n-prefs 等）
 # ============================================================
-def warm_up_session(marketplace):
+WARMUP_RETRY_COOLDOWN = 300      # 预热失败后 5 分钟内不再重试（会话仍有身份时）
+WARMUP_COOKIELESS_COOLDOWN = 20  # 会话已被清空（无 session-id）时只等 20s 就必须重试
+
+
+def warm_up_session(marketplace, force=False):
     session = get_session(marketplace)
-    if session.initialized:
+    if session.initialized and not force:
         return
+    # 每次 fetch_page 都会调到这里；预热失败时若不加冷却，每翻一页都会多撞一次首页。
+    # 但冷却必须区分状态：会话里还有 session-id 时，等 5 分钟无所谓；一旦 cookie 被
+    # 清空（CAPTCHA/503 分支会清），继续按 5 分钟冷却就等于让后续请求全程"裸奔"，
+    # Amazon 必然判机器人 —— 这正是「详情连续一段时间全挂」的直接原因。
+    if session.warmup_failed_at:
+        has_sid = "session-id" in session.cookies
+        cooldown = WARMUP_RETRY_COOLDOWN if has_sid else WARMUP_COOKIELESS_COOLDOWN
+        if (time.monotonic() - session.warmup_failed_at) < cooldown:
+            return
 
     mp = MARKETPLACES.get(marketplace)
     if not mp:
@@ -375,24 +389,32 @@ def warm_up_session(marketplace):
     url = f"https://{mp['domain']}/"
     headers = build_headers(session, marketplace)
 
+    session.acquire_rate_limit()   # 预热也是真实请求，必须过限流，否则会成为隐形突发流量
     status, _text, resp_headers, err = _http_get(url, headers, timeout=20)
-    if err is None and resp_headers is not None:
+    # 只有 200 才算预热成功。之前只看「有没有网络错误」，于是 202 挑战页（空壳、无
+    # Set-Cookie）和 503 都会被当成成功并标记 initialized —— 会话里一个 session-id
+    # 都没有，后续搜索请求就会被判机器人（2026-10-29 实测）。
+    if err is None and status == 200 and resp_headers is not None:
         session.merge_cookies(resp_headers.get_all("Set-Cookie"))
         if mp.get("currency"):
             session.cookies["i18n-prefs"] = mp["currency"]
         session.initialized = True
         session.last_request_time = time.monotonic()
         human_delay(0.4, 0.2)
+    else:
+        session.warmup_failed_at = time.monotonic()
 
 
 # ============================================================
 # 抓取产品页（带退避重试 + CAPTCHA 检测）
 # ============================================================
-def fetch_product_page(asin, marketplace):
+def fetch_product_page(asin, marketplace, max_attempts=None):
+    """抓产品页。max_attempts 可覆盖默认重试预算（详情走"先快速试 1~2 次"时用）。"""
     mp = MARKETPLACES.get(marketplace)
     if not mp:
         raise ValueError(f"Unknown marketplace: {marketplace}")
 
+    total_attempts = max(1, int(max_attempts)) if max_attempts else (MAX_RETRIES + 1)
     session = get_session(marketplace)
     warm_up_session(marketplace)
 
@@ -409,7 +431,16 @@ def fetch_product_page(asin, marketplace):
     ]
 
     last_error = None
-    for attempt in range(MAX_RETRIES + 1):
+    # 被拦后要"重建身份"：清 cookie 只是第一步，清完必须立刻重新预热换一个
+    # session-id，否则后面每次重试都是无身份请求，只会继续被拦（此前就缺这一步，
+    # 单条详情因此 4 次机会全军覆没；批量靠"下一个 ASIN 会再调 warm_up"侥幸自愈）。
+    def _reset_identity():
+        session.cookies = {}
+        session.initialized = False
+        session.warmup_failed_at = 0.0
+        session.profile = random.choice(BROWSER_PROFILES)
+
+    for attempt in range(total_attempts):
         if attempt > 0:
             session.profile = random.choice(BROWSER_PROFILES)
             delay = RETRY_DELAYS[min(attempt - 1, len(RETRY_DELAYS) - 1)] + random.random() * 2
@@ -440,8 +471,9 @@ def fetch_product_page(asin, marketplace):
 
         if status == 503 or is_dog_page(html_text):
             last_error = "Amazon服务暂时不可用(503)，正在重试..."
-            session.cookies = {}
-            session.initialized = False
+            _reset_identity()
+            if attempt < total_attempts - 1:
+                warm_up_session(marketplace)
             continue
 
         if status != 200:
@@ -450,13 +482,24 @@ def fetch_product_page(asin, marketplace):
 
         if is_captcha_page(html_text):
             last_error = "检测到CAPTCHA验证页面"
-            session.cookies = {}
-            session.initialized = False
+            _reset_identity()
+            if attempt < total_attempts - 1:
+                warm_up_session(marketplace)
+            continue
+
+        # 200 但为「空壳 / 软封」页：Amazon 对被标记的会话常返回 200 的空壳中间页
+        # （无 id="productTitle"，也非验证码/Dog页）。若不识别，会把它当正常页返回 →
+        # parse 无标题 → 详情弹窗报「未能解析到产品数据」。清 cookie + 换指纹重试自愈。
+        if 'id="productTitle"' not in html_text:
+            last_error = "疑似软封空壳页（无 productTitle），重置会话重试"
+            _reset_identity()
+            if attempt < total_attempts - 1:
+                warm_up_session(marketplace)
             continue
 
         return html_text
 
-    raise RuntimeError(last_error or f"Failed to fetch product page after {MAX_RETRIES + 1} attempts")
+    raise RuntimeError(last_error or f"Failed to fetch product page after {total_attempts} attempts")
 
 
 # ============================================================
@@ -1351,11 +1394,15 @@ def _empty_product(asin, marketplace, error_message=None):
     }
 
 
-def scrape_product(asin, marketplace, with_reviews=False, with_customers_say=True):
+def scrape_product(asin, marketplace, with_reviews=False, with_customers_say=True,
+                   max_attempts=None):
     """抓取单个 ASIN，返回字段与 scrape_products 表列一一对应的 dict。
 
     with_customers_say：是否解析 Customers say（AI 摘要 + aspect 明细 + 引用）。
     该项不产生额外网络请求（内容就在详情页 HTML 里），实测净增约 44ms。
+
+    max_attempts：覆盖 fetch_product_page 的重试预算。详情接口会先用 2 次快速试探，
+    失败就切"真实浏览器兜底"，不必在 HTTP 上耗满 4 次（那要 20~75 秒）。
     """
     asin = (asin or "").strip().upper()
     marketplace = (marketplace or "US").upper()
@@ -1367,7 +1414,7 @@ def scrape_product(asin, marketplace, with_reviews=False, with_customers_say=Tru
         return _empty_product(asin, marketplace, f"不支持的站点: {marketplace}")
 
     try:
-        html_text = fetch_product_page(asin, marketplace)
+        html_text = fetch_product_page(asin, marketplace, max_attempts=max_attempts)
     except ProductNotFoundError as e:
         return _empty_product(asin, marketplace, str(e))
     except Exception as e:
@@ -1405,6 +1452,32 @@ def scrape_product(asin, marketplace, with_reviews=False, with_customers_say=Tru
                 product["select_to_learn_more"] = review_data["select_to_learn_more"]
 
     return product
+
+
+def scrape_product_robust(asin, marketplace, rounds=2, with_customers_say=True,
+                          max_attempts=None):
+    """单条采集的加强版：等价于批量 `scrape_products` 的「失败项重试轮」。
+
+    批量之所以看着稳，是因为一个 ASIN 最多有 4（函数内重试）× 2（失败项重试轮）
+    = 8 次机会，且第二轮前会换指纹、清会话、隔几秒再来。单条详情此前只有函数内
+    4 次、17 秒内打完，一次 CAPTCHA 风暴就整条失败。这里把第二轮补上。
+
+    ASIN 不存在/格式无效属于确定性失败，不浪费次数。
+    """
+    p = scrape_product(asin, marketplace, with_customers_say=with_customers_say,
+                       max_attempts=max_attempts)
+    for r in range(1, max(1, rounds)):
+        if p.get("status") != "failed":
+            break
+        em = p.get("error_message") or ""
+        if "不存在" in em or "无效" in em:
+            break
+        _log(f"[scrape] {asin} 单条第 {r + 1} 轮重来（重置会话 + 换指纹）")
+        reset_session(marketplace)
+        time.sleep(2.0 + random.random() * 2.0)
+        p = scrape_product(asin, marketplace, with_customers_say=with_customers_say,
+                           max_attempts=max_attempts)
+    return p
 
 
 def scrape_products(asins, marketplace, with_reviews=False, on_progress=None,

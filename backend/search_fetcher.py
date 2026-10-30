@@ -96,6 +96,7 @@ _BLOCK_HINTS = (
     "To discuss automated access to Amazon data please contact",
     "Robot Check",
     "/errors/validateCaptcha",
+    "Sorry! Something went wrong",
 )
 _PRICE_WHOLE_RE = re.compile(r'a-price-whole">([\d.,]+)')
 _PRICE_FRAC_RE = re.compile(r'a-price-fraction">(\d+)')
@@ -232,8 +233,15 @@ def fetch_page(keyword, marketplace="US", page=1, referer=None, timeout=30):
     url = f"https://{mp['domain']}/s?{qs}&language=en_US"
 
     sess.acquire_rate_limit()
+    # 只有翻页（page>1）才带 Referer（指向上一页结果）。第 1 页**不带**：
+    # 2026-10-29 实测，warm-up 现在返回的是 202 挑战页（拿不到 session-id），
+    # 此时再带 `Referer: https://www.amazon.com/` + `Sec-Fetch-Site: same-origin`，
+    # 等于「声称从首页点进来、却没有首页给的 cookie」→ 被判机器人，
+    # 返回 503「Sorry! Something went wrong!」或 200 空壳（表现为 no_cards）。
+    # 去掉首页 Referer 后实测第 1 页恢复 200（48 卡、拿到 session-id），
+    # 第 2 页再用「上一页 Referer + 第 1 页的 cookie」也正常。
     headers = pf.build_headers(sess, marketplace.upper(),
-                              referer=referer or f"https://{mp['domain']}/")
+                              referer=(referer if page > 1 else None))
     status, text, resp_headers, err = pf._http_get(url, headers, timeout=timeout)
 
     if resp_headers is not None:
@@ -244,7 +252,8 @@ def fetch_page(keyword, marketplace="US", page=1, referer=None, timeout=30):
 
     if err:
         return None, err
-    if status in (503, 429):
+    if status in (503, 429, 202):
+        # 202 = 亚马逊的 JS 挑战页（空壳、无 cookie），同样视为「被拦」，不要当正常页面
         return None, "blocked"
     if status != 200:
         return None, f"http_{status}"
@@ -253,7 +262,12 @@ def fetch_page(keyword, marketplace="US", page=1, referer=None, timeout=30):
     if any(h in text for h in _NO_RESULT_HINTS):
         return None, "empty"
     if "s-search-result" not in text:
-        # 200 但没有结果卡片：多半是被软限流后返回了降级页，不能当成「这个词没结果」
+        # 200 但没有结果卡片：多半是被软限流后返回了降级页，不能当成「这个词没结果」。
+        # 打一行诊断（标题 + 长度 + 是否命中拦截特征），否则下次又只能看到光秃秃的 no_cards。
+        _m = re.search(r"<title[^>]*>(.*?)</title>", text, re.S | re.I)
+        _title = _m.group(1).strip()[:60] if _m else ""
+        _log(f"[srp] no_cards 诊断：status={status} len={len(text)} "
+             f"title={_title!r} block_hint={_looks_blocked(text)}")
         return None, "no_cards"
     return text, None
 
