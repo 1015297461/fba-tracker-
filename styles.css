@@ -3071,16 +3071,23 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .rk-hist-title { font-size: 12px; color: var(--ink-3); }
 .rk-hist-title i { font-style: normal; opacity: .65; margin-left: 3px; }
 
-.rk-srp-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-.rk-srp-kpis > div { border: 1px solid var(--border); border-radius: 8px; background: var(--card-bg);
-  padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.rk-srp-kpis b { font-size: 18px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+/* 指标：一行紧凑 chip，不再占 4 个大方块 */
+.rk-srp-kpis { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 16px;
+  padding: 8px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }
+.rk-srp-kpis > div { display: flex; align-items: baseline; gap: 5px; min-width: 0;
+  padding: 0; border: 0; background: none; }
+.rk-srp-kpis > div + div { padding-left: 16px; border-left: 1px solid var(--border); }
+.rk-srp-kpis b { font-size: 15px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
 .rk-srp-kpis b.rk-srp-my-ok { color: var(--green); }
-.rk-srp-kpis b.rk-srp-my-warn { color: var(--orange); font-size: 15px; }
-.rk-srp-kpis b.rk-srp-my-none { color: var(--ink-4); font-size: 15px; }
-.rk-srp-kpis span { font-size: 11px; color: var(--ink-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rk-srp-kpis b.rk-srp-my-warn { color: var(--orange); font-size: 13px; }
+.rk-srp-kpis b.rk-srp-my-none { color: var(--ink-4); font-size: 13px; }
+.rk-srp-kpis span { font-size: 11.5px; color: var(--ink-4); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
-.rk-srp-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* 工具栏：左右分组，统一 28px 高 */
+.rk-srp-bar { display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }
+.rk-srp-bar .rk-srp-filter { height: 28px; padding: 0 9px; }
 .rk-srp-check { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-2); cursor: pointer; flex-shrink: 0; }
 .rk-srp-check input { margin: 0; }
 .rk-srp-filter { max-width: 220px; padding: 4px 8px; font-size: 12px; }
@@ -3094,21 +3101,46 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .rk-srp-table thead th { position: sticky; top: 0; z-index: 1; background: var(--bg-2); color: var(--ink-3);
   font-weight: 500; font-size: 11px; text-align: left; padding: 6px 8px;
   border-bottom: 1px solid var(--border); white-space: nowrap; }
-.rk-srp-table td { padding: 5px 8px; border-bottom: 1px solid var(--border);
+.rk-srp-table td { padding: 0 8px; height: 36px; border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
   color: var(--ink-2); vertical-align: middle; }
 .rk-srp-table tbody tr:last-child td { border-bottom: 0; }
+.rk-srp-table tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--bg-2) 45%, transparent); }
 .rk-srp-table tbody tr:hover td { background: var(--bg-2); }
 .rk-srp-table tr[data-ad] td { background: color-mix(in srgb, var(--orange) 7%, transparent); color: var(--ink-3); }
 .rk-srp-table tbody tr.rk-mine td { background: color-mix(in srgb, var(--blue-soft) 80%, transparent); }
+.rk-srp-table tbody tr.rk-mine td:first-child { box-shadow: inset 3px 0 0 var(--blue); }
 .rk-srp-table .c-pos { width: 68px; text-align: right; font-variant-numeric: tabular-nums;
   font-weight: 600; color: var(--ink); }
-.rk-srp-table .c-img { width: 44px; text-align: center; padding: 3px 4px; }.rk-srp-thumb { width: 32px; height: 32px; object-fit: contain; border-radius: 4px; background: var(--bg-2); display: block; margin: 0 auto; transition: transform .15s ease; }
-.rk-srp-thumb:hover { transform: scale(2.2); position: relative; z-index: 5; box-shadow: 0 4px 14px rgba(0,0,0,.22); background: var(--card-bg); }
+.rk-rank { display: inline-flex; align-items: center; justify-content: flex-end; min-width: 30px;
+  height: 20px; padding: 0 6px; border-radius: 5px; font-weight: 600; font-size: 11.5px;
+  background: var(--bg-2); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.rk-rank.top { background: color-mix(in srgb, var(--red) 15%, transparent); color: var(--red); }
+.rk-rank.mid { background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--blue); }
+.rk-srp-table .c-img { width: 44px; text-align: center; padding: 3px 4px; }
+.rk-srp-thumb { width: 32px; height: 32px; object-fit: contain; border-radius: 4px; background: var(--bg-2); display: block; margin: 0 auto; cursor: zoom-in; }
+.rk-srp-thumb:hover { outline: 2px solid var(--blue); outline-offset: 1px; }
+/* 主图悬浮大图：fixed 浮层，避开 .rk-srp-scroll 的 overflow 裁剪 */
+.rk-img-pop { position: fixed; z-index: 9999; width: 300px; height: 300px;
+  display: flex; align-items: center; justify-content: center; padding: 8px;
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.4); pointer-events: none; }
+.rk-img-pop img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; }
+/* 可悬浮、可划选的自定义提示卡（替换原生 title） */
+.rk-tip-trigger { display: block; min-width: 0; }
+.rk-tip-card { position: fixed; z-index: 9999; max-width: 420px; max-height: 240px; overflow: auto;
+  padding: 10px 12px; border-radius: 10px; background: var(--card-bg); border: 1px solid var(--border);
+  box-shadow: 0 14px 36px rgba(0,0,0,.45); font-size: 12px; line-height: 1.6; color: var(--ink-2);
+  user-select: text; -webkit-user-select: text; }
+.rk-tip-head { font-size: 10.5px; color: var(--ink-4); margin-bottom: 4px; }
+.rk-tip-body { user-select: text; -webkit-user-select: text; word-break: break-word; }
 .rk-srp-noimg { border: 1px dashed var(--border); }
 .rk-srp-table .c-asin { width: 118px; color: var(--ink-2); }
 .rk-srp-table .c-asin a { color: var(--blue); text-decoration: none; }
 .rk-srp-table .c-asin a:hover { text-decoration: underline; }
-.rk-srp-table .c-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-srp-table .c-title { width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 标题硬上限：列再宽也只显示这么宽，超出省略；悬浮用 title 看全文 */
+.rk-el { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-srp-table .rk-el { max-width: 240px; }
 .rk-srp-table .c-price { width: 78px; text-align: right; font-variant-numeric: tabular-nums; }
 .rk-srp-table .c-rate { width: 52px; text-align: right; font-variant-numeric: tabular-nums; }
 .rk-srp-table .c-rev { width: 72px; text-align: right; font-variant-numeric: tabular-nums; }
@@ -3116,7 +3148,7 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
   font-variant-numeric: tabular-nums; }
 .rk-srp-table .c-sales { width: 66px; text-align: right; color: var(--ink-2);
   font-variant-numeric: tabular-nums; }
-.rk-srp-table .c-date { width: 88px; text-align: right; color: var(--ink-3);
+.rk-srp-table .c-date { width: 96px; text-align: right; color: var(--ink-3); white-space: nowrap;
   font-variant-numeric: tabular-nums; }
 /* 可排序表头：箭头只在排序生效时显示，避免每列表头都挂个小三角显得乱 */
 .rk-srp-table th.rk-th-sort { cursor: pointer; user-select: none; }
@@ -3126,6 +3158,13 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .rk-srp-table th.rk-th-sort[data-sort="asc"] .rk-sort-arrow::before { content: "▲"; }
 .rk-srp-table th.rk-th-sort[data-sort="desc"] .rk-sort-arrow::before { content: "▼"; }
 .rk-srp-table th.rk-th-sort[data-sort] .rk-sort-arrow { display: inline; }
+/* 矩阵表同样支持点表头排序 */
+.rk-mtx th.rk-th-sort { cursor: pointer; user-select: none; }
+.rk-mtx th.rk-th-sort:hover { color: var(--ink); }
+.rk-mtx th.rk-th-sort[data-sort] { color: var(--blue); }
+.rk-mtx th.rk-th-sort[data-sort="asc"] .rk-sort-arrow::before { content: "▲"; }
+.rk-mtx th.rk-th-sort[data-sort="desc"] .rk-sort-arrow::before { content: "▼"; }
+.rk-mtx th.rk-th-sort[data-sort] .rk-sort-arrow { display: inline; }
 
 /* 关键词搜索趋势（SIF ABA 周数据） */
 .rk-kwtrend { margin: 10px 0 4px; padding: 10px 12px; border: 1px solid var(--border);
@@ -3165,13 +3204,228 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 
 /* 榜单异动流 */
 .rk-ev-wrap { display: flex; flex-direction: column; gap: 8px; }
-.rk-ev-list { display: flex; flex-direction: column; gap: 4px; }
-.rk-ev-item { display: flex; align-items: center; gap: 8px; font-size: 12px;
-  padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg); }
-.rk-ev-tag { font-size: 10.5px; padding: 1px 6px; border-radius: 4px; white-space: nowrap; flex-shrink: 0; }
+/* 异动：标准表格（支持排序 + 列宽拖拽），固定高度滚动、表头吸顶 */
+.rk-ev-scroll { border: 1px solid var(--border); border-radius: 8px; overflow: hidden auto;
+  background: var(--card-bg); max-height: 420px; }
+.rk-ev-tbl { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 11.5px; }
+.rk-ev-tbl th, .rk-ev-tbl td { height: 34px; padding: 0 8px; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rk-ev-tbl thead th { position: sticky; top: 0; z-index: 2; height: 28px; font-size: 10.5px;
+  color: var(--ink-4); font-weight: 600; border-bottom: 1px solid var(--border); background: var(--card-bg); }
+.rk-ev-tbl tbody tr { border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.rk-ev-tbl tbody tr:nth-child(even) { background: color-mix(in srgb, var(--bg-2) 38%, transparent); }
+.rk-ev-tbl tbody tr:hover { background: var(--bg-2); }
+.rk-ev-tbl .r { text-align: right; font-variant-numeric: tabular-nums; }
+.rk-ev-th { cursor: pointer; user-select: none; }
+.rk-ev-th.on { color: var(--ink-2); }
+.rk-ev-title-cell { max-width: 0; }
+.rk-ev-star { color: var(--orange); }
+
+.cm-snap-pick { display: inline-flex; align-items: center; gap: 6px; }
+
+/* 类目榜单 · 全部 ASIN 位次矩阵 */
+.cm-mtx-wrap { border: 1px solid var(--border); border-radius: 8px; overflow: auto; max-height: 540px; background: var(--card-bg); }
+.cm-mtx { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.cm-mtx th, .cm-mtx td { height: 34px; padding: 0 8px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cm-mtx thead th { position: sticky; top: 0; z-index: 2; background: var(--card-bg); font-size: 10.5px; color: var(--ink-4); font-weight: 600; border-bottom: 1px solid var(--border); }
+.cm-mtx tbody tr { border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.cm-mtx tbody tr:nth-child(even) { background: color-mix(in srgb, var(--bg-2) 38%, transparent); }
+.cm-mtx tbody tr:hover { background: var(--bg-2); }
+.cm-mtx .r { text-align: right; font-variant-numeric: tabular-nums; }
+.cm-mtx .c-img { width: 44px; text-align: center; padding: 2px 4px; }
+.cm-mtx .c-asin { width: 112px; }
+.cm-mtx .c-title { width: 240px; }
+.cm-mtx .c-days { width: 80px; text-align: right; font-variant-numeric: tabular-nums; }
+.cm-mtx .c-num { width: 58px; text-align: right; font-variant-numeric: tabular-nums; }
+.cm-mtx .c-date { width: 58px; }
+.cm-mtx-th { cursor: pointer; user-select: none; }
+.cm-mtx-th:hover { color: var(--ink-2); }
+.cm-mtx-link { color: var(--blue); cursor: pointer; }
+.cm-mtx-link:hover { text-decoration: underline; }
+
+/* 可拖拽列宽：拖过之后切到固定布局，列宽用 colgroup 生效 */
+.cw-fixed { table-layout: fixed; }
+/* 可拖拽表的表头：定位上下文 + 靠近列边界时显蓝色手柄（明确"这里可拖"） */
+.col-rsz thead th { position: relative; }
+.col-rsz thead th.col-grip { cursor: col-resize; }
+.col-rsz thead th.col-grip::after {
+  content: ''; position: absolute; top: 3px; bottom: 3px; right: 0; width: 6px;
+  background: var(--blue); opacity: .55; border-radius: 3px; z-index: 4; pointer-events: none;
+}
+/* 关键：固定布局下首行单元格的 width 会盖过 <col>，这里让单元格宽度让位给 colgroup */
+.cw-fixed th, .cw-fixed td { width: auto !important; overflow-wrap: anywhere; }
+.cw-fixed th.col-rs-near, .cw-fixed thead th.col-rs-near { cursor: col-resize; }
+.rk-ev-title { min-width: 0; }
+.rk-ev-tag { font-size: 10.5px; padding: 1px 6px; border-radius: 4px; white-space: nowrap;
+  flex-shrink: 0; justify-self: start; }
 .rk-ev-good { color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
 .rk-ev-bad { color: var(--orange); background: color-mix(in srgb, var(--orange) 14%, transparent); }
 .rk-ev-asin { flex-shrink: 0; color: var(--ink-2); }
+.rk-ev-pos { color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 统一的日期范围栏（趋势条 / 折线 / 异动共用） */
+.rk-range { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11.5px; margin: 2px 0; }
+.rk-range-seg { display: inline-flex; gap: 2px; background: var(--bg-2); border: 1px solid var(--border);
+  padding: 2px; border-radius: 7px; }
+.rk-range-seg button { font: inherit; font-size: 11px; padding: 2px 9px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--ink-3); cursor: pointer; }
+.rk-range-seg button:hover { color: var(--ink); }
+.rk-range-seg button.on { background: var(--blue); color: #fff; }
+/* DateCalendar（类目/排名监测的日期选择器）——用 rkd-* 独立前缀，避免和既有 SnapPicker 的 .rk-cal-* 撞车 */
+.rkd-trigger { font: inherit; font-size: 11px; padding: 2px 8px; border: 1px solid var(--border-strong);
+  border-radius: 6px; background: var(--bg); color: var(--ink-2); cursor: pointer; white-space: nowrap; }
+.rkd-trigger:hover { border-color: var(--blue); }
+.rkd-caret { color: var(--ink-4); margin-left: 2px; }
+.rkd-pop { position: fixed; z-index: 320; box-sizing: border-box; display: flex; flex-direction: column;
+  background: var(--card-bg); border: 1px solid var(--border-strong); border-radius: 10px;
+  box-shadow: var(--shadow-md); padding: 8px; width: 252px; }
+.rkd-nav { display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  margin-bottom: 6px; font-size: 11.5px; color: var(--ink-2); white-space: nowrap; }
+.rkd-nav > span { flex: 1; text-align: center; }
+.rkd-nav button { flex: 0 0 auto; width: 22px; height: 22px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--bg-2); color: var(--ink-2); cursor: pointer; line-height: 1; }
+.rkd-nav button:hover { border-color: var(--blue); }
+.rkd-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.rkd-dow { font-size: 10px; color: var(--ink-4); text-align: center; padding: 2px 0; }
+.rkd-day { height: 26px; padding: 0; border: 0; border-radius: 6px; background: transparent;
+  color: var(--ink); font-size: 11px; cursor: pointer; }
+.rkd-day:hover:not(:disabled) { background: var(--bg-2); }
+.rkd-day.on { background: var(--blue); color: #fff; font-weight: 600; }
+.rkd-day.off { color: var(--ink-4); opacity: .3; cursor: not-allowed; }
+.rk-range-lb { color: var(--ink-4); font-size: 11px; }
+.rk-range-arrow { color: var(--ink-4); }
+.rk-range-sel { font: inherit; font-size: 11px; padding: 1px 4px; border: 1px solid var(--border);
+  border-radius: 5px; background: var(--card-bg); color: var(--ink-2); max-width: 128px; }
+.rk-range-cnt { color: var(--ink-4); font-size: 11px; margin-left: 2px; }
+
+/* 快照历史下拉（按月分组 + 搜索） */
+.rk-snap { position: relative; display: inline-block; }
+.rk-snap-btn { font: inherit; font-size: 11px; display: inline-flex; align-items: center; gap: 5px;
+  padding: 1px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--card-bg);
+  color: var(--ink-2); cursor: pointer; max-width: 260px; }
+.rk-snap-btn:hover { border-color: var(--blue); color: var(--ink); }
+.rk-snap-btn i { font-style: normal; color: var(--ink-4); font-size: 9px; }
+.rk-snap-panel { position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; width: 286px;
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0,0,0,.28); padding: 8px; }
+.rk-snap-search { width: 100%; font: inherit; font-size: 11.5px; padding: 5px 8px; margin-bottom: 6px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--bg-2); color: var(--ink); }
+.rk-snap-list { max-height: 248px; overflow-y: auto; }
+.rk-snap-more { width: 100%; margin-top: 4px; padding: 5px 8px; border: 1px dashed var(--border);
+  border-radius: 6px; background: transparent; color: var(--ink-3); font: inherit; font-size: 11px;
+  cursor: pointer; }
+.rk-snap-more:hover { color: var(--ink); border-color: var(--blue); }
+
+/* 快照日历弹层 */
+.rk-cal { position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; width: 272px;
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(0,0,0,.3); padding: 10px; }
+.rk-cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.rk-cal-title { font-size: 12px; color: var(--ink); font-weight: 600; }
+.rk-cal-nav { width: 22px; height: 22px; display: grid; place-items: center; padding: 0;
+  border: 1px solid var(--border); border-radius: 5px; background: var(--card-bg);
+  color: var(--ink-2); cursor: pointer; font-size: 13px; line-height: 1; }
+.rk-cal-nav:hover:not(:disabled) { border-color: var(--blue); color: var(--blue); }
+.rk-cal-nav:disabled { opacity: .35; cursor: default; }
+.rk-cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin-bottom: 2px; }
+.rk-cal-week span { text-align: center; font-size: 10px; color: var(--ink-4); }
+.rk-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.rk-cal-cell { position: relative; height: 30px; display: grid; place-items: center; padding: 0;
+  border: 1px solid transparent; border-radius: 6px; background: transparent;
+  color: var(--ink-4); font: inherit; font-size: 11.5px; cursor: default; }
+.rk-cal-cell.is-empty { visibility: hidden; }
+.rk-cal-cell.has { color: var(--blue); background: color-mix(in srgb, var(--blue) 12%, transparent);
+  cursor: pointer; }
+.rk-cal-cell.has:hover { border-color: var(--blue); }
+.rk-cal-cell.cur { border-color: var(--blue); font-weight: 700; }
+.rk-cal-cell.pick { background: color-mix(in srgb, var(--blue) 26%, transparent); color: #fff; }
+.rk-cal-d { line-height: 1; }
+.rk-cal-dot { position: absolute; right: 4px; bottom: 3px; width: 4px; height: 4px;
+  border-radius: 50%; background: var(--orange); }
+.rk-cal-vers { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+.rk-cal-vers-h { font-size: 10.5px; color: var(--ink-4); margin-bottom: 4px; }
+.rk-cal-ver { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  font: inherit; font-size: 11.5px; padding: 4px 6px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--ink-2); cursor: pointer; }
+.rk-cal-ver:hover { background: var(--bg-2); color: var(--ink); }
+.rk-cal-ver.on { background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--blue); }
+.rk-cal-ver-n { margin-left: auto; color: var(--ink-4); font-size: 10.5px; }
+.rk-cal-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--border);
+  font-size: 10.5px; color: var(--ink-4); }
+.rk-cal-foot .rk-cal-dot { position: static; display: inline-block; margin-right: 3px;
+  vertical-align: middle; }
+.rk-cal-latest { font: inherit; font-size: 11px; padding: 2px 8px; border: 1px solid var(--border);
+  border-radius: 5px; background: var(--card-bg); color: var(--ink-2); cursor: pointer; }
+.rk-cal-latest:hover { border-color: var(--blue); color: var(--blue); }
+.rk-snap-month { font-size: 10.5px; color: var(--ink-4); padding: 6px 6px 3px; position: sticky; top: 0;
+  background: var(--card-bg); }
+.rk-snap-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  font: inherit; font-size: 11.5px; padding: 4px 6px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--ink-2); cursor: pointer; }
+.rk-snap-item:hover { background: var(--bg-2); color: var(--ink); }
+.rk-snap-item.on { background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--blue); }
+.rk-snap-tm { color: var(--ink-4); font-size: 10.5px; }
+.rk-snap-n { margin-left: auto; color: var(--ink-4); font-size: 10.5px; }
+.rk-snap-empty { padding: 10px; text-align: center; color: var(--ink-4); font-size: 11.5px; }
+
+/* 配置块 A/B 各自的暂停/继续（从左侧记录卡移过来） */
+.rk-setup-pause { margin-left: auto; align-self: center; width: 20px; height: 20px; display: grid;
+  place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 5px;
+  background: var(--card-bg); color: var(--ink-3); cursor: pointer; }
+.rk-setup-pause:hover { color: var(--ink); border-color: var(--blue); }
+
+/* B 表：主图 / 标题 / 上架 / 最新 / 变化 / 趋势条（列数恒定） */
+.rk-mtx-wrap { overflow: auto; max-height: 60vh; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--card-bg); }
+.rk-mtx { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+.rk-mtx thead th { position: sticky; top: 0; z-index: 1; background: var(--bg-2); color: var(--ink-3);
+  font-weight: 500; font-size: 11px; text-align: left; padding: 6px 8px; white-space: nowrap;
+  border-bottom: 1px solid var(--border); }
+.rk-mtx td { padding: 0 8px; height: 34px; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  color: var(--ink-2); vertical-align: middle; }
+.rk-mtx tbody tr:last-child td { border-bottom: 0; }
+.rk-mtx tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--bg-2) 40%, transparent); }
+.rk-mtx tbody tr:hover td { background: var(--bg-2); }
+.rk-mtx .c-img { width: 44px; text-align: center; }
+.rk-mtx .c-asin { width: 118px; }
+.rk-mtx .c-asin a { color: var(--blue); text-decoration: none; }
+.rk-mtx .c-asin a:hover { text-decoration: underline; }
+.rk-mtx .c-title { width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-mtx .rk-el { max-width: 200px; }
+.rk-mtx .c-price { width: 80px; text-align: right; color: var(--ink-2); }
+.rk-mtx .c-date { width: 100px; color: var(--ink-3); white-space: nowrap; }
+.rk-mtx .c-days { width: 78px; text-align: right; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.rk-mtx .c-num { width: 66px; text-align: right; color: var(--ink); font-weight: 600; }
+.rk-mtx .c-delta { width: 72px; text-align: right; }
+.rk-mtx .c-strip { width: 320px; }
+.delta-up { color: var(--red); }
+.delta-dn { color: var(--green); }
+.delta-flat { color: var(--ink-4); }
+.rk-strip { display: flex; gap: 1px; height: 15px; width: 320px; }
+.rk-strip i { flex: 1 1 0; min-width: 2px; border-radius: 1px; display: block; }
+.rk-strip i.na { background: var(--bg-2); }
+.rk-strip i.lv0 { background: color-mix(in srgb, var(--blue) 55%, transparent); }
+.rk-strip i.lv1 { background: color-mix(in srgb, var(--blue) 38%, transparent); }
+.rk-strip i.lv2 { background: color-mix(in srgb, var(--blue) 26%, transparent); }
+.rk-strip i.lv3 { background: color-mix(in srgb, var(--blue) 15%, transparent); }
+.rk-strip i.lv4 { background: color-mix(in srgb, var(--blue) 8%, transparent); }
+
+/* 异动头部（基准 / 对比日期选择） */
+.rk-ev-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11.5px;
+  color: var(--ink-3); }
+.rk-ev-count { color: var(--ink-4); }
+
+/* 折线悬浮提示里的 ASIN 缩略图 */
+.sif-tip-row { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
+.sif-tip-thumb { width: 26px; height: 26px; object-fit: contain; border-radius: 4px;
+  background: var(--bg-2); flex-shrink: 0; }
+.sif-tip-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+.sif-tip-body { min-width: 0; }
+.sif-tip-name { color: var(--ink-2); white-space: nowrap; }
+.sif-tip-name b { color: var(--ink); margin-left: 4px; }
+.sif-tip-title { color: var(--ink-4); font-size: 10px; max-width: 190px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
 .rk-ev-pos { flex-shrink: 0; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .rk-ev-title { flex: 1; min-width: 0; color: var(--ink-4);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3948,8 +4202,21 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 /* ===== 排名监测：左栏列表项（监测 / 查询历史）紧凑版 =====
    旧版把状态做成大胶囊、操作做成竖排两个带框按钮，窄栏里标题被挤成两行、
    按钮像两块砖。改成：单行标题 + 单行元信息 + 右上角两个轻量图标按钮。 */
-.ai-task.rk-li { position: relative; align-items: stretch; padding: 9px 10px; }
+.ai-task.rk-li { position: relative; align-items: stretch; padding: 9px 10px 9px 18px; }
+/* 查询记录拖拽排序（把手只在悬停时明显，避免抢视线） */
+.rk-drag-wrap { min-width: 0; }
+.rk-drag-wrap.is-dragging { opacity: .55; z-index: 5; position: relative; }
+.rk-drag { position: absolute; left: 4px; top: 50%; transform: translateY(-50%);
+  width: 12px; height: 24px; display: grid; place-items: center; color: var(--ink-4);
+  opacity: .32; cursor: grab; font-size: 12px; line-height: 1; user-select: none;
+  border-radius: 3px; }
+.ai-task.rk-li:hover .rk-drag { opacity: .85; }
+.rk-drag:hover { background: var(--bg-2); color: var(--ink-2); }
+.rk-drag:active { cursor: grabbing; }
 .ai-task.rk-li:hover { border-color: color-mix(in srgb, var(--blue) 30%, var(--border)); }
+.ai-task.rk-li[data-active="true"] { background: color-mix(in srgb, var(--blue) 9%, var(--card-bg)); }
+.ai-task.rk-li[data-active="true"]::before { content: ""; position: absolute; left: 0; top: 7px; bottom: 7px;
+  width: 3px; border-radius: 0 3px 3px 0; background: var(--blue); }
 .rk-li-main { gap: 3px; padding: 0 46px 0 0; }
 
 /* 标题单行省略：关键词再长也不换行，避免卡片高度忽高忽低 */
@@ -3964,7 +4231,7 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .rk-li-top .rk-li-title { flex: 1; min-width: 0; }
 .rk-li-time { flex: 0 0 auto; font-size: 10.5px; color: var(--ink-4);
   font-variant-numeric: tabular-nums; }
-.rk-li-row { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto 20px;
+.rk-li-row { display: grid; grid-template-columns: 62px minmax(0, 1fr) auto;
   align-items: center; gap: 8px; margin-top: 3px; font-size: 11.5px; }
 /* 行内暂停/继续：A 区、B 区各自一份，只影响自己那条定时 */
 .rk-li-pause { width: 18px; height: 18px; display: grid; place-items: center;
@@ -3972,8 +4239,12 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
   color: var(--ink-4); cursor: pointer; }
 .rk-li-pause:hover { background: var(--bg-2); color: var(--ink); }
 .rk-li-src { font-size: 11px; white-space: nowrap; }
+.rk-li-src::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  margin-right: 5px; vertical-align: middle; }
 .rk-li-src-a { color: var(--blue); }
+.rk-li-src-a::before { background: var(--blue); }
 .rk-li-src-b { color: var(--ink-3); }
+.rk-li-src-b::before { background: var(--ink-4); }
 .rk-li-val { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rk-li-val[data-dim] { color: var(--ink-4); }
 

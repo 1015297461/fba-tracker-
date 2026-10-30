@@ -99,6 +99,7 @@ class DbState:
         self.db_path = db_path
         self.lock = threading.Lock()
         self._init_db()
+        self._init_catmon()
 
     def _conn(self):
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
@@ -106,6 +107,509 @@ class DbState:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
         return conn
+
+    # =====================================================================
+    # catmon：Amazon 类目榜单监控（Best Sellers / New Releases）
+    # =====================================================================
+
+    def _init_catmon(self):
+        with self._conn() as conn:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS catmon_targets (
+                    id               TEXT PRIMARY KEY,
+                    marketplace      TEXT NOT NULL,
+                    node_id          TEXT NOT NULL,
+                    node_path        TEXT,
+                    label            TEXT,
+                    list_types       TEXT DEFAULT '["bestsellers","new-releases"]',
+                    enabled          INTEGER DEFAULT 1,
+                    freq_type        TEXT DEFAULT 'daily',
+                    every_n_days     INTEGER DEFAULT 1,
+                    schedule_weekday INTEGER DEFAULT 1,
+                    schedule_time    TEXT,
+                    last_run_at      TEXT,
+                    last_status      TEXT DEFAULT 'idle',
+                    last_error       TEXT,
+                    created_at       TEXT,
+                    UNIQUE(marketplace, node_id)
+                );
+                CREATE TABLE IF NOT EXISTS catmon_snapshots (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_id   TEXT NOT NULL,
+                    list_type   TEXT NOT NULL,
+                    run_date    TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    status      TEXT DEFAULT 'ok',
+                    item_count  INTEGER DEFAULT 0,
+                    UNIQUE(target_id, list_type, run_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_catmon_snap
+                    ON catmon_snapshots(target_id, list_type, run_date);
+                CREATE TABLE IF NOT EXISTS catmon_items (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    snapshot_id  INTEGER NOT NULL,
+                    target_id    TEXT NOT NULL,
+                    list_type    TEXT NOT NULL,
+                    run_date     TEXT NOT NULL,
+                    rank         INTEGER,
+                    asin         TEXT NOT NULL,
+                    title        TEXT,
+                    price        TEXT,
+                    rating       REAL,
+                    review_count INTEGER,
+                    image_url    TEXT,
+                    product_url  TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_catmon_items
+                    ON catmon_items(target_id, list_type, run_date, rank);
+                CREATE TABLE IF NOT EXISTS catmon_runs (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_id   TEXT NOT NULL,
+                    started_at  TEXT,
+                    finished_at TEXT,
+                    pages       INTEGER DEFAULT 0,
+                    requests    INTEGER DEFAULT 0,
+                    items       INTEGER DEFAULT 0,
+                    status      TEXT DEFAULT 'running',
+                    error       TEXT
+                );
+                CREATE TABLE IF NOT EXISTS catmon_events (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_id  TEXT NOT NULL,
+                    list_type  TEXT NOT NULL,
+                    run_date   TEXT NOT NULL,
+                    asin       TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    old_rank   INTEGER,
+                    new_rank   INTEGER,
+                    delta      INTEGER,
+                    title      TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_catmon_events
+                    ON catmon_events(target_id, run_date);
+            """)
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(catmon_targets)").fetchall()}
+            if "last_progress" not in cols:
+                conn.execute("ALTER TABLE catmon_targets ADD COLUMN last_progress TEXT")
+            # 查询记录支持手动拖拽排序：sort_order 小的在上；老数据按原来的展示顺序
+            # （created_at DESC，新加的在上）回填一次，界面看起来不变。
+            if "sort_order" not in cols:
+                conn.execute("ALTER TABLE catmon_targets ADD COLUMN sort_order INTEGER")
+                rows = conn.execute(
+                    "SELECT id FROM catmon_targets ORDER BY created_at DESC").fetchall()
+                for i, r in enumerate(rows):
+                    conn.execute("UPDATE catmon_targets SET sort_order=? WHERE id=?", [i, r[0]])
+
+    def _row_to_catmon_target(self, row):
+        try:
+            list_types = json.loads(row["list_types"] or "[]")
+        except Exception:
+            list_types = []
+        return {
+            "id": row["id"],
+            "marketplace": row["marketplace"],
+            "nodeId": row["node_id"],
+            "nodePath": row["node_path"],
+            "label": row["label"],
+            "listTypes": list_types,
+            "enabled": bool(row["enabled"]),
+            "freqType": row["freq_type"],
+            "everyNDays": row["every_n_days"],
+            "scheduleWeekday": row["schedule_weekday"],
+            "scheduleTime": row["schedule_time"],
+            "lastRunAt": row["last_run_at"],
+            "lastStatus": row["last_status"],
+            "lastError": row["last_error"],
+            "lastProgress": row["last_progress"],
+            "sortOrder": row["sort_order"],
+            "createdAt": row["created_at"],
+        }
+
+    def create_catmon_target(self, t: dict) -> str:
+        marketplace = (t.get("marketplace") or "US").upper()
+        node_id = str(t.get("nodeId") or t.get("node_id") or "").strip()
+        if not node_id:
+            raise ValueError("nodeId required")
+        list_types = t.get("listTypes") or t.get("list_types") or ["bestsellers", "new-releases"]
+        with self.lock:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT id FROM catmon_targets WHERE marketplace=? AND node_id=?",
+                    [marketplace, node_id]).fetchone()
+                if row:
+                    return row["id"]
+                tid = "cat" + secrets.token_hex(6)
+                # 新加的排最前（与原 created_at DESC 的观感一致）
+                nxt = conn.execute(
+                    "SELECT COALESCE(MIN(sort_order), 0) - 1 FROM catmon_targets").fetchone()[0]
+                conn.execute(
+                    """INSERT INTO catmon_targets
+                       (id, marketplace, node_id, node_path, label, list_types,
+                        enabled, freq_type, every_n_days, schedule_weekday,
+                        schedule_time, created_at, sort_order)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    [tid, marketplace, node_id,
+                     t.get("nodePath") or t.get("node_path"),
+                     t.get("label"),
+                     json.dumps(list_types, ensure_ascii=False),
+                     1 if t.get("enabled", True) else 0,
+                     t.get("freqType") or "daily",
+                     int(t.get("everyNDays") or 1),
+                     int(t.get("scheduleWeekday") or 1),
+                     t.get("scheduleTime") or "09:00",
+                     _now_iso(), nxt])
+                conn.commit()
+        return tid
+
+    def list_catmon_targets(self):
+        with self._conn() as conn:
+            # NULL 的（迁移前插入/老版本后端插入的）当作 -1 → 排最前，符合「新加的在上」的旧观感
+            rows = conn.execute(
+                "SELECT * FROM catmon_targets "
+                "ORDER BY COALESCE(sort_order, -1) ASC, created_at DESC").fetchall()
+        return [self._row_to_catmon_target(r) for r in rows]
+
+    def reorder_catmon_targets(self, ids):
+        """按给定顺序重排查询记录（拖动排序后调用）。"""
+        with self.lock:
+            with self._conn() as conn:
+                for i, tid in enumerate(ids):
+                    conn.execute("UPDATE catmon_targets SET sort_order=? WHERE id=?", [i, tid])
+                conn.commit()
+
+    def get_catmon_target(self, tid: str):
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM catmon_targets WHERE id=?", [tid]).fetchone()
+        return self._row_to_catmon_target(row) if row else None
+
+    def update_catmon_target(self, tid: str, t: dict):
+        allowed = {
+            "label": "label", "enabled": "enabled", "freq_type": "freqType",
+            "every_n_days": "everyNDays", "schedule_weekday": "scheduleWeekday",
+            "schedule_time": "scheduleTime", "list_types": "listTypes",
+        }
+        sets, vals = [], []
+        for col, key in allowed.items():
+            if key not in t:
+                continue
+            v = t[key]
+            if col == "list_types":
+                v = json.dumps(v or [], ensure_ascii=False)
+            elif col == "enabled":
+                v = 1 if v else 0
+            elif col in ("every_n_days", "schedule_weekday"):
+                v = int(v or 0)
+            elif col == "schedule_time":
+                v = v or None
+            sets.append(f"{col}=?")
+            vals.append(v)
+        if not sets:
+            return
+        vals.append(tid)
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(f"UPDATE catmon_targets SET {', '.join(sets)} WHERE id=?", vals)
+                conn.commit()
+
+    def delete_catmon_target(self, tid: str):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM catmon_items WHERE target_id=?", [tid])
+                conn.execute("DELETE FROM catmon_snapshots WHERE target_id=?", [tid])
+                conn.execute("DELETE FROM catmon_runs WHERE target_id=?", [tid])
+                conn.execute("DELETE FROM catmon_events WHERE target_id=?", [tid])
+                conn.execute("DELETE FROM catmon_targets WHERE id=?", [tid])
+                conn.commit()
+
+    def set_catmon_target_status(self, tid, status, error=None, last_run_at=None, progress=None):
+        with self.lock:
+            with self._conn() as conn:
+                if last_run_at is not None:
+                    conn.execute(
+                        "UPDATE catmon_targets SET last_status=?, last_error=?, last_run_at=? WHERE id=?",
+                        [status, error, last_run_at, tid])
+                else:
+                    conn.execute(
+                        "UPDATE catmon_targets SET last_status=?, last_error=? WHERE id=?",
+                        [status, error, tid])
+                if progress is not None:
+                    conn.execute("UPDATE catmon_targets SET last_progress=? WHERE id=?", [progress, tid])
+                conn.commit()
+
+    def save_catmon_snapshot(self, target_id, list_type, run_date, items, status="ok", captured_at=None):
+        """写入某天某榜的快照（同日覆盖），并与上一快照对比生成事件。"""
+        captured_at = captured_at or _now_iso()
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "DELETE FROM catmon_items WHERE target_id=? AND list_type=? AND run_date=?",
+                    [target_id, list_type, run_date])
+                conn.execute(
+                    "DELETE FROM catmon_snapshots WHERE target_id=? AND list_type=? AND run_date=?",
+                    [target_id, list_type, run_date])
+                cur = conn.execute(
+                    "INSERT INTO catmon_snapshots "
+                    "(target_id, list_type, run_date, captured_at, status, item_count) VALUES (?,?,?,?,?,?)",
+                    [target_id, list_type, run_date, captured_at, status, len(items)])
+                snap_id = cur.lastrowid
+                if items:
+                    conn.executemany(
+                        """INSERT INTO catmon_items
+                           (snapshot_id, target_id, list_type, run_date, rank, asin, title,
+                            price, rating, review_count, image_url, product_url)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        [[snap_id, target_id, list_type, run_date, it.get("rank"), it.get("asin"),
+                          it.get("title"), it.get("price"), it.get("rating"),
+                          it.get("reviewCount"), it.get("image"), it.get("productUrl")]
+                         for it in items])
+                prev = conn.execute(
+                    "SELECT run_date FROM catmon_snapshots WHERE target_id=? AND list_type=? "
+                    "AND run_date<? ORDER BY run_date DESC LIMIT 1",
+                    [target_id, list_type, run_date]).fetchone()
+                events = []
+                if prev:
+                    prev_rows = conn.execute(
+                        "SELECT asin, rank, title FROM catmon_items "
+                        "WHERE target_id=? AND list_type=? AND run_date=?",
+                        [target_id, list_type, prev["run_date"]]).fetchall()
+                    prev_map = {r["asin"]: r for r in prev_rows}
+                    new_map = {it["asin"]: it for it in items}
+                    for asin, it in new_map.items():
+                        old = prev_map.get(asin)
+                        if not old:
+                            events.append([target_id, list_type, run_date, asin, "new",
+                                           None, it.get("rank"), None, it.get("title")])
+                        else:
+                            delta = (it.get("rank") or 0) - (old["rank"] or 0)
+                            if delta <= -20:
+                                events.append([target_id, list_type, run_date, asin, "up",
+                                               old["rank"], it.get("rank"), delta, it.get("title")])
+                            elif delta >= 20:
+                                events.append([target_id, list_type, run_date, asin, "down",
+                                               old["rank"], it.get("rank"), delta, it.get("title")])
+                    for asin, old in prev_map.items():
+                        if asin not in new_map:
+                            events.append([target_id, list_type, run_date, asin, "out",
+                                           old["rank"], None, None, old["title"]])
+                    if events:
+                        conn.executemany(
+                            """INSERT INTO catmon_events
+                               (target_id, list_type, run_date, asin, event_type,
+                                old_rank, new_rank, delta, title)
+                               VALUES (?,?,?,?,?,?,?,?,?)""", events)
+                conn.commit()
+        return {"snapshotId": snap_id, "events": len(events)}
+
+    def list_catmon_snapshot(self, target_id, list_type, run_date=None):
+        with self._conn() as conn:
+            if not run_date:
+                row = conn.execute(
+                    "SELECT run_date FROM catmon_snapshots WHERE target_id=? AND list_type=? "
+                    "ORDER BY run_date DESC LIMIT 1", [target_id, list_type]).fetchone()
+                if not row:
+                    return None
+                run_date = row["run_date"]
+            snap = conn.execute(
+                "SELECT * FROM catmon_snapshots WHERE target_id=? AND list_type=? AND run_date=?",
+                [target_id, list_type, run_date]).fetchone()
+            if not snap:
+                return None
+            rows = conn.execute(
+                "SELECT rank, asin, title, price, rating, review_count, image_url, product_url "
+                "FROM catmon_items WHERE target_id=? AND list_type=? AND run_date=? ORDER BY rank",
+                [target_id, list_type, run_date]).fetchall()
+            # 上一次快照（用于表格里的「较上次」位次变化；小幅度变动也算，不只 ±20 的事件）
+            prev = conn.execute(
+                "SELECT run_date FROM catmon_snapshots WHERE target_id=? AND list_type=? "
+                "AND run_date<? ORDER BY run_date DESC LIMIT 1",
+                [target_id, list_type, run_date]).fetchone()
+            prev_map = {}
+            if prev:
+                prev_map = {r["asin"]: r["rank"] for r in conn.execute(
+                    "SELECT asin, rank FROM catmon_items "
+                    "WHERE target_id=? AND list_type=? AND run_date=?",
+                    [target_id, list_type, prev["run_date"]]).fetchall()}
+        def _delta(r):
+            old = prev_map.get(r["asin"])
+            if old is None or r["rank"] is None:
+                return None
+            return r["rank"] - old
+        return {
+            "targetId": target_id,
+            "listType": list_type,
+            "date": run_date,
+            "prevDate": prev["run_date"] if prev else None,
+            "capturedAt": snap["captured_at"],
+            "status": snap["status"],
+            "items": [{
+                "rank": r["rank"], "asin": r["asin"], "title": r["title"], "price": r["price"],
+                "rating": r["rating"], "reviewCount": r["review_count"],
+                "image": r["image_url"], "productUrl": r["product_url"],
+                "prevRank": prev_map.get(r["asin"]), "delta": _delta(r),
+            } for r in rows],
+        }
+
+    def list_catmon_snapshot_dates(self, target_id, list_type):
+        """该 target+listType 的历史快照日期（新→旧），供前端选择历史快照。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT run_date, captured_at, status, item_count FROM catmon_snapshots "
+                "WHERE target_id=? AND list_type=? ORDER BY run_date DESC",
+                [target_id, list_type]).fetchall()
+        return [{"date": r["run_date"], "capturedAt": r["captured_at"],
+                 "status": r["status"], "count": r["item_count"]} for r in rows]
+
+    def get_catmon_trend(self, target_id, list_type, asin, limit=60):
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT run_date, rank FROM catmon_items "
+                "WHERE target_id=? AND list_type=? AND asin=? ORDER BY run_date DESC LIMIT ?",
+                [target_id, list_type, asin, limit]).fetchall()
+        return [{"date": r["run_date"], "rank": r["rank"]} for r in reversed(rows)]
+
+    def list_catmon_trend_range(self, target_id, list_type, asins=None,
+                                start=None, end=None, top_n=5):
+        """多 ASIN 区间趋势。asins 为空时取最新快照前 top_n 名。
+
+        返回 {dates: [...], series: [{asin, title, points:[{date, rank}]}]}
+        """
+        with self._conn() as conn:
+            q = "SELECT DISTINCT run_date FROM catmon_items WHERE target_id=? AND list_type=?"
+            params = [target_id, list_type]
+            if start:
+                q += " AND run_date>=?"; params.append(start)
+            if end:
+                q += " AND run_date<=?"; params.append(end)
+            dates = [r["run_date"] for r in conn.execute(q + " ORDER BY run_date", params).fetchall()]
+            if not dates:
+                return {"dates": [], "series": []}
+
+            asins = [a.strip().upper() for a in (asins or []) if a and a.strip()]
+            if not asins:
+                rows = conn.execute(
+                    "SELECT asin FROM catmon_items WHERE target_id=? AND list_type=? "
+                    "AND run_date=? ORDER BY rank LIMIT ?",
+                    [target_id, list_type, dates[-1], int(top_n or 5)]).fetchall()
+                asins = [r["asin"] for r in rows]
+            if not asins:
+                return {"dates": dates, "series": []}
+
+            ph = ",".join("?" for _ in asins)
+            rows = conn.execute(
+                f"SELECT asin, run_date, rank, title FROM catmon_items "
+                f"WHERE target_id=? AND list_type=? AND asin IN ({ph}) "
+                f"AND run_date>=? AND run_date<=?",
+                [target_id, list_type, *asins, dates[0], dates[-1]]).fetchall()
+
+        rank_map = {a: {} for a in asins}
+        titles = {}
+        for r in rows:
+            rank_map.setdefault(r["asin"], {})[r["run_date"]] = r["rank"]
+            if r["title"]:
+                titles[r["asin"]] = r["title"]
+        series = [{
+            "asin": a,
+            "title": titles.get(a),
+            "points": [{"date": d, "rank": rank_map.get(a, {}).get(d)} for d in dates],
+        } for a in asins]
+        return {"dates": dates, "series": series}
+
+    def list_catmon_matrix(self, target_id, list_type, start=None, end=None):
+        """区间内「出现过的全部 ASIN」的每日位次矩阵（类目榜单 · 全部 ASIN 位次）。
+
+        返回 {dates:[...], rows:[{asin,title,image,ranks:[rank|null],present,best,last}]}
+        空白（None）= 当天该 ASIN 不在抓取范围内。
+        """
+        with self._conn() as conn:
+            q = "SELECT DISTINCT run_date FROM catmon_items WHERE target_id=? AND list_type=?"
+            params = [target_id, list_type]
+            if start:
+                q += " AND run_date>=?"; params.append(start)
+            if end:
+                q += " AND run_date<=?"; params.append(end)
+            dates = [r["run_date"] for r in conn.execute(q + " ORDER BY run_date", params).fetchall()]
+            if not dates:
+                return {"dates": [], "rows": []}
+            rows = conn.execute(
+                "SELECT asin, run_date, rank, title, image_url, price FROM catmon_items "
+                "WHERE target_id=? AND list_type=? AND run_date>=? AND run_date<=? "
+                "ORDER BY run_date",
+                [target_id, list_type, dates[0], dates[-1]]).fetchall()
+
+        meta, rank_map = {}, {}
+        for r in rows:
+            a = r["asin"]
+            if not a:
+                continue
+            m = meta.setdefault(a, {"title": None, "image": None, "price": None})
+            if r["title"] and not m["title"]:
+                m["title"] = r["title"]
+            if r["image_url"] and not m["image"]:
+                m["image"] = r["image_url"]
+            if r["price"] is not None:               # 取最近一天的价格（rows 未排序，取到即覆盖）
+                m["price"] = r["price"]
+            if r["rank"] is not None:
+                rank_map.setdefault(a, {})[r["run_date"]] = r["rank"]
+
+        out = []
+        for a, m in meta.items():
+            rm = rank_map.get(a, {})
+            ranks = [rm.get(d) for d in dates]
+            vals = [x for x in ranks if x is not None]
+            last = next((ranks[i] for i in range(len(ranks) - 1, -1, -1) if ranks[i] is not None), None)
+            out.append({
+                "asin": a, "title": m["title"], "image": m["image"], "price": m.get("price"),
+                "ranks": ranks, "present": len(vals),
+                "best": min(vals) if vals else None, "last": last,
+            })
+        # 最新在榜优先，其次最好名次
+        out.sort(key=lambda r: (r["last"] is None, r["last"] or 9999, r["best"] or 9999))
+        return {"dates": dates, "rows": out}
+
+    def list_catmon_events(self, target_id=None, days=7, limit=200, start=None, end=None):
+        q = "SELECT * FROM catmon_events WHERE 1=1"
+        params = []
+        if target_id:
+            q += " AND target_id=?"; params.append(target_id)
+        if start:
+            q += " AND run_date>=?"; params.append(start)
+        elif not end:
+            since = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+            q += " AND run_date>=?"; params.append(since)
+        if end:
+            q += " AND run_date<=?"; params.append(end)
+        q += " ORDER BY id DESC LIMIT ?"; params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(q, params).fetchall()
+        return [{
+            "targetId": r["target_id"], "listType": r["list_type"], "date": r["run_date"],
+            "asin": r["asin"], "eventType": r["event_type"], "oldRank": r["old_rank"],
+            "newRank": r["new_rank"], "delta": r["delta"], "title": r["title"],
+        } for r in rows]
+
+    def add_catmon_run(self, target_id):
+        with self.lock:
+            with self._conn() as conn:
+                cur = conn.execute(
+                    "INSERT INTO catmon_runs (target_id, started_at, status) VALUES (?,?,?)",
+                    [target_id, _now_iso(), "running"])
+                conn.commit()
+                return cur.lastrowid
+
+    def finish_catmon_run(self, run_id, status, pages=0, requests=0, items=0, error=None):
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "UPDATE catmon_runs SET finished_at=?, status=?, pages=?, requests=?, items=?, error=? "
+                    "WHERE id=?", [_now_iso(), status, pages, requests, items, error, run_id])
+                conn.commit()
+
+    def list_catmon_runs(self, target_id, limit=20):
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM catmon_runs WHERE target_id=? ORDER BY id DESC LIMIT ?",
+                [target_id, limit]).fetchall()
+        return [dict(r) for r in rows]
 
     def _init_db(self):
         with self._conn() as conn:

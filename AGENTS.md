@@ -105,8 +105,23 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                  #   出入参 camelCase、DB 用 snake_case（db.py 里机械互转）；
                                  #   Excel 导入只把工作簿转成 TSV 文本，列映射解析留在前端（与原项目一致）。
                                  #   权限 admin/root。
+    catmon.py                    # /api/catmon/*，类目榜单监控：监控对象 CRUD + 立即采集（后台线程）
+                                 #   + 快照/趋势/事件/运行日志 + 按需详情（进程内存缓存，?refresh=1 强制刷新）
   rank_fetcher.py              # 关键词排名抓取器（正则解析，无 bs4 依赖）
+  catmon_fetcher.py            # 类目榜单采集器（Best Sellers / New Releases）：
+                              #   URL 解析 → 抓第 1 页 + 跟随 a-last Next 抓第 2 页；
+                              #   每页内嵌 data-client-recs-list JSON 含 50 条(rank+asin)、网格 30 条全字段，
+                              #   合并得 rank 1-100（约 60 条有字段）；**不能自拼 ?pg=N**（实测 400/错位）。
+                              #   **详情直接复用 product_fetcher.scrape_product**（与「产品采集」批量
+                              #   同一套稳机制：会话预热 + 多次退避重试 + 指纹/referer 轮换 + 限速 +
+                              #   验证码/Dog页/503 检测）。此前用裸 _http_get 单独抓 /dp/，Amazon 软性
+                              #   限流下会稳定失败（批量却成功），故统一改为 scrape_product。
+                              #   进程内存缓存 TTL 600s，refresh=True 覆盖。
   product_fetcher.py           # 产品详情抓取器（bs4 解析 + 反爬：会话池/令牌桶/CAPTCHA/Dog-page检测）；
+                              #   ⚠️ fetch_product_page 还会识别「200 但无 id="productTitle" 的空壳/软封页」
+                              #   （Amazon 对被标记会话返回的空壳中间页）→ 清 cookie + 换指纹 + 重试，
+                              #   否则空壳页会被当正常页返回 → parse 无标题 → 详情弹窗报「未能解析到产品数据」。
+                              #   该自愈对「产品采集」批量与类目榜单/排名监测详情都生效。
                               #   含 parse_customers_say()——解析 Customers say（AI 摘要 + 各关注点计数/
                               #   正负面/总结句/评论引用）。Amazon 已改混淆类名，旧 data-hook 选择器
                               #   （cr-insights-widget 等）全部失效，现锚点用 data-testid
@@ -118,7 +133,28 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   会让 `re.split(r'\s*[:：]\s*')` 切不开 → 整条 li 被丢弃 → productDetails 全空
                               #   （曾因此让「上架时间」整列消失）。注意 parse_product_page 返回的是
                               #   **下划线**键名 product_details，别和接口层的驼峰 productDetails 搞混。
-  review_media.py              # 评论媒体（Customer photos and videos）按需抓取 —— **唯一走浏览器 CDP 的模块**。
+  browser_fetch.py             # 用「浏览器」取页面 HTML —— HTTP 被判机器人时的通道。**三档模式**（`FBA_DETAIL_BROWSER`）：
+                              #   · `headless`（默认，推荐）：后端自己拉起**专用无头 Chrome**，profile 独立在
+                              #     `data/chrome-profile/`。**与任何人日常用的浏览器完全隔离** —— 多人共用后端时，
+                              #     同事点「查看详情」用的是服务器自己的 Chrome，不会在机主浏览器里开标签。
+                              #     dump 临时文件必须落 `data/.dom-tmp/`：放系统临时目录（/private/var/folders/…）
+                              #     会被 macOS 沙箱拦掉 Chrome 子进程的写入，表现为「35 秒一个字节都没有」。
+                              #   · `local`：驱动本机已开 Chrome（cdp-proxy 3456，有真实登录态）。**仅供机主本机调试**：
+                              #     谁点详情都会在跑后端那台机器的浏览器里开标签，多人共用会打扰机主。
+                              #   · `off`：不启用，退回纯 HTTP（易被 CAPTCHA）。
+                              #   ⚠️ 2026-10-30 实测的关键事实：同一个 /dp/ 链接，urllib 连续 7 次全拿到 CAPTCHA 页，
+                              #   交给浏览器一次就得到 2~4MB 完整商品页。**被封的是客户端指纹（TLS/HTTP2/cookie
+                              #   历史/请求节奏），不是这台机器的 IP。** 故「单条详情」= 浏览器优先 → HTTP 兜底。
+                              #   无头实现要点：`--headless=new --dump-dom` 写完 DOM **不会自己退出**，需轮询输出文件
+                              #   大小（连续 3 次不变且 ≥80KB 判定完成）后主动 kill；实测 6.5~22s（视页面资源）。
+                              #   **进程不常驻**：一次抓取 = 临时拉起一棵 Chrome 进程树（峰值 8~11 个进程），抓完
+                              #   整组回收。⚠️ 只 kill 主进程不够（实测仍留 3 个 renderer/gpu helper 数十秒），
+                              #   故 Popen 用 `start_new_session=True` + `os.killpg(pgid, SIGKILL)` 整组杀；
+                              #   实测抓取结束瞬间残留 0。长期只有 `data/chrome-profile/`（缓存/cookies，约 47MB
+                              #   起）留在磁盘，可按需 `rm -rf data/chrome-profile` 清掉（下次自动重建）。
+                              #   `local` 实现要点：新标签先开 about:blank 再 /navigate（`/new` 会等整页加载），
+                              #   /navigate 客户端只等 8s，就绪靠轮询 `readyState + productTitle`；标签复用、闲置 240s 关。
+  review_media.py              # 评论媒体（Customer photos and videos）按需抓取 —— 走本机 CDP 的模块。
                               #   评论图片/视频由详情页懒加载 widget cr-customer-videos 提供，端点为
                               #   POST /portal/customer-reviews/ajax/lazy-widgets/stream。该端点**要求有效会话**：
                               #   不带 cookie 返回 0 字节，干净匿名会话同样 0（对照实测 168,632 vs 3,282），
@@ -353,7 +389,7 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 | POST | `/api/sif/preview` | body `{root,country,topN,withCompetitors}` 试查词根机会词+头部竞品（不落库） |
 | POST | `/api/sif/inspect` | body `{type,...}` 点查重接口，type ∈ competition·discover·root_competitors·root_trend·history·screen·asin_signals·asin_profile·asin_sales·listing_keywords·promotion·profit |
 
-路由对应的源文件：`/api/login`/`/api/logout`/`/api/me` → `routes/auth_routes.py`；`/api/products`/`/api/trash/*` → `routes/products.py`；`/api/rank/*` → `routes/rank.py`；`/api/scrape/*` → `routes/scrape.py`；`/api/review/*` → `routes/review.py`；`/api/exports/*` → `routes/exports.py`；`/api/pdf/*` → `routes/pdf.py`；`/api/ai/*` → `routes/ai_analysis.py`；`/api/sif/*` → `routes/sif_keywords.py`；`/api/shipment/*` → `routes/shipment.py`。
+路由对应的源文件：`/api/login`/`/api/logout`/`/api/me` → `routes/auth_routes.py`；`/api/products`/`/api/trash/*` → `routes/products.py`；`/api/rank/*` → `routes/rank.py`；`/api/scrape/*` → `routes/scrape.py`；`/api/review/*` → `routes/review.py`；`/api/exports/*` → `routes/exports.py`；`/api/pdf/*` → `routes/pdf.py`；`/api/ai/*` → `routes/ai_analysis.py`；`/api/sif/*` → `routes/sif_keywords.py`；`/api/shipment/*` → `routes/shipment.py`；`/api/catmon/*` → `routes/catmon.py`。
 
 ### 同步机制（详见 `docs/operations.md` 第7节）
 客户端每 4s 轮询 `version`，编辑后 600ms 防抖 PUT 带 `baseVersion`；后端乐观锁，冲突时返回服务器最新版本，客户端整体覆盖（`ProductContext.tsx` 中 `versionRef`/`syncedVersionRef` 相关逻辑）。
@@ -394,6 +430,9 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 
 ### 排名监测（`rank_monitor.py`）
 
+- **ASIN 点击**：`RankMonitor.tsx` 的 `AsinPeek` 现在复用「产品采集」的 `ProductDetailDialog`
+  （走 `/api/catmon/detail?asin=&marketplace=US`，带 10 分钟内存缓存 + `refresh=1` 重试），不再直接跳 Amazon。
+
 两个方向、三种「排名」口径，**字段名刻意分开，页面也必须分开标注**：
 
 | 字段 | 来源 | 含义 |
@@ -420,6 +459,10 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
   `weekly` 只在周一跑；目标之间 `RUN_GAP_SEC=1.5` 秒串行，防撞 SIF 的 QPM 40。
   早先 daily 是真每天跑，结果是同一周内存七份完全一样的快照、趋势图上一串重合点。
 - **左栏只有一个「记录」列表**（2026-10-28 简化）：`rmon_queries`（SIF）与 `rmon_srps`（前台实测）  混排、按时间倒序，每项带来源标签 + 结果摘要 + 单条导出（CSV / Excel）+ 删除。
+- **查询记录可拖拽排序**（`@dnd-kit`，与「产品列表」同款）：`SortableRec` 包装 + 左侧 ⠿ 把手，
+  `PointerSensor` 设 5px 激活距离（点整行仍然是打开记录，不误触拖拽）。
+  顺序存 `localStorage['rk.recorder.v1']`——记录是 `records` 派生的，没有可写顺序的业务表；
+  不在顺序表里的新记录排最前（保持按时间倒序），已排序的按保存位置。
   定时信息**挂成记录上的徽章**（`每天 09:00` / `每周一`），不再单独占一块「定时监控」区域 ——
   曾经是「定时监控（折叠）+ 查询记录」双层结构，用户抓完榜单在两个地方都找不到，看着像数据没变。
   · 只加了定时、还没跑过的词补一条「待首次抓取」，否则加完监测在列表里看不到它
@@ -462,6 +505,9 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 - **竞品份额榜有「自然位」列**：直接读快照里的 `data.organic`（`{asin: rank|null}`），
   采集范围内 **0 次额外调用**即显示；范围外的行才显示「查」按钮按需查 1 次。
   注意 `organic` 里**没有 key 表示没采集**，`key=null` 表示「查了确实没有自然位」，两者不能混。
+- **竞品份额榜历史快照**：同一关键词在 `rmon_queries` 里有多条查询记录时，表头出现「历史快照」下拉
+  （`apiQueries()` 按 `kind='keyword'` + `value` 过滤，≥2 条才显示；选中后 `apiQueryDetail(id)` 取
+  `rec.data` 覆盖当前 `KeywordResult` 的 data 回看，选「最新」恢复）。只有 1 条时下拉隐藏属正常。
 - **趋势条数跟随采集设置**：`/api/rank/trend` 的 `topN` 默认取该目标的 `competitor_n`（1~15），
   前端 `apiTrend(id, cn)` 把「采集设置」里的 cn 直接传过去，cn 变化会立刻重画。
   曾经前端写死 `topN=5`、后端又 `min(5, …)` 截断，结果配了 10 个竞品也只画 5 条。
@@ -495,6 +541,17 @@ SIF 是周期内最后一次采样值，爬虫是点击那一刻的实测值，�
 - **限速实测**（US 站，本机住宅 IP）：短间隔连发 3~4 次即 503，静默 60~90s 恢复；
   页间 14~24s 随机、首次退避 25s、二次 60s、三次 120s 都能过。
   **同一时间只允许一个抓取任务**（`scrape_busy()`），并发只会互相加剧限流。
+- **第 1 页不能带首页 Referer**（2026-10-29 实测定位）：亚马逊首页预热现在返回 **202 挑战页**
+  （空壳、0 个 Set-Cookie）。`warm_up_session` 曾只看「有没有网络异常」，把 202 当成功并标记
+  `initialized`，于是搜索请求带着空 cookie + `Referer: https://www.amazon.com/` +
+  `Sec-Fetch-Site: same-origin` → 被判机器人，返回 503「Sorry! Something went wrong!」或
+  200 降级空页（表现为 `no_cards`，还会白等 25/60/120s 重试）。
+  · 修法：`fetch_page` 只在 `page > 1` 时带 Referer（第 1 页不带）；第 1 页 200 后会拿到
+    `session-id` 等 6 个 cookie，第 2 页带「上一页 Referer + 这些 cookie」正常。
+  · `warm_up_session` 只认 `status == 200`，失败记 `warmup_failed_at`，5 分钟内不再重试
+    （否则每次翻页都多撞一次首页）；`202` 在 `fetch_page` 里按 `blocked` 处理。
+  · `no_cards` 现在会打一行诊断（status / 长度 / 标题 / 是否命中拦截特征），不用再靠猜。
+  · 实测修复后 2 页 96 条（自然 94 / 广告 2）。
 - **软限流降级页要识别**：200 但 `s-search-result` 为空 → 记 `no_cards` 并重试，
   不能当「这个词没结果」；真没结果页有明确文案（`No results for` / `did not match any products`）→ 记 `empty` 且**不重试**。
   卡片数 < 10 视为异常，整页丢弃不写脏数据。
@@ -538,13 +595,28 @@ SIF 是周期内最后一次采样值，爬虫是点击那一刻的实测值，�
   · 实现在 `backend/fingerprint.py`（单独成文件是为了 db 层也能用，避免循环依赖）
   · 「无变化」那几次写 `rmon_checks` 留痕（只存时间+一句话，不存快照），
     前端显示「上次检查 15:22」
-- **暂停/继续是 A、B 各自一份**（`.rk-li-pause`，就在各自那行末尾的徽章右侧）：
+- **暂停/继续已从左侧记录卡移入右侧配置块**（`.rk-setup-item` 的 A/B 标题行，按钮 `.rk-setup-pause`）：
   · A 走 `apiSaveScrapeTarget({enabled: !enabled})`，只停「每天自动抓取」，已抓到的榜单不动
   · B 走 `apiUpdateTarget({id, paused})`，只置暂停，不删目标（历史快照要留）
-  · ⚠ 列表项主区从 `<button>` 改成了 `<div role="button">`：行内要放暂停按钮，
-    按钮套按钮是非法 HTML，点击还会连带触发「打开记录」。改完要保留键盘可达（Enter/Space）
-  · `.rk-li-row` 的网格从 3 列改成 4 列（来源 / 摘要 / 徽章 / 暂停），没有定时的行补一个空
-    `<span />` 占位，否则列会错位
+  · 左卡只保留「每日 xx / 每周一 xx」徽章（信息），不再放按钮；`.rk-li-row` 回到 3 列
+    （来源 / 摘要 / 徽章）。列表项主区仍是 `<div role="button">`，保留 Enter/Space 键盘可达。
+- **右侧展示只看「当前打开的记录」，不看输入框**（`activeKeyword`）：
+  · 标题、A/B 定时回显、暂停按钮、页数都来自 `activeKeyword`（`openRecord` / 查询或抓取**跑完**时更新）。
+    用 `value`（输入框实时值）会导致「只在左栏敲字、还没查询，右侧标题就先变了」。
+  · 输入框与 `activeKeyword` 不一致时，A/B 的「获取最新数据」置灰并提示先点「查询 / 抓取」，
+    避免误抓成刚输入的新词。
+  · 「修改配置」弹窗仍按输入框（`curSrpSched`/`curSifSched`）回显 —— 它配置的是「即将查询的词」。
+- **标题 / 上架日期 / 异动标题统一用 `HoverTip`**（**不要**再用原生 `title`）：
+  portal + `position:fixed` 浮层，鼠标可移入卡片、正文可划选复制；120ms 出现、160ms 收起，
+  滚动即收起；渲染后按真实尺寸夹到视口内（下方放不下翻到上方）。
+  ⚠ 原生 `title` 的硬伤：鼠标移不进去、文字选不中，样式不可控。
+- **列表排版约定（2026-10-29 重构）**：
+  · 指标从 4 个大方块改为**一行 chip**（`.rk-srp-kpis` 改 flex）
+  · 工具栏左右分组、统一 28px 高（`.rk-srp-bar` 加容器边框）
+  · 表格行高 36px + 斑马纹 + 名次分级徽章 `.rk-rank`（前 10 红 / 前 50 蓝 / 其余灰）
+    + 「我的」行左侧 3px 蓝条
+  · 记录卡来源加色点（`.rk-li-src::before`），选中态左侧蓝条（`[data-active]::before`）
+  · 异动从「一条一个卡片」改为**带表头的紧凑行**（`.rk-ev-table` / `.rk-ev-headrow`）
 - **趋势在定时任务跑完时顺带刷新**（`RankMonitorWorker._refresh_trend`，`force=True` 绕过 12h 缓存）：
   否则定时跑完趋势还是旧的，只有你打开页面才会去取。
 - **关键词搜索趋势走 `market_get_keyword_history`**（不是 `root_trend`）：
@@ -560,14 +632,35 @@ SIF 是周期内最后一次采样值，爬虫是点击那一刻的实测值，�
     否则单看排名时整张图空白。切换时间范围时要重置 `only`，不然索引可能越界。
 - **自然位是跨页累加的**：`org` 只对非广告卡片 +1，广告卡片 `org=None`。
   所以「自然位 92 / 总条目 96」是正常的（4 个广告位不占自然位）。
-- **趋势聚合只留常驻者**（`build_srp_trend`）：一个词一天 144 条，直接按 ASIN 画线会糊成一片。
-  只保留「出现 ≥2 天」或「最近一次仍在榜」的 ASIN，其余只出现在榜单表和异动里。
-  **主视图用热力图（日期 × ASIN）而不是折线** —— 位次是「存在/缺失」的离散事件，
-  折线要么断开、要么连出误导性的直线，热力图空白格天然表达「掉榜」。
+- **趋势聚合**（`build_srp_trend`）：默认保留「出现 ≥2 天」或「最近一次仍在榜」的 ASIN（常驻）；
+  传 `all_in_range=1` 则**区间内出现过即列出**（矩阵用这个，折线仍只取前 5 条）。
+  每行带 `img`（主图），折线与下方矩阵都用它。
+- **位次视图拆成两块，各自独立的时间范围**（`RangeBar`，日期下拉只列有数据的日期）：
+  · 折线（不限跨度，带「全部」）：`Series` 加 `img`/`title`，悬浮 tooltip 显示 ASIN 名 + 26px 缩略图 + 标题
+  · 矩阵（趋势条）：固定 9 列（主图 / ASIN / 标题 / 价格 / 上架 / **出现天数** / 最新 / 变化 / 趋势条），**列数不随天数增长**；
+    趋势条上限 60 天、默认 14 天，快速档 7/14/30/60 + 自定义（≤60）
+  · 标题用 `.rk-el` 硬上限（列表 240px / 矩阵 200px）省略，悬浮看全文；
+    「上架」列 `nowrap`，避免日期被挤换行
+  · 价格列取该 ASIN **最近一天**的价格（`build_srp_trend` 行内 `price`/`symbol`）
+  · 矩阵默认显示 1000 行（区间内全部 ASIN），超过才出现「再显示」按钮
+  · 趋势格子悬浮显示「第 X 页第 Y 位」：`build_srp_trend` 每行多带 `spots`（按日期对齐，
+    每项 `[page, pos]` 或 null）；前端用事件委托（格子 `data-i`）定位，只在换格时 setState
+  · **表头点击排序**：ASIN / 标题 / 价格 / 上架 / 出现天数 / 最新 / 变化 / 趋势，循环「升 → 降 → 还原」；
+    空值无论升降恒排最后；「趋势」按区间内平均位次、「变化」按区间首末差（负数=变好）
+  · 趋势接口 `limit` 上限放宽到 2000（前端取 365），以支持「不设上限」的折线/异动范围
+- **`RangeBar` 改端点规则**：改「起始」时结束跟着走（起始+maxSpan-1），改「结束」时起始跟着走
+  （结束-maxSpan+1）。**不要**为了满足跨度上限去夹用户选的那一端 —— 那样用户选完日期会被弹走，
+  表现为「筛选项没用」。
+- **快照历史选择器 `SnapPicker`（日历弹层）**：原生 `<select>` 记录一多（一年 300+）就难找，
+  改为月历弹层 —— 只有「有数据的日子」可点（蓝底），当天多条快照打橙点并在下方展开版本；
+  月份前后翻按数据最早/最晚月限位，底部「最新」直达最新一条，点外部关闭。
 - **异动流阈值**：`SRP_TOP_N=20`（只看前 20 名的进出）、`SRP_STEP_ALERT=10`（位次变化 ≥10 位才算）。
   设太小会天天报警 —— 亚马逊自身排序就有 ±2~3 位抖动，同一时刻不同 IP 抓到的顺序都不完全一样；
   报警一多用户就再也不看了。事件类型：`drop_out` / `enter_top` / `down` / `up`，
   按严重度排序后返回（掉榜 > 新进 > 下跌 > 上升）。
+- **异动支持任意两天自定义对比**：`/api/rank/scrape/events` 接收 `prev`/`curr`（缺省 = 最近两天），
+  返回 `dates`（有数据的日子，供前端下拉）与每条的 `img`。前端两个下拉只列有数据的日期；
+  `prev >= curr` 时自动把基准日往前挪一天。列表每行带 32px 主图（悬浮 300px 浮层）。
 - **异步任务必须**：3 页要 1~2 分钟（页间限速），同步请求浏览器早就超时了。
   任务记录放内存（15 分钟过期），结果本身落 `rmon_srps`，过期不影响数据。
 - **定时抓取走独立表 `rmon_srp_targets`**（keyword / pages / daily_at / enabled），
@@ -732,6 +825,104 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
     批小则会反复重建线程池、批间空等，吞吐反而更低。
   - `scrape_products` 内的 `stagger` 只对「同时启动的那一批」生效，排队中的任务由空闲 worker 自然错开。
   - 失败重试轮前的等待是固定短值（约 2 秒）；失败项在 `fetch_product_page` 内部已退避过 2/5/10 秒。
+
+## 类目榜单监控模块（`backend/catmon_fetcher.py` + `backend/routes/catmon.py` + `src/features/tools/CategoryMonitor.tsx`）
+
+- **定位**：AI分析分组下与「排名监测 / 流量分析」平级的第 4 个工具（`AI_SKILLS` 里 id=`catmon`、非 root）。
+- **数据源**：Amazon 类目榜单页 `gp/bestsellers|new-releases/{路径}/{节点ID}/`。
+- **采集 `fetch_listing`**：抓第 1 页 → 跟随 `li.a-last > a` 的 Next 链接抓第 2 页；
+  每页解析内嵌 `data-client-recs-list` JSON（50 条 rank+asin）+ 可见网格（30 条全字段）；
+  再用 **ACP 懒加载接口**补全未渲染的 20 条：
+  `POST {data-acp-path}nextPage?page-type=zeitgeist&stamp={data-acp-stamp}`，
+  header `x-amz-acp-params: {data-acp-params}`，body `{faceoutkataname:"GeneralFaceout",ids:[<recs 原始 JSON 字符串>]}`，每批 8 条。
+  两页各 30+20 → **100 条全字段**（实测 8 个请求，无需逐个查详情）。
+  ⚠️ **不能自拼 `?pg=N`**（实测 pg=2 返回 51-80、pg=3 直接 400）。
+  ⚠️ 列表页也要带 `i18n-prefs=USD`，否则国内 IP 价格会变 CNY。
+- **详情 `fetch_detail`**：**浏览器优先 + HTTP 兜底**（2026-10-30 改，见下方「为什么单条总失败」）：
+  ① 本机真实浏览器（`browser_fetch.fetch_html`，5~8s）取 `/dp/`，用 `product_fetcher.parse_product_page` 解析
+  （**两条通道共用同一解析器**，字段完全一致，只在结果里多一个 `fetchedBy: "browser"`）；
+  ② 浏览器不可用/没取到 → `product_fetcher.scrape_product_robust`（HTTP 完整重试预算 + 第二轮补采，与批量同款）；
+  ③ `_DETAIL_FETCH_LOCK` **串行化**单条详情（连点不会打成突发并发），并做双检缓存；
+  进程内存缓存 `_DETAIL_CACHE`（TTL 600s），`refresh=True` 覆盖；**默认不采集，前端点击缩略图/标题才请求**。
+- **为什么「单条详情」比「批量采集」容易失败（2026-10-30 复盘）**：
+  ⚠️ 两条链路**早就是同一套抓取函数**，差别不在"采集方式"，而在**机会数与时间分布**：
+  批量一个 ASIN 有 4（函数内重试）× 2（失败项重试轮）= 8 次机会、跨数分钟摊开，失败还被第二轮盖过去
+  （历史任务实测仍有 3/125、22/106 的失败，只是"看起来没事"）；单条只有 4 次、十几秒内打完，一次
+  CAPTCHA 风暴就整条失败。
+  根因是 **urllib 的客户端指纹被 Amazon 判定为机器人**（同一 URL 交给本机 Chrome 一次就成功），因此：
+  · `fetch_product_page` 被拦清 cookie 后**必须立刻重新预热**（否则后续重试全是无身份裸请求——这是原先最大的漏洞）；
+  · `warm_up_session` 的冷却改为分状态：会话**没有 session-id** 时只等 20s（`WARMUP_COOKIELESS_COOLDOWN`），
+    否则 5 分钟冷却期等于让所有请求全程裸奔（「详情连续一段时间全挂」的直接原因）；
+  · 预热请求本身也要过令牌桶（`acquire_rate_limit`），否则它是隐形突发流量。
+- **前端**：`CategoryMonitor.tsx` 的「排名趋势」悬浮窗可鼠标停留（portal+fixed 跟随光标），每行显示 ASIN 缩略图 +
+  截断标题（图从当前快照 `items` 按 ASIN 映射，趋势接口不返回图）。
+- **列宽可拖拽**：`src/features/tools/colResize.tsx` 的 `useColResize`（事件委托到 `thead`，
+  **按列右边界就近 ±8px 命中**，含最后一列——命中点取 `right-3` 内移，避免落在表格外；靠近边界给 `th` 加
+  `.col-grip` 显蓝色手柄 + `col-resize` 光标）。**拖动时其余列按比例缩放、总宽恒定**（`total` 不变 →
+  不会把表格/页面撑出横向溢出）；首次拖拽按各列实际像素宽初始化，故**每一列（含末列/自动列）都能拖**。
+  表格需加 `col-rsz` 类（手柄定位）、拖过后加 `cw-fixed`（`table-layout:fixed`）；宽度存
+  `localStorage: fba-colw-v1:<key>`。已接入 8 张表：排名监测（竞品份额榜 / ASIN 关键词 / 全部 ASIN 位次 /
+  榜单异动 / 自然位列表）、类目榜单（榜单列表 / 全部 ASIN 位次 / 运行记录）。
+  ⚠️ 保留 `.cw-fixed th,.cw-fixed td{width:auto!important}` 让单元格宽度让位给 `<col>`（按规范 `<col>` 本就优先，这样更稳）。
+- **「全部 ASIN 位次」矩阵（2026-10-30 起替代「变动事件」，两模块展示完全一致）**：
+  · 排名监测：`build_srp_trend(all_in_range=1)`（去掉"出现≥2天"过滤）→ 区间内出现过的**全部** ASIN；
+    列＝主图 / ASIN / 标题 / 价格 / **上架** / 出现天数 / 最好 / 最新 / 变化 / 趋势条。时间筛选用 `DateCalendar`。
+  · 类目榜单：`GET /api/catmon/matrix?targetId&listType=&start=&end=` → `db.list_catmon_matrix`（`{dates, rows}`，行含 price）；
+    前端 `MatrixPanel` 用同一套 `.rk-mtx` 类渲染，**列完全一致但去掉「上架」**。
+  · 两模块共用的日期选择器在 `src/features/tools/DateCalendar.tsx`（类名 `rkd-*`，与既有 `SnapPicker` 的 `rk-cal-*` 隔离）。
+  · 出现天数＝区间内有数据的天里该 ASIN 出现天数（`present/总数`）。
+- **表（`db.py` 的 `_init_catmon`）**：`catmon_targets / catmon_snapshots / catmon_items / catmon_runs / catmon_events`。
+  一个 target 可覆盖两榜（`list_types` JSON）；保存同日快照按 `(target,list_type,run_date)` 覆盖，
+  并与上一快照对比生成 `new/out/up/down` 事件（阈值 ±20）。
+- **查询记录拖拽排序（2026-10-30）**：`catmon_targets.sort_order`（迁移时按 `created_at DESC` 回填，
+  界面观感不变）。新建 target 取 `MIN(sort_order)-1` → 排最前；`list_catmon_targets` 按
+  `COALESCE(sort_order,-1) ASC, created_at DESC`（NULL 视为 -1，兼容老版本后端插入的行）。
+  前端卡片 `draggable` + `⋮⋮` 手柄，拖到目标位置上移落位；松手先本地重排再
+  `PUT /api/catmon/targets/order {ids:[...]}` 落库，失败则回滚重拉。
+- **路由**：`GET/POST/PUT/DELETE /api/catmon/targets`、`PUT /targets/order`、`POST /run`（后台线程）、
+  `GET /snapshot`、`/trend?start=&end=&asins=&topN=`（多 ASIN 区间，返回 `{dates, series}`）、
+  `/matrix?start=&end=`（区间内全部 ASIN 的每日位次矩阵，返回 `{dates, rows}`）、
+  `/events?start=&end=`（区间事件，前端已不用，接口保留）、`/snapshots?targetId&listType`（历史快照日期列表，供榜单列表切换）、
+  `/runs`、`GET /detail?refresh=1`、`POST /pause`、`POST /resume`。
+- **暂停 / 继续（2026-10-30）**：每个 target 一个 `{"pause": Event, "cancel": Event}`（`_ctl`，`_start_run` 里创建、
+  `_run_target` 的 finally 里清理）。**暂停点在「每个榜单开始之前」**（`_wait_if_paused`），
+  所以绝不会停在半截榜单上、也不会重复写同日快照；暂停中的线程原地 sleep 0.5s 轮询，状态写 `paused`。
+  `POST /resume`：线程还活着就 `pause.clear()`；线程已不在（后端重启过）则直接重起一轮。
+  `POST /run` 在暂停态调用等价于继续（先 `pause.clear()` 再起/复用线程）。
+  调度器跳过 `lastStatus == "paused"` 的 target（不抢跑）；删除 target 时置 `cancel` 让线程退出。
+- **定时调度**：`routes/catmon.py` 的 `start_scheduler()`（`app.py` 启动）：每分钟扫描；
+  `daily` 每天到点跑一次、`weekly` 指定周几、`every_n` 距上次 ≥N 天；当天已跑过会跳过，重启后若已过点会自动补跑。
+- **前端**：左栏「监控对象 + 查询记录」、右栏榜单表 + 定时设置行 + 分析区三 tab
+  （排名趋势：自定义日期区间 + Top N/自定义 ASIN；全部 ASIN 位次：区间矩阵，见下；运行记录）。
+- **上/下半区榜单类型互相独立**（2026-10-30）：上方榜单表的 `listType` 只控制榜单表本身；  分析区（趋势图 / 位次矩阵）用自己的 `anaLT` 状态 + tab 行右侧「查看 畅销榜|新品榜」小开关控制，
+  **切上方 tab 不会带动分析区**（实测无新请求）。`anaLT` 为空时回落到该 target 的第一个榜单，
+  且只在**切换监控对象**时重置。趋势悬浮窗缩略图：分析区榜单 ≠ 上方榜单时，另按分析区 listType
+  取一次 `/api/catmon/snapshot` 建 `anaImages`（`/trend` 接口不返回图片）。
+- **榜单列表历史快照**：标题行右侧「快照」`DateCalendar`（仅当该 target+listType 有 ≥2 个快照日期时出现）
+  → 按 `run_date` 调 `/api/catmon/snapshot?...&date=` 回看旧快照（`db.list_catmon_snapshot` 自带 `prevDate/delta`）。
+- **矩阵趋势条悬浮**：单元格 `data-i` + 委托，显示「日期 · 自然位 #N / 掉榜」（复用 `.rk-tip-card`）。
+  详情弹窗**直接复用「产品采集」的 `ProductDetailDialog`**（`ProductScrape.tsx` 已 `export`；
+  catmon 把 `CatDetail` 映射成 `ScrapedProduct` 传入），因此内容/样式/大小与产品采集完全一致；
+  `fetch_detail` 返回完整字段（images/aplusImages/bullets/description/specifications/productDetails/customerReviews），
+  图片上限 12 张、A+ 24 张（避免 hiRes 把推荐位也算进来）；头部「查看」旁额外提供「↻ 重试」（`onRefresh` prop）。
+- **数据完整度**：可见网格每页只渲染 30 条，剩余 20 条由 ACP nextPage 补齐，最终 **100 条全字段**；
+  若 ACP 失败则降级为该页 30 条全字段 + 20 条 rank+ASIN（status=partial）。
+  ⚠️ **状态口径以「实际字段完整性」为准**（2026-10-30 修）：只有当条目缺 `title` 或主图才判 `partial`。
+  此前是「过程中任一次 ACP 尝试失败就写死 `last_err` 且成功后不清」，导致第一次失败、重试成功、
+  100 条字段齐全却仍显示「部分成功」（`bestsellers:partial`）——已实测踩到并修正。
+  前端 `fmtRunErr()` 把 `bestsellers:partial` 这类内部串翻译成「畅销榜：部分条目字段不全」。
+- **左栏卡片**：畅销榜/新品榜小标签的高亮**只跟当前选中卡片**（`current?.id === t.id && listType === lt`）；
+  早先是全局 `listType` 驱动，切右侧 tab 会让所有卡片的小标签一起变色（user 反馈「左侧数据受影响」）。
+- **榜单卡片可用字段**：rank / ASIN / 标题 / 主图（多尺寸）/ 评分 / 评论数 / 价格 / 商品链接；
+  `metadataMap` 另有 `currentSalesRank` / `percentageChange` / `twentyFourHourOldSalesRank`（多数类目为空）。
+  品牌 / BSR / 五点 / 规格 / Prime / 优惠券等只在详情页，需 `fetch_detail`。
+- **交互**：列表缩略图悬浮显示 300×300 大图；趋势图 hover 显示当日各 ASIN 名次；采集时目标栏显示 `lastProgress` 进度。
+- **榜单表布局**：图片与标题合并为「商品」单元格（缩略图 + 两行标题 + ASIN），列为
+  排名 / 商品(自适应) / 价格 / 评分 / 评论 / 较上次 / 详情，`table-layout:fixed` + `colgroup` 定宽，
+  数字列右对齐等宽数字。**「较上次」列**由 `list_catmon_snapshot` 附加的 `prevDate / prevRank / delta` 驱动
+  （与上一次快照逐 ASIN 比对，小幅度变动也显示，≠ `catmon_events` 的 ±20 阈值）；无上一次快照时显示 `—`。
+- **排名监测复用**：`RankMonitor.tsx` 的 `AsinPeek` 点击 ASIN → `ProductDetailDialog`（`/api/catmon/detail`），
+  已用于「竞品份额榜」「位次趋势表」「A · 前台实测榜单」三处，均不再跳转 amazon.com。
 
 ## 暂时隐藏的功能（注释保留，可随时恢复）
 

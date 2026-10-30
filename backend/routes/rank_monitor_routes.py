@@ -948,11 +948,12 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             self._send_json(400, {"error": "keyword required"})
             return
         try:
-            limit = max(2, min(120, int((q.get("limit") or ["60"])[0])))
+            limit = max(2, min(2000, int((q.get("limit") or ["60"])[0])))
         except ValueError:
             limit = 60
+        all_in_range = (q.get("all") or [""])[0] in ("1", "true", "yes")
         try:
-            data = rank_monitor.build_srp_trend(state, keyword, country, limit)
+            data = rank_monitor.build_srp_trend(state, keyword, country, limit, all_in_range=all_in_range)
         except Exception as e:
             self._send_json(500, {"error": f"{type(e).__name__}: {e}"})
             return
@@ -960,17 +961,20 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
     GET["/api/rank/scrape/trend"] = get_scrape_trend
 
     def get_scrape_events(self):
-        """榜单异动：相邻两天对比出的进榜 / 掉榜 / 大涨大跌。"""
+        """榜单异动：比较任意两天的快照（默认最近两天）。"""
         if not _user(self):
             return
         q = parse_qs(urlparse(self.path).query)
         keyword = (q.get("keyword") or [""])[0].strip()
         country = (q.get("country") or ["US"])[0].upper()[:4]
+        prev = (q.get("prev") or [""])[0].strip() or None
+        curr = (q.get("curr") or [""])[0].strip() or None
         if not keyword:
             self._send_json(400, {"error": "keyword required"})
             return
         try:
-            data = rank_monitor.build_srp_events(state, keyword, country)
+            data = rank_monitor.build_srp_events(state, keyword, country,
+                                                 prev_date=prev, curr_date=curr)
         except Exception as e:
             self._send_json(500, {"error": f"{type(e).__name__}: {e}"})
             return

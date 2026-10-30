@@ -15,6 +15,7 @@ export const AI_SKILLS = [
   { id: 'cosmo-diagnose', ic: '🩺', label: 'CosmoDiagnose', desc: 'Amazon Listing 诊断（COSMO）', rootOnly: true },
   { id: 'traffic-compare', ic: '📈', label: '流量分析', desc: '自身流量结构 + 竞品流量对比（SIF 数据源）', rootOnly: false },
   { id: 'rank-monitor', ic: '📊', label: '排名监测', desc: '关键词下竞品排名 / ASIN 各词自然排名，支持每日监测', rootOnly: false },
+  { id: 'catmon', ic: '🏆', label: '类目榜单监控', desc: 'Amazon 类目畅销榜 / 新品榜采集，点击按需查看详情', rootOnly: false },
 ];
 
 /** 当前角色可见的技能：root 看全部，其他角色只看非 rootOnly 的 */

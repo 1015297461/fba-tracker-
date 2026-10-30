@@ -45,6 +45,7 @@ interface ProductDetailProps {
   open: boolean;
   onClose: () => void;
   taskId: string;   // 评论媒体接口需要（缓存按 task+asin 定位）
+  onRefresh?: () => void;   // 传入则在头部显示「↻ 重试」（类目榜单监控用）
 }
 // Customers say 单个关注点：默认折叠（只显示名称+提及数），点击展开明细
 function CsAspectRow({ aspect }: { aspect: CsAspect }) {
@@ -212,7 +213,7 @@ function ReviewMediaPanel({ product, taskId }: { product: ScrapedProduct; taskId
   );
 }
 
-function ProductDetailDialog({ product, open, onClose, taskId }: ProductDetailProps) {
+function ProductDetailDialog({ product, open, onClose, taskId, onRefresh }: ProductDetailProps) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxImages, setLightboxImages] = useState<string[]>([]);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -254,9 +255,14 @@ function ProductDetailDialog({ product, open, onClose, taskId }: ProductDetailPr
                 </div>
                 <div className="ps-detail-meta">ASIN: {product.asin}</div>
               </div>
-              <a href={productUrl(product.asin, product.marketplace)} target="_blank" rel="noopener noreferrer" className="btn btn-sm">
-                查看
-              </a>
+              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                {onRefresh && (
+                  <button type="button" className="btn btn-sm" onClick={onRefresh}>↻ 重试</button>
+                )}
+                <a href={productUrl(product.asin, product.marketplace)} target="_blank" rel="noopener noreferrer" className="btn btn-sm">
+                  查看
+                </a>
+              </div>
             </div>
 
             {/* 详情弹窗 tab 栏已整体下线（2026-10-19）：
@@ -612,7 +618,7 @@ interface CustomerReviews {
   // 区分「从未抓过」与「抓过但该产品确实没有媒体」，避免反复重抓
   reviewMediaFetched?: boolean;
 }
-interface ScrapedProduct {
+export interface ScrapedProduct {
   id?: number;
   asin: string; marketplace: string;
   title: string | null; brand: string | null; price: string | null;

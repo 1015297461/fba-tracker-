@@ -37,7 +37,7 @@ from .workers.export_worker import ExportWorker
 from .workers.ai_analysis_worker import AiAnalysisWorker
 from . import pdf_splitter
 from .routes import (auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis,
-                     sif_keywords, shipment, rank_monitor_routes)
+                     sif_keywords, shipment, rank_monitor_routes, catmon)
 from .rank_monitor import RankMonitorWorker
 
 
@@ -93,7 +93,7 @@ def get_lan_ip():
 
 ROUTE_MODULES = (
     auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis, sif_keywords,
-    shipment, rank_monitor_routes,
+    shipment, rank_monitor_routes, catmon,
 )
 
 
@@ -269,6 +269,7 @@ def main():
     print(bar)
     rank.start_scheduler(db_state)
     sif_keywords.start_scheduler(db_state)
+    catmon.start_scheduler(db_state)
     # 采集任务的执行线程在服务重启后会消失，这里把残留的 running 标成 paused，
     # 用户可在界面点「继续」从断点接着跑（已成功的 ASIN 会被自动跳过）
     scrape.recover_stale_tasks(db_state)

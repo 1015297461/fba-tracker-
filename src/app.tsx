@@ -14,6 +14,7 @@ import { SifKeyword } from './features/tools/SifKeyword';
 import { ShipmentTracker } from './features/shipment';
 import { AiAnalyze, visibleAiSkills } from './features/tools/AiAnalyze';
 import { RankMonitor } from './features/tools/RankMonitor';
+import { CategoryMonitor } from './features/tools/CategoryMonitor';
 import { MyExports } from './features/exports/MyExports';
 import { Trash } from './features/trash/Trash';
 import { PRODUCTS } from './data/products';
@@ -153,7 +154,9 @@ function AppShell() {
         {view === 'shipment' && <ShipmentTracker />}
         {canUseAiSkill && (aiSkillId === 'rank-monitor'
           ? <RankMonitor />
-          : <AiAnalyze skillId={aiSkillId!} />)}
+          : aiSkillId === 'catmon'
+            ? <CategoryMonitor />
+            : <AiAnalyze skillId={aiSkillId!} />)}
         {view === 'myExports' && <MyExports />}
         {view === 'trash' && <Trash />}
       </div>

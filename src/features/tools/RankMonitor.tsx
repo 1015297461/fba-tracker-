@@ -1,7 +1,20 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { authHeaders, rankCls } from './AiAnalyze';
 import { LineChart } from './SifKeyword';
+import { ProductDetailDialog } from './ProductScrape';
+import { toScrapedProduct } from './CategoryMonitor';
+import { useColResize } from './colResize';
+import { DateCalendar } from './DateCalendar';
+import type { CatDetail } from './CategoryMonitor';
+import {
+  DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable, arrayMove,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 // ============================================================
 // 排名监测
@@ -184,9 +197,12 @@ const apiScrapeAll = (limit = 60) =>
 const apiScrapeSnap = (id: string) =>
   api('/api/rank/scrape/snap?id=' + q(id)).then((d: any) => d.snapshot);
 const apiScrapeTrend = (keyword: string) =>
-  api(`/api/rank/scrape/trend?keyword=${q(keyword)}&country=${SCRAPE_MARKET}&limit=60`);
-const apiScrapeEvents = (keyword: string) =>
-  api(`/api/rank/scrape/events?keyword=${q(keyword)}&country=${SCRAPE_MARKET}`);
+  // all=1：区间内出现过的 ASIN 全部返回（不再只要「常驻」）
+  api(`/api/rank/scrape/trend?keyword=${q(keyword)}&country=${SCRAPE_MARKET}&limit=365&all=1`);
+const apiScrapeEvents = (keyword: string, prev?: string, curr?: string) =>
+  api(`/api/rank/scrape/events?keyword=${q(keyword)}&country=${SCRAPE_MARKET}`
+    + (prev ? `&prev=${encodeURIComponent(prev)}` : '')
+    + (curr ? `&curr=${encodeURIComponent(curr)}` : ''));
 /** ASIN 静态属性（上架日期/品牌）：优先用该词竞品榜的上架天数（覆盖率 100%），
  *  缓存按 ASIN 永久保存；两者都没有才去问 asin_profile 兜底 */
 const apiScrapeMeta = (asins: string[], keyword?: string) =>
@@ -423,25 +439,36 @@ function RunConfigModal({ open, kind, value, pages, pageCfg, defaultN,
 // 浮层必须用 portal 挂到 body：表格容器是 overflow:auto，普通 absolute 会被裁掉。
 // 鼠标从 ASIN 移到浮层时靠「延迟 220ms 关闭」保住——进入浮层立即取消计时。
 function AsinPeek({ asin, profile, keyword, isMine }: {
-  asin: string; profile?: any; keyword: string; isMine?: boolean;
+  asin: string; profile?: any; keyword?: string; isMine?: boolean;
 }) {
   const [hover, setHover] = useState(false);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const [modal, setModal] = useState(false);
-  const [hist, setHist] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
+  const [detail, setDetail] = useState<CatDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [prof, setProf] = useState<any>(profile || null);
   const timer = useRef<any>(null);
 
   function enter(e: React.MouseEvent) {
     if (timer.current) clearTimeout(timer.current);
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setPos({ x: r.left, y: r.bottom + 4 });
+    // 浮层默认出现在 ASIN 右侧（竖向居中），贴近元素又不遮挡；靠右溢出则翻到左侧；整体夹在视口内
+    const W = 300, H = 150, gap = 8, pad = 10;
+    let x = r.right + gap;
+    if (x + W > window.innerWidth - pad) x = r.left - W - gap;
+    if (x < pad) x = pad;
+    let y = r.top + r.height / 2 - H / 2;
+    y = Math.max(pad, Math.min(y, window.innerHeight - H - pad));
+    setPos({ x, y });
     setHover(true);
   }
   function leave() {
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => setHover(false), 220);
+  }
+  // 鼠标从 ASIN 移到浮层时只取消关闭计时，不再按浮层自身位置重算（否则浮层会向右跳）
+  function keepOpen() {
+    if (timer.current) clearTimeout(timer.current);
   }
 
   // 档案缺失时才懒加载（1 次 SIF 调用），已有就直接显示
@@ -450,27 +477,34 @@ function AsinPeek({ asin, profile, keyword, isMine }: {
     apiAsinProfile(asin).then(setProf).catch(() => {});
   }, [hover, asin, prof]);
 
-  async function openModal(e: React.MouseEvent) {
+  async function loadDetail(refresh = false) {
+    setDetailLoading(true);
+    try {
+      const d = await api(`/api/catmon/detail?asin=${encodeURIComponent(asin)}&marketplace=US${refresh ? '&refresh=1' : ''}`);
+      setDetail(d);
+    } catch (e: any) {
+      setDetail({ asin, error: e.message });
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+  function openModal(e: React.MouseEvent) {
     e.preventDefault();
     setModal(true);
-    if (hist) return;
-    setLoading(true);
-    try { setHist(await apiAsinHistory(asin, keyword)); }
-    catch { setHist({ history: [] }); }
-    finally { setLoading(false); }
+    if (!detail) loadDetail(false);
   }
 
   return (
     <>
       <a href={`https://www.amazon.com/dp/${asin}`} target="_blank" rel="noreferrer"
-        className="rk-asin-link" title="点击看详情与逐日记录"
+        className="rk-asin-link" title="点击看商品详情"
         onMouseEnter={enter} onMouseLeave={leave} onClick={openModal}>
         {asin}
       </a>
 
       {hover && pos && createPortal(
         <div className="rk-peek-pop" style={{ left: pos.x, top: pos.y }}
-          onMouseEnter={enter} onMouseLeave={leave}>
+          onMouseEnter={keepOpen} onMouseLeave={leave}>
           {prof ? (
             <>
               {prof.img
@@ -484,64 +518,29 @@ function AsinPeek({ asin, profile, keyword, isMine }: {
                   {prof.rating_num ? ` (${fmtNum(prof.rating_num)})` : ''}
                 </div>
                 {prof.brand ? <div className="rk-peek-brand">{prof.brand}</div> : null}
-                <div className="rk-peek-hint">点击查看逐日排名记录</div>
+                <div className="rk-peek-hint">点击查看商品详情</div>
               </div>
             </>
           ) : <div className="rk-peek-loading">加载中…</div>}
         </div>, document.body)}
 
-      {modal && createPortal(
-        <div className="rk-modal-mask" onClick={() => setModal(false)}>
-          <div className="rk-modal" onClick={e => e.stopPropagation()}>
-            <div className="rk-modal-head">
-              <span className="mono">{asin}</span>
-              {isMine ? <i className="tf-me">我</i> : null}
-              <button className="rk-modal-x" onClick={() => setModal(false)}>×</button>
-            </div>
-            <div className="rk-modal-body">
-              {prof?.img
-                ? <img className="rk-modal-img" src={prof.img} alt="" />
-                : <div className="rk-modal-img rk-peek-noimg" />}
-              <div className="rk-modal-info">
-                <div className="rk-peek-title">{prof?.title || '—'}</div>
-                <div className="rk-peek-meta">
-                  ${fmtNum(prof?.price, 2)} · ★{fmtNum(prof?.star, 1)}（{fmtNum(prof?.rating_num)} 条评论）
-                </div>
-                {prof?.brand ? <div className="rk-peek-brand">{prof.brand}</div> : null}
-                <a className="btn btn-sm" href={`https://www.amazon.com/dp/${asin}`}
-                  target="_blank" rel="noreferrer">打开 Amazon</a>
+      {modal && (
+        detailLoading
+          ? <div className="modal-backdrop">
+              <div className="modal ps-detail-modal" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ fontSize: 13, color: 'var(--ink-3)' }}>正在采集详情…</div>
               </div>
             </div>
-            <div className="rk-modal-hist">
-              <div className="tf-card-head">
-                <span>逐日记录</span>
-                <span className="tf-card-sub">
-                  {hist?.source === 'snapshot' ? '监测快照' : '查询历史'}
-                  {hist?.history?.length ? ` · ${hist.history.length} 条` : ''}
-                </span>
-              </div>
-              {loading ? <div className="ai-empty">加载中…</div>
-                : (hist?.history || []).length ? (
-                <div className="tf-table-wrap" style={{ maxHeight: 240 }}>
-                  <table className="tf-table">
-                    <thead><tr><th>日期</th><th>份额排名</th><th>自然位</th><th>总份额</th></tr></thead>
-                    <tbody>
-                      {(hist.history || []).map((h: any) => (
-                        <tr key={h.date}>
-                          <td className="mono">{h.date}</td>
-                          <td className="mono">{h.share_rank ?? '—'}</td>
-                          <td className={'mono ' + rankCls(h.organic_rank)}>
-                        {h.organic_rank == null ? '无自然位' : `#${Math.round(h.organic_rank)}`}
-                      </td>
-                          <td className="mono">{h.total_share ?? '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>) : <div className="ai-empty">还没有历史记录（抓两次以上才有）</div>}
-            </div>
-          </div>
-        </div>, document.body)}
+          : detail
+            ? <ProductDetailDialog
+                product={toScrapedProduct(detail, 'US')}
+                open={true}
+                onClose={() => setModal(false)}
+                taskId=""
+                onRefresh={() => loadDetail(true)}
+              />
+            : null
+      )}
     </>
   );
 }
@@ -618,7 +617,11 @@ function KeywordKpis({ data }: { data: any }) {
   );
 }
 
-function KeywordResult({ data, hideKpis }: { data: any; hideKpis?: boolean }) {
+function KeywordResult({ data: data0, hideKpis }: { data: any; hideKpis?: boolean }) {
+  // 历史快照回看：override 非空时展示所选的历史查询结果
+  const [override, setOverride] = useState<any>(null);
+  const [hist, setHist] = useState<any[]>([]);
+  const data = override || data0;
   const market = data.market || {};
   const my = data.my || null;
   const top: any[] = data.top || [];
@@ -629,6 +632,22 @@ function KeywordResult({ data, hideKpis }: { data: any; hideKpis?: boolean }) {
   // 快照里已采集的自然位 {asin: rank|null}：抓取时一起采的，直接展示，不用再点
   const collected: Record<string, number | null> = data.organic || {};
   const collectedCount = Math.max(0, Object.keys(collected).length - 1);   // 去掉「我的 ASIN」那条
+  const cmpCols = useColResize('rank-competitor');
+
+  // 同一关键词的历史查询结果（供「历史快照」下拉回看）
+  const kwKey = String(data0.keyword || '');
+  useEffect(() => {
+    if (!kwKey) { setHist([]); return; }
+    let alive = true;
+    apiQueries().then((qs: any[]) => {
+      if (!alive) return;
+      const list = (qs || [])
+        .filter((q: any) => q.kind === 'keyword' && String(q.value || '').toUpperCase() === kwKey.toUpperCase())
+        .sort((a: any, b: any) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+      setHist(list);
+    }).catch(() => { if (alive) setHist([]); });
+    return () => { alive = false; };
+  }, [kwKey]);
 
   async function loadOrganic(asin: string) {
     if (organic[asin]?.data || organic[asin]?.loading) return;
@@ -675,6 +694,26 @@ function KeywordResult({ data, hideKpis }: { data: any; hideKpis?: boolean }) {
       <div className="tf-card">
         <div className="tf-card-head">
           <span>竞品份额榜</span>
+          {hist.length > 1 && (
+            <select className="rk-range-sel rk-hist-sel" title="选择历史快照"
+              value={override && override.__qid ? override.__qid : ''}
+              onChange={async e => {
+                const id = e.target.value;
+                if (!id) { setOverride(null); return; }
+                try {
+                  const r: any = await apiQueryDetail(id);
+                  const rec = r && r.query ? r.query : null;
+                  if (rec) setOverride({ ...(rec.data || {}), __qid: id });
+                } catch { /* 忽略 */ }
+              }}>
+              <option value="">最新（当前）</option>
+              {hist.map((q: any) => (
+                <option key={q.id} value={q.id}>
+                  {fmtDate(q.created_at)} · {q.summary || `${q.kind}`}
+                </option>
+              ))}
+            </select>
+          )}
           <span className="tf-card-sub">
             {kw ? `匹配 ${filtered.length} / ${top.length}` : `共 ${top.length} 个`}
           </span>
@@ -691,8 +730,9 @@ function KeywordResult({ data, hideKpis }: { data: any; hideKpis?: boolean }) {
           </button>
         </div>
         <div className="tf-table-wrap">
-          <table className="tf-table">
-            <thead>
+          <table className={'tf-table col-rsz' + (cmpCols.active ? ' cw-fixed' : '')}>
+            {cmpCols.colgroup}
+            <thead {...cmpCols.thProps}>
               <tr>
                 <th title="该词下的综合流量份额排名（自然+SP+品牌+视频全部计入），不是自然搜索位">
                   份额排名
@@ -801,6 +841,7 @@ function AsinResult({ data }: { data: any }) {
   const aba = data.aba || {};
   const allKws: any[] = data.keywords || [];
   const [kwFilter, setKwFilter] = useState('');
+  const asinKwCols = useColResize('rank-asin-keywords');
   const needle = kwFilter.trim().toLowerCase();
   const kws = needle ? allKws.filter(k => String(k.keyword || '').toLowerCase().includes(needle)) : allKws;
   // 按自然排名分档计数，给一眼能看的分布
@@ -852,8 +893,9 @@ function AsinResult({ data }: { data: any }) {
           {kwFilter && <button className="btn btn-sm" onClick={() => setKwFilter('')}>清除</button>}
         </div>
         <div className="tf-table-wrap">
-          <table className="tf-table">
-            <thead>
+          <table className={'tf-table col-rsz' + (asinKwCols.active ? ' cw-fixed' : '')}>
+            {asinKwCols.colgroup}
+            <thead {...asinKwCols.thProps}>
               <tr><th>关键词</th><th>自然排名</th><th>流量占比</th><th>自然位占比</th>
                 <th>搜索量</th><th>状态</th></tr>
             </thead>
@@ -959,14 +1001,355 @@ function TrendCard({ trend }: { trend: any }) {
 // 口径都不同，摆在一起比只会让人纠结该信哪个。
 // ============================================================
 
+/** 主图缩略图：悬浮弹 300px 大图（fixed 浮层，避开 overflow 裁剪）。三处复用 */
+function ImgThumb({ src, size = 32, className }:
+  { src?: string; size?: number; className?: string }) {
+  const [pv, setPv] = useState<{ x: number; y: number } | null>(null);
+  const cls = 'rk-srp-thumb' + (className ? ' ' + className : '');
+  if (!src) {
+    return <div className={cls + ' rk-srp-noimg'} style={{ width: size, height: size }} />;
+  }
+  return (
+    <>
+      <img className={cls} src={src} alt="" loading="lazy" style={{ width: size, height: size }}
+        onMouseEnter={e => {
+          const r = (e.currentTarget as HTMLImageElement).getBoundingClientRect();
+          const W = 300, H = 300, gap = 14;
+          let x = r.right + gap;
+          if (x + W > window.innerWidth - 10) x = r.left - W - gap;
+          if (x < 10) x = 10;
+          let y = r.top + r.height / 2 - H / 2;
+          y = Math.max(10, Math.min(y, window.innerHeight - H - 10));
+          setPv({ x, y });
+        }}
+        onMouseLeave={() => setPv(null)} />
+      {pv && (
+        <div className="rk-img-pop" style={{ left: pv.x, top: pv.y }}>
+          <img src={src} alt="" />
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * 可悬浮、可划选的自定义提示卡（替换原生 title）。
+ * 原生 title 的两个硬伤：鼠标移不进去、文字选不中。这里用 portal + fixed 浮层，
+ * 鼠标移进卡片也保持显示，正文 user-select:text 可复制。
+ */
+function HoverTip({ head, content, children }:
+  { head?: string; content: React.ReactNode; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const triggerRef = useRef<HTMLSpanElement | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const showT = useRef<number | null>(null);
+  const hideT = useRef<number | null>(null);
+
+  const show = () => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPos({ x: r.left, y: r.bottom + 8 });
+    setOpen(true);
+  };
+  const onEnter = () => {
+    if (hideT.current) { clearTimeout(hideT.current); hideT.current = null; }
+    if (showT.current) clearTimeout(showT.current);
+    showT.current = window.setTimeout(show, 120);
+  };
+  const onLeave = () => {
+    if (showT.current) { clearTimeout(showT.current); showT.current = null; }
+    if (hideT.current) clearTimeout(hideT.current);
+    hideT.current = window.setTimeout(() => setOpen(false), 160);
+  };
+  const keep = () => {
+    if (hideT.current) { clearTimeout(hideT.current); hideT.current = null; }
+  };
+
+  // 渲染后按真实尺寸夹到视口内（下方放不下就翻到上方）
+  useEffect(() => {
+    if (!open) return;
+    const tr = triggerRef.current, card = cardRef.current;
+    if (!tr || !card) return;
+    const r = tr.getBoundingClientRect();
+    const W = card.offsetWidth, H = card.offsetHeight, pad = 10;
+    let x = r.left;
+    if (x + W > window.innerWidth - pad) x = window.innerWidth - pad - W;
+    if (x < pad) x = pad;
+    let y = r.bottom + 8;
+    if (y + H > window.innerHeight - pad) y = r.top - 8 - H;
+    if (y < pad) y = pad;
+    setPos(p => (p.x === x && p.y === y ? p : { x, y }));
+  }, [open, content]);
+
+  useEffect(() => () => {
+    if (showT.current) clearTimeout(showT.current);
+    if (hideT.current) clearTimeout(hideT.current);
+  }, []);
+
+  // 滚动时直接收起，避免浮层停在一个已经滚走的位置
+  useEffect(() => {
+    if (!open) return;
+    const onScroll = () => setOpen(false);
+    window.addEventListener('scroll', onScroll, true);
+    return () => window.removeEventListener('scroll', onScroll, true);
+  }, [open]);
+
+  return (
+    <>
+      <span ref={triggerRef} className="rk-tip-trigger" onMouseEnter={onEnter} onMouseLeave={onLeave}>
+        {children}
+      </span>
+      {open && createPortal(
+        <div ref={cardRef} className="rk-tip-card" style={{ left: pos.x, top: pos.y }}
+          onMouseEnter={keep} onMouseLeave={onLeave}>
+          {head && <div className="rk-tip-head">{head}</div>}
+          <div className="rk-tip-body">{content}</div>
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
+/** 查询记录拖拽排序：顺序存本机浏览器（与产品列表同款 dnd-kit，但列表是派生的，没法塞进业务表） */
+const REC_ORDER_KEY = 'rk.recorder.v1';
+
+function SortableRec({ id, children }: {
+  id: string;
+  children: (p: { attributes: any; listeners: any }) => React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  return (
+    <div ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={'rk-drag-wrap' + (isDragging ? ' is-dragging' : '')}>
+      {children({ attributes, listeners })}
+    </div>
+  );
+}
+
+/** 统一日期范围栏：快速档 + 自定义起止（下拉只列有数据的日期）。maxSpan=null 表示不限跨度 */
+function RangeBar({ dates, from, to, onChange, maxSpan = null, presets = [7, 14, 30, 60], showAll = false }:
+  { dates: string[]; from: number; to: number; onChange: (f: number, t: number) => void;
+    maxSpan?: number | null; presets?: number[]; showAll?: boolean }) {
+  const n = dates.length;
+  if (!n) return null;
+  const span = to - from + 1;
+  const setFromIdx = (i: number) => {
+    // 用户改了「起始」：结束日跟着走（起始 + maxSpan - 1），而不是把起始往后夹 ——
+    // 旧逻辑会把用户选的日期丢掉，表现为「选了没反应」。
+    const a = Math.max(0, Math.min(i, n - 1));
+    let b = maxSpan ? Math.min(a + maxSpan - 1, n - 1) : to;
+    if (b < a) b = a;
+    onChange(a, b);
+  };
+  const setToIdx = (i: number) => {
+    // 用户改了「结束」：起始日跟着走（结束 - maxSpan + 1）
+    const b = Math.max(0, Math.min(i, n - 1));
+    let a = maxSpan ? Math.max(0, b - maxSpan + 1) : from;
+    if (a > b) a = b;
+    onChange(a, b);
+  };
+  const presetOn = (k: number) => k <= n && to === n - 1 && span === k;
+  const applyPreset = (k: number) => {
+    const len = Math.min(k, n, maxSpan ?? k);
+    onChange(n - len, n - 1);
+  };
+  const allOn = from === 0 && to === n - 1;
+  return (
+    <div className="rk-range">
+      <div className="rk-range-seg">
+        {presets.map(k => (
+          <button key={k} type="button" className={presetOn(k) && !allOn ? 'on' : ''}
+            onClick={() => applyPreset(k)}>{k}天</button>
+        ))}
+        {showAll && (
+          <button type="button" className={allOn ? 'on' : ''}
+            onClick={() => onChange(0, n - 1)}>全部</button>
+        )}
+      </div>
+      <span className="rk-range-lb">自定义</span>
+      <select className="rk-range-sel" value={from}
+        onChange={e => setFromIdx(Number(e.target.value))}>
+        {dates.map((d, i) => <option key={i} value={i}>{d}</option>)}
+      </select>
+      <span className="rk-range-arrow">→</span>
+      <select className="rk-range-sel" value={to}
+        onChange={e => setToIdx(Number(e.target.value))}>
+        {dates.map((d, i) => <option key={i} value={i}>{d}</option>)}
+      </select>
+      <span className="rk-range-cnt">{span} 天</span>
+    </div>
+  );
+}
+
+/** 快照历史：日历弹层。只有「有数据的日子」可点；某天多条快照时在下方选版本 */
+function SnapPicker({ history, value, onPick }:
+  { history: any[]; value: string; onPick: (id: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [ym, setYm] = useState('');          // 当前展示的月份 YYYY-MM
+  const [pickDay, setPickDay] = useState(''); // 选了「多条」的那天，展开版本
+  const boxRef = useRef<HTMLDivElement | null>(null);
+
+  const cur = history.find(h => h.id === value) || history[0];
+  const curDay = cur ? String(cur.snap_date || '') : '';
+
+  // 按天归类，天内按时间正序
+  const byDay: Record<string, any[]> = {};
+  history.forEach(h => {
+    const d = String(h.snap_date || '');
+    if (d) (byDay[d] = byDay[d] || []).push(h);
+  });
+  Object.keys(byDay).forEach(d => byDay[d].sort(
+    (a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''))));
+  const allDays = Object.keys(byDay).sort();
+  const minYm = allDays.length ? allDays[0].slice(0, 7) : '';
+  const maxYm = allDays.length ? allDays[allDays.length - 1].slice(0, 7) : '';
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  const toggle = () => {
+    if (!open) { setYm((curDay || maxYm).slice(0, 7)); setPickDay(''); }
+    setOpen(o => !o);
+  };
+
+  const shiftMonth = (delta: number) => {
+    if (!ym) return;
+    const [y, m] = ym.split('-').map(Number);
+    const d = new Date(y, m - 1 + delta, 1);
+    const next = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    if ((minYm && next < minYm) || (maxYm && next > maxYm)) return;
+    setYm(next);
+    setPickDay('');
+  };
+
+  // 月历格子（周日在前）
+  const cells: (string | null)[] = [];
+  let monthLabel = '';
+  if (ym) {
+    const [y, m] = ym.split('-').map(Number);
+    const offset = new Date(y, m - 1, 1).getDay();
+    const daysIn = new Date(y, m, 0).getDate();
+    for (let i = 0; i < offset; i++) cells.push(null);
+    for (let d = 1; d <= daysIn; d++) {
+      cells.push(`${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+    }
+    monthLabel = `${y}年${m}月`;
+  }
+  const dayVersions = pickDay ? (byDay[pickDay] || []) : [];
+
+  const label = (h: any) => {
+    if (!h) return '—';
+    const sameDay = (byDay[String(h.snap_date || '')] || []).length > 1;
+    const tm = String(h.created_at || '').slice(11, 16);
+    return (sameDay ? `${h.snap_date} ${tm}` : h.snap_date) + `（${h.org_total ?? 0} 条）`;
+  };
+
+  return (
+    <div className="rk-snap" ref={boxRef}>
+      <button type="button" className="rk-snap-btn" onClick={toggle}>
+        <span className="mono">{label(cur)}</span><i>▾</i>
+      </button>
+      {open && (
+        <div className="rk-cal">
+          <div className="rk-cal-head">
+            <button type="button" className="rk-cal-nav" aria-label="上个月"
+              onClick={() => shiftMonth(-1)} disabled={!minYm || ym <= minYm}>‹</button>
+            <span className="rk-cal-title">{monthLabel}</span>
+            <button type="button" className="rk-cal-nav" aria-label="下个月"
+              onClick={() => shiftMonth(1)} disabled={!maxYm || ym >= maxYm}>›</button>
+          </div>
+          <div className="rk-cal-week">
+            {['日', '一', '二', '三', '四', '五', '六'].map(w => <span key={w}>{w}</span>)}
+          </div>
+          <div className="rk-cal-grid">
+            {cells.map((day, i) => {
+              if (!day) return <span key={'e' + i} className="rk-cal-cell is-empty" />;
+              const list = byDay[day] || [];
+              const has = list.length > 0;
+              const multi = list.length > 1;
+              return (
+                <button key={day} type="button"
+                  className={'rk-cal-cell' + (has ? ' has' : '') + (day === curDay ? ' cur' : '')
+                    + (pickDay === day ? ' pick' : '')}
+                  disabled={!has}
+                  title={has ? `${day} · ${list.length} 次快照` : `${day} · 无数据`}
+                  onClick={() => {
+                    if (!has) return;
+                    if (list.length === 1) { onPick(list[0].id); setOpen(false); }
+                    else setPickDay(day);
+                  }}>
+                  <span className="rk-cal-d">{Number(day.slice(8))}</span>
+                  {multi && <i className="rk-cal-dot" />}
+                </button>
+              );
+            })}
+          </div>
+          {dayVersions.length > 0 && (
+            <div className="rk-cal-vers">
+              <div className="rk-cal-vers-h">{pickDay} · {dayVersions.length} 次快照</div>
+              {dayVersions.map(h => (
+                <button key={h.id} type="button"
+                  className={'rk-cal-ver' + (h.id === value ? ' on' : '')}
+                  onClick={() => { onPick(h.id); setOpen(false); }}>
+                  <span className="mono">{String(h.created_at || '').slice(11, 16)}</span>
+                  <span className="rk-cal-ver-n">{h.org_total ?? 0} 自然位</span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="rk-cal-foot">
+            <span><i className="rk-cal-dot" /> 当天多条快照</span>
+            <button type="button" className="rk-cal-latest"
+              onClick={() => { const l = history[0]; if (l) { onPick(l.id); setOpen(false); } }}>
+              最新
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * 位次变化：上面折线（前 5 个常驻 ASIN），下面热力图（前 20 个）。
  * 为什么主视图是热力图而不是折线：位次是「存在 / 缺失」的离散事件，
  * 一个 ASIN 今天第 5、明天掉出范围、后天回到第 80，折线要么断开、要么连出误导性的直线；
  * 热力图的空白格能直接表达「掉榜」。折线只留给最稳定的几个，看具体波动。
  */
-function SrpTrendBlock({ trend }: { trend: any }) {
-  if (!trend || !trend.count) return null;
+function SrpTrendBlock({ trend, meta }: { trend: any; meta?: Record<string, any> }) {
+  const dates: string[] = (trend && trend.dates) || [];
+  const n = dates.length;
+  const [lineFrom, setLineFrom] = useState(0);
+  const [lineTo, setLineTo] = useState(0);
+  const [matFrom, setMatFrom] = useState(0);
+  const [matTo, setMatTo] = useState(0);
+  const [showN, setShowN] = useState(1000);   // 区间内「所有出现过」的 ASIN 全部列出
+  // 趋势条格子悬浮：显示当天落在第几页第几位（后端 spots 数组）
+  const [stripTip, setStripTip] = useState<{ x: number; y: number; head: string; body: string } | null>(null);
+  const stripIdx = useRef<number | null>(null);
+  const mtxCols = useColResize('rank-matrix');
+  // 矩阵表排序：点表头循环「升序 → 降序 → 还原」
+  const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
+  useEffect(() => {
+    setLineFrom(0);
+    setLineTo(Math.max(0, n - 1));
+    setMatFrom(Math.max(0, n - 14));
+    setMatTo(Math.max(0, n - 1));
+    setShowN(1000);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trend]);
+
+  if (!trend || !n) return null;
   if (trend.count < 2) {
     return (
       <div className="rk-srp-note">
@@ -974,43 +1357,213 @@ function SrpTrendBlock({ trend }: { trend: any }) {
       </div>
     );
   }
-  const rows = (trend.asins || []).slice(0, 20);
+  const rows: any[] = trend.asins || [];
   if (!rows.length) return null;
+
+  const lf = Math.min(lineFrom, n - 1), lt = Math.min(Math.max(lineTo, lf), n - 1);
+  const mf = Math.min(matFrom, n - 1), mt = Math.min(Math.max(matTo, mf), n - 1);
+
+  // 折线：前 5 个「最后一次仍在榜」的 ASIN，按窗口截取
   const lines = rows.filter((r: any) => r.last != null).slice(0, 5).map((r: any, i: number) => ({
-    name: r.asin, color: TREND_COLORS[i % TREND_COLORS.length], values: r.ranks,
+    name: r.asin,
+    color: TREND_COLORS[i % TREND_COLORS.length],
+    values: r.ranks.slice(lf, lt + 1),
+    img: r.img,
+    title: r.title,
   }));
+  const lineDates = dates.slice(lf, lt + 1);
+
+  const winDates = dates.slice(mf, mt + 1);
+  const deltaOf = (r: any) => {
+    const vs = r.ranks.slice(mf, mt + 1);
+    const first = vs.find((v: number | null) => v != null);
+    const lastV = [...vs].reverse().find((v: number | null) => v != null);
+    if (first == null || lastV == null) return null;
+    return (lastV as number) - (first as number);
+  };
+  // 出现天数：区间内「有数据的那些天」中，该 ASIN 出现过（有自然位）的天数
+  const presentDays = (r: any) => r.ranks.slice(mf, mt + 1).filter((v: number | null) => v != null).length;
+
+  // 趋势条格子悬浮：只在「换了一格」时更新，避免 mousemove 每帧 setState
+  const stripMove = (e: React.MouseEvent, r: any) => {
+    const t = e.target as HTMLElement;
+    const di = t.dataset ? t.dataset.i : undefined;
+    if (di == null) { stripIdx.current = null; setStripTip(null); return; }
+    const i = Number(di);
+    if (stripIdx.current === i) return;
+    stripIdx.current = i;
+    const v = r.ranks[mf + i];
+    const sp = r.spots ? r.spots[mf + i] : null;
+    const rect = t.getBoundingClientRect();
+    const W = 240, H = 64, pad = 8;
+    let x = Math.min(Math.max(rect.left - 80, pad), window.innerWidth - W - pad);
+    if (x < pad) x = pad;
+    let y = rect.bottom + 6;
+    if (y + H > window.innerHeight - pad) y = rect.top - 6 - H;
+    if (y < pad) y = pad;
+    setStripTip({
+      x, y,
+      head: winDates[i],
+      body: v == null
+        ? '掉榜（当天不在抓取范围内）'
+        : (sp && sp[0] ? `第 ${sp[0]} 页第 ${sp[1]} 位 · 自然位 #${v}` : `自然位 #${v}`),
+    });
+  };
+  const stripLeave = () => { stripIdx.current = null; setStripTip(null); };
+
+  // 排序取值：数字列按数值、文本列按字典序；空值由 sorted 统一压到最后
+  const sortVal = (r: any): number | string | null => {
+    switch (sort?.key) {
+      case 'asin': return String(r.asin || '');
+      case 'title': return String(r.title || '').toLowerCase();
+      case 'price': return r.price != null ? Number(r.price) : null;
+      case 'date': return (meta && meta[r.asin] && meta[r.asin].first_available_day) || null;
+      case 'days': return presentDays(r);
+      case 'best': return r.best != null ? Number(r.best) : null;
+      case 'last': return r.last != null ? Number(r.last) : null;
+      case 'delta': return deltaOf(r);
+      case 'trend': {
+        const vs = r.ranks.slice(mf, mt + 1).filter((v: number | null) => v != null) as number[];
+        return vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null;
+      }
+      default: return null;
+    }
+  };
+  const sorted = sort
+    ? [...rows].sort((a, b) => {
+        const va = sortVal(a), vb = sortVal(b);
+        if (va == null && vb == null) return 0;
+        if (va == null) return 1;              // 空值无论升降都排最后
+        if (vb == null) return -1;
+        if (typeof va === 'string' || typeof vb === 'string') {
+          return sort.dir * String(va).localeCompare(String(vb));
+        }
+        return sort.dir * ((va as number) - (vb as number));
+      })
+    : rows;
+  const th = (key: string, label: string, cls?: string, tip?: string) => {
+    const on = sort?.key === key;
+    return (
+      <th className={(cls ? cls + ' ' : '') + 'rk-th-sort'}
+        title={tip ? `${tip}（点击排序）` : '点击排序'}
+        data-sort={on ? (sort!.dir === 1 ? 'asc' : 'desc') : undefined}
+        onClick={() => setSort(cur =>
+          !cur || cur.key !== key ? { key, dir: 1 }
+            : cur.dir === 1 ? { key, dir: -1 } : null)}>
+        {label}<i className="rk-sort-arrow" />
+      </th>
+    );
+  };
 
   return (
     <div className="rk-srp-trend">
       <div className="rk-srp-sub">
-        位次趋势 · 前 {lines.length} 个常驻 ASIN（数字越小越好，往下 = 变好）
+        位次趋势 · 前 {lines.length} 个在榜 ASIN（数字越小越好，往下 = 变好；悬浮看 ASIN 与主图）
       </div>
-      <LineChart dates={trend.dates} series={lines} height={180} />
+      <RangeBar dates={dates} from={lf} to={lt}
+        onChange={(f, t) => { setLineFrom(f); setLineTo(t); }} maxSpan={null} showAll />
+      <LineChart dates={lineDates} series={lines} height={180} />
+
       <div className="rk-srp-sub">
-        全部常驻 ASIN 位次（{trend.count} 天 · 空白 = 当天不在抓取范围内）
+        全部 ASIN 位次（区间内出现过的全部 ASIN；空白 = 当天不在抓取范围内）
       </div>
-      <div className="rk-heat-wrap">
-        <table className="rk-heat">
-          <thead>
+      <div className="rk-ev-head rk-mtx-filter">
+        <span className="rk-range-lb">时间</span>
+        <DateCalendar value={dates[mf] || ''} dates={dates}
+          onChange={d => { const i = dates.indexOf(d); if (i < 0) return; setMatFrom(i); if (i > mt) setMatTo(i); }} />
+        <span className="rk-range-arrow">→</span>
+        <DateCalendar value={dates[mt] || ''} dates={dates}
+          onChange={d => { const i = dates.indexOf(d); if (i < 0) return; setMatTo(i); if (i < mf) setMatFrom(i); }} />
+        <span className="rk-ev-count">（{winDates.length} 天）</span>
+      </div>
+      <div className="rk-mtx-wrap" onScroll={stripLeave}>
+        <table className={'rk-mtx col-rsz' + (mtxCols.active ? ' cw-fixed' : '')}>
+          {mtxCols.colgroup}
+          <thead {...mtxCols.thProps}>
             <tr>
-              <th>ASIN</th>
-              {trend.dates.map((d: string) => <th key={d}>{d.slice(5)}</th>)}
+              <th className="c-img">主图</th>
+              {th('asin', 'ASIN', 'c-asin')}
+              {th('title', '标题', 'c-title')}
+              {th('price', '价格', 'c-price')}
+              {th('date', '上架', 'c-date')}
+              {th('days', '出现天数', 'c-days', '区间内有数据的天数中，该 ASIN 出现的天数')}
+              {th('best', '最好', 'c-num', '区间内最好的自然位（越小越好）')}
+              {th('last', '最新', 'c-num', '最新一次自然位，越小越靠前')}
+              {th('delta', '变化', 'c-delta', '区间内位次变化（负数 = 变好）')}
+              {th('trend', `趋势（${winDates.length} 天）`, 'c-strip', '按区间内平均位次排序，越小越靠前')}
             </tr>
           </thead>
           <tbody>
-            {rows.map((r: any) => (
-              <tr key={r.asin}>
-                <td className="mono">{r.asin}</td>
-                {r.ranks.map((v: number | null, i: number) => (
-                  <td key={i} data-lv={v ? Math.min(4, Math.floor(v / 40)) : -1}>
-                    {v ?? ''}
+            {sorted.slice(0, showN).map((r: any) => {
+              const dlt = deltaOf(r);
+              const cls = dlt == null || dlt === 0 ? 'delta-flat' : dlt < 0 ? 'delta-up' : 'delta-dn';
+              return (
+                <tr key={r.asin}>
+                  <td className="c-img"><ImgThumb src={r.img} /></td>
+                  <td className="c-asin mono">
+                    <AsinPeek asin={String(r.asin || '')}
+                      profile={{ img: r.img, title: r.title, price: r.price }} />
                   </td>
-                ))}
-              </tr>
-            ))}
+                  <td className="c-title">
+                    {r.title ? (
+                      <HoverTip head={`标题 · ${r.asin}`} content={r.title}>
+                        <span className="rk-el">{r.title}</span>
+                      </HoverTip>
+                    ) : '—'}
+                  </td>
+                  <td className="c-price mono">
+                    {r.price != null ? `${r.symbol || '$'}${Number(r.price).toFixed(2)}` : '—'}
+                  </td>
+                  <td className="c-date mono">
+                    <HoverTip head="上架日期" content={dateTip(meta && meta[r.asin])}>
+                      <span>{(meta && meta[r.asin] && meta[r.asin].first_available_day) || '—'}</span>
+                    </HoverTip>
+                  </td>
+                  <td className="c-days mono" title={`区间内共 ${winDates.length} 天有数据`}>
+                    {presentDays(r)}/{winDates.length}
+                  </td>
+                  <td className="c-num mono">
+                    {r.best != null
+                      ? <span className={'rk-rank' + (r.best <= 10 ? ' top' : r.best <= 50 ? ' mid' : '')}>{r.best}</span>
+                      : '—'}
+                  </td>
+                  <td className="c-num mono">
+                    {r.last != null
+                      ? <span className={'rk-rank' + (r.last <= 10 ? ' top' : r.last <= 50 ? ' mid' : '')}>{r.last}</span>
+                      : '—'}
+                  </td>
+                  <td className={'c-delta ' + cls}>
+                    {dlt == null ? '—' : dlt === 0 ? '持平' : dlt < 0 ? `↑ ${Math.abs(dlt)}` : `↓ ${dlt}`}
+                  </td>
+                  <td className="c-strip">
+                    <div className="rk-strip"
+                      onMouseMove={e => stripMove(e, r)}
+                      onMouseLeave={stripLeave}>
+                      {r.ranks.slice(mf, mt + 1).map((v: number | null, i: number) => (
+                        <i key={i} data-i={i}
+                          className={v == null ? 'na' : ('lv' + Math.min(4, Math.floor(v / 40)))} />
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
+      {rows.length > showN && (
+        <div className="ai-actions">
+          <button className="btn btn-sm" onClick={() => setShowN(v => v + 80)}>
+            再显示 80 条（还有 {rows.length - showN} 条）
+          </button>
+        </div>
+      )}
+      {stripTip && (
+        <div className="rk-tip-card" style={{ left: stripTip.x, top: stripTip.y }}>
+          <div className="rk-tip-head">{stripTip.head}</div>
+          <div className="rk-tip-body">{stripTip.body}</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1023,34 +1576,169 @@ const EVENT_META: Record<string, { label: string; cls: string }> = {
 };
 
 /** 榜单异动：相邻两天对比出的进榜 / 掉榜 / 大涨大跌 */
-function SrpEvents({ data }: { data: any }) {
-  if (!data) return null;
-  const events = data.events || [];
-  if (!events.length) {
-    return <div className="rk-srp-note">{data.note || '这两天没有异动'}</div>;
-  }
+/** 销量字符串（如 "4K+" "1.2M"）→ 数值用于排序；解析不出返回 null */
+function parseSales(s?: string | null): number | null {
+  if (!s) return null;
+  const m = String(s).match(/([\d.]+)\s*([KMB]?)/i);
+  if (!m) return null;
+  let n = parseFloat(m[1]);
+  if (!isFinite(n)) return null;
+  const u = (m[2] || '').toUpperCase();
+  if (u === 'K') n *= 1e3; else if (u === 'M') n *= 1e6; else if (u === 'B') n *= 1e9;
+  return n;
+}
+
+/** 榜单异动可排序表头 */
+function EvTh({ label, k, cls, sortKey, sortDir, onSort }: {
+  label: string; k: string; cls?: string;
+  sortKey: string | null; sortDir: 1 | -1; onSort: (k: string) => void;
+}) {
+  const active = sortKey === k;
+  return (
+    <th className={(cls || '') + ' rk-ev-th' + (active ? ' on' : '')} onClick={() => onSort(k)}>
+      {label}{active ? (sortDir === 1 ? ' ▲' : ' ▼') : ''}
+    </th>
+  );
+}
+
+function SrpEvents({ data, keyword }: { data: any; keyword?: string }) {
+  const [ev, setEv] = useState<any>(data);
+  const [prev, setPrev] = useState<string>('');
+  const [curr, setCurr] = useState<string>('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setEv(data);
+    if (data) { setPrev(data.prev_date || ''); setCurr(data.curr_date || ''); }
+  }, [data]);
+
+  const dates: string[] = ev?.dates || [];
+  const events: any[] = ev?.events || [];
+
+  // 排序状态 / 计算必须在任何 early return 之前（遵守 React hooks 规则）
+  const [sortKey, setSortKey] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<1 | -1>(1);
+  const sortedEvents = useMemo(() => {
+    if (!sortKey) return events;
+    const KIND_ORD: Record<string, number> = { drop_out: 0, enter_top: 1, down: 2, up: 3 };
+    const val = (e: any): number | null => {
+      switch (sortKey) {
+        case 'kind': return KIND_ORD[e.kind] ?? 9;
+        case 'price': return e.price != null ? Number(e.price) : null;
+        case 'rating': return e.rating != null ? Number(e.rating) : null;
+        case 'sales': return parseSales(e.sales);
+        case 'delta': return e.delta == null ? null : Math.abs(Number(e.delta));
+        case 'pos': return e.curr == null ? null : Number(e.curr);
+        default: return null;
+      }
+    };
+    return [...events].sort((a, b) => {
+      const va = val(a), vb = val(b);
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;          // 空值恒排最后
+      if (vb == null) return -1;
+      return sortDir * (va - vb);
+    });
+  }, [events, sortKey, sortDir]);
+
+  // 列宽可拖拽（类型/主图/ASIN/价格/销量/评分/位次变化/标题auto）
+  const evCols = useColResize('rank-events', [54, 42, 112, 78, 66, 62, 122, null]);
+
+  if (!ev) return null;
+
+  const reload = (p: string, c: string) => {
+    setPrev(p); setCurr(c);
+    if (!keyword || !p || !c) return;
+    setBusy(true);
+    apiScrapeEvents(keyword, p, c)
+      .then(d => setEv(d))
+      .catch(() => {})
+      .finally(() => setBusy(false));
+  };
+  const pickCurr = (c: string) => {
+    // 对比日必须晚于基准日；选得更早时把基准日一起往前挪
+    let p = prev;
+    if (p && c && c <= p) {
+      const i = dates.indexOf(c);
+      p = i > 0 ? dates[i - 1] : '';
+    }
+    reload(p, c);
+  };
+  const pickPrev = (p: string) => {
+    let c = curr;
+    if (p && c && p >= c) {
+      const i = dates.indexOf(p);
+      c = i >= 0 && i + 1 < dates.length ? dates[i + 1] : c;
+    }
+    reload(p, c);
+  };
+
+  // 排序：点表头 升/降/取消（状态与计算见上方 hooks 区）
+  const toggleSort = (k: string) => {
+    if (sortKey === k) setSortDir(d => (d === 1 ? -1 : 1));
+    else { setSortKey(k); setSortDir(1); }
+  };
+
   return (
     <div className="rk-ev-wrap">
-      <div className="rk-srp-sub">
-        榜单异动 · {data.prev_date} → {data.curr_date}（{events.length} 条）
+      <div className="rk-ev-head">
+        <span>榜单异动</span>
+        <span className="rk-range-lb">基准</span>
+        <DateCalendar value={prev} dates={dates} onChange={pickPrev} />
+        <span className="rk-range-arrow">→</span>
+        <span className="rk-range-lb">对比</span>
+        <DateCalendar value={curr} dates={dates} onChange={pickCurr} />
+        <span className="rk-ev-count">（{events.length} 条）{busy ? ' 读取中…' : ''}</span>
       </div>
-      <div className="rk-ev-list">
-        {events.map((e: any, i: number) => {
-          const m = EVENT_META[e.kind] || { label: e.kind, cls: '' };
-          return (
-            <div key={e.asin + '-' + i} className="rk-ev-item">
-              <span className={'rk-ev-tag ' + m.cls}>{m.label}</span>
-              <span className="mono rk-ev-asin">{e.asin}</span>
-              <span className="rk-ev-pos">
-                {e.prev ?? '—'} → {e.curr ?? '—'}
-                {e.delta ? `（${e.delta > 0 ? '退' : '进'} ${Math.abs(e.delta)} 位）` : ''}
-              </span>
-              <span className="rk-ev-title" title={e.title || ''}>{e.title || ''}</span>
-            </div>
-          );
-        })}
-      </div>
-      <div className="rk-srp-note">{data.note}</div>
+      {!events.length ? (
+        <div className="rk-srp-note">{ev.note || '这两天没有异动'}</div>
+      ) : (
+        <>
+          <div className="rk-ev-scroll">
+            <table className={'rk-ev-tbl col-rsz' + (evCols.active ? ' cw-fixed' : '')}>
+              {evCols.colgroup}
+              <thead {...evCols.thProps}>
+                <tr>
+                  <EvTh label="类型" k="kind" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+                  <th>主图</th>
+                  <th>ASIN</th>
+                  <EvTh label="价格" k="price" cls="r" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+                  <EvTh label="销量" k="sales" cls="r" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+                  <EvTh label="评分" k="rating" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+                  <EvTh label="位次变化" k="delta" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+                  <th>标题</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedEvents.map((e: any, i: number) => {
+                  const m = EVENT_META[e.kind] || { label: e.kind, cls: '' };
+                  return (
+                    <tr key={e.asin + '-' + i}>
+                      <td><span className={'rk-ev-tag ' + m.cls}>{m.label}</span></td>
+                      <td><ImgThumb src={e.img} size={26} /></td>
+                      <td className="mono">{e.asin}</td>
+                      <td className="r">{e.price != null ? `${e.symbol || '$'}${e.price}` : '—'}</td>
+                      <td className="r">{e.sales || '—'}</td>
+                      <td>{e.rating != null ? <span className="rk-ev-star">★{e.rating}</span> : '—'}</td>
+                      <td>
+                        {e.prev ?? '—'} → {e.curr ?? '—'}
+                        {e.delta ? `（${e.delta > 0 ? '退' : '进'} ${Math.abs(e.delta)} 位）` : ''}
+                      </td>
+                      <td className="rk-ev-title-cell">
+                        {e.title ? (
+                          <HoverTip head={`标题 · ${e.asin}`} content={e.title}>
+                            <span className="rk-el">{e.title}</span>
+                          </HoverTip>
+                        ) : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="rk-srp-note">{ev.note}</div>
+        </>
+      )}
     </div>
   );
 }
@@ -1225,6 +1913,7 @@ function ScrapeResult({ snap, ownAsin, history, trend, events, onPick, onDel }: 
   const [onlyOrganic, setOnlyOrganic] = useState(false);
   const [filterText, setFilterText] = useState('');
   const [limit, setLimit] = useState(50);
+  const srpCols = useColResize('rank-srp-list');
 
   // 上架日期：搜索页没有这个字段，向 SIF 批量档案要（后端按 ASIN 永久缓存，
   // 命中缓存不再调用；所以打开多少次都只付一次成本）
@@ -1325,19 +2014,7 @@ function ScrapeResult({ snap, ownAsin, history, trend, events, onPick, onDel }: 
           {history.length > 1 && (
             <>
               {' · '}
-              <select className="rk-srp-select" value={snap?.id || ''}
-                onChange={e => onPick(e.target.value)}>
-                {history.map(h => {
-                  // 同一天可能有多条（内容有变化才追加），只显示日期会分不清是哪次
-                  const sameDay = history.filter(x => x.snap_date === h.snap_date).length > 1;
-                  const tm = String(h.created_at || '').slice(11, 16);
-                  return (
-                    <option key={h.id} value={h.id}>
-                      {sameDay ? `${h.snap_date} ${tm}` : h.snap_date}（{h.org_total} 条）
-                    </option>
-                  );
-                })}
-              </select>
+              <SnapPicker history={history} value={snap?.id || ''} onPick={onPick} />
             </>
           )}
         </div>
@@ -1404,8 +2081,9 @@ function ScrapeResult({ snap, ownAsin, history, trend, events, onPick, onDel }: 
       </div>
 
       <div className="rk-srp-scroll">
-        <table className="rk-srp-table">
-          <thead>
+        <table className={'rk-srp-table col-rsz' + (srpCols.active ? ' cw-fixed' : '')}>
+          {srpCols.colgroup}
+          <thead {...srpCols.thProps}>
             <tr>
               {thSort('pos', '自然位', 'c-pos rk-th-sort', '跨页累加的自然搜索位次（广告位为空）')}
               {thSort('page', '页数', 'c-page rk-th-sort', '这条结果出现在第几页')}
@@ -1427,30 +2105,40 @@ function ScrapeResult({ snap, ownAsin, history, trend, events, onPick, onDel }: 
                   data-ad={it.ad || undefined}
                   className={isMine ? 'rk-mine' : undefined}>
                   <td className="c-pos" title={`第 ${it.page} 页 · 页内第 ${it.pos} 位`}>
-                    {it.ad ? <span className="rk-ad-tag">广告</span> : it.org}
+                    {it.ad ? <span className="rk-ad-tag">广告</span>
+                      : it.org != null
+                        ? <span className={'rk-rank' + (it.org <= 10 ? ' top' : it.org <= 50 ? ' mid' : '')}>{it.org}</span>
+                        : '—'}
                   </td>
                   <td className="c-page mono">P{it.page}</td>
                   <td className="c-img">
-                    {it.img ? (
-                      <img className="rk-srp-thumb" src={it.img} alt="" loading="lazy" />
-                    ) : (
-                      <div className="rk-srp-thumb rk-srp-noimg" />
-                    )}
+                    <ImgThumb src={it.img} />
                   </td>
                   <td className="c-asin mono">
-                    <a href={`https://www.amazon.com/dp/${it.asin}`} target="_blank" rel="noreferrer">
-                      {it.asin}
-                    </a>
+                    {/* 用行内已有数据做浮层，避免悬浮时再调 SIF 档案接口（省钱、秒开） */}
+                    <AsinPeek asin={String(it.asin || '')}
+                      profile={{ img: it.img, title: it.title, price: it.price,
+                                 star: it.rating, rating_num: it.reviews }} />
                     {isMine ? <i className="tf-me">我</i> : null}
                   </td>
-                  <td className="c-title" title={it.title || ''}>{it.title || '—'}</td>
+                  <td className="c-title">
+                    {it.title ? (
+                      <HoverTip head={`标题 · ${it.asin}`} content={it.title}>
+                        <span className="rk-el">{it.title}</span>
+                      </HoverTip>
+                    ) : '—'}
+                  </td>
                   <td className="c-sales mono">{it.sales || '—'}</td>
-                  <td className="c-date mono" title={dateTip(meta[String(it.asin || '').toUpperCase()])}>
-                    {(() => {
-                      const m = meta[String(it.asin || '').toUpperCase()];
-                      if (m === undefined) return metaBusy ? '…' : '—';
-                      return m?.first_available_day || '—';
-                    })()}
+                  <td className="c-date mono">
+                    <HoverTip head="上架日期" content={dateTip(meta[String(it.asin || '').toUpperCase()])}>
+                      <span>
+                        {(() => {
+                          const m = meta[String(it.asin || '').toUpperCase()];
+                          if (m === undefined) return metaBusy ? '…' : '—';
+                          return m?.first_available_day || '—';
+                        })()}
+                      </span>
+                    </HoverTip>
                   </td>
                   <td className="c-price mono">
                     {it.price != null ? `${it.symbol || '$'}${Number(it.price).toFixed(2)}` : '—'}
@@ -1479,8 +2167,8 @@ function ScrapeResult({ snap, ownAsin, history, trend, events, onPick, onDel }: 
         </div>
       )}
 
-      <SrpEvents data={events} />
-      <SrpTrendBlock trend={trend} />
+      <SrpEvents data={events} keyword={snap?.keyword || data.keyword} />
+      <SrpTrendBlock trend={trend} meta={meta} />
     </>
   );
 }
@@ -1565,6 +2253,21 @@ export function RankMonitor() {
   const [runOpen, setRunOpen] = useState(false);
   // 当前正在看的是哪一条记录（列表高亮用）。之前没有这个，点哪条都看不出选中了谁
   const [activeRecId, setActiveRecId] = useState<string | null>(null);
+  // 右侧「当前展示的记录」关键词。只有打开记录 / 真正跑完一次查询才更新；
+  // 左侧输入框随便打字不能改它 —— 否则还没查询，右侧标题就先变了。
+  const [activeKeyword, setActiveKeyword] = useState('');
+  // 查询记录自定义顺序（存本机浏览器；换设备/清缓存会回到按时间倒序）
+  const [recOrder, setRecOrder] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(REC_ORDER_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr.filter((x: any) => typeof x === 'string') : [];
+    } catch { return []; }
+  });
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
   const trimmed = input.trim();
   const looksAsin = /^[A-Z0-9]{10}$/i.test(trimmed);
@@ -1658,6 +2361,7 @@ export function RankMonitor() {
         setProgress(t);
         if (t.status === 'done') {
           setResult(t.result); setResultKind(kind); setResultFrom('live');
+          setActiveKeyword(value);   // 真跑完了才把右侧标题切到这个词
           if (t.query_id) setActiveRecId('sif-' + t.query_id);
           setProgress(null); loadQueries();
           // 后端已按内容指纹比对过：没变就不新增记录，只更新时间
@@ -1720,6 +2424,7 @@ export function RankMonitor() {
             snap_date: (res.captured_at || '').slice(0, 10),
             data: res,
           });
+          setActiveKeyword(res.keyword || kw);   // 抓完才切标题
           setScrapeProg(null);
           setActiveRecId(t.snap_id ? 'scrape-' + t.snap_id : null);
           // changed=false 时 snap_id 指向当天已存在的那条，不新增
@@ -1850,6 +2555,7 @@ export function RankMonitor() {
   async function openRecord(r: any) {
     setErr(null);
     setInput(r.value || '');
+    setActiveKeyword(r.value || '');
     setForceKind(null);
     setActiveRecId(r.key);
 
@@ -1941,7 +2647,7 @@ export function RankMonitor() {
       await loadSrpList(); await loadQueries(); loadSrpTargets(); loadTargets();
       if (activeRecId === r.key) {
         setScrapeSnap(null); setScrapeHist([]); setScrapeTrend(null); setScrapeEvents(null);
-        setResult(null); setTrend(null); setActiveRecId(null);
+        setResult(null); setTrend(null); setActiveRecId(null); setActiveKeyword('');
       }
     } catch (e: any) { setErr({ title: e.message || '删除失败' }); }
   }
@@ -2011,6 +2717,31 @@ export function RankMonitor() {
       .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
   })();
 
+  // 套用自定义顺序：没在顺序表里的新记录排最前（保持按时间倒序），已排序的按保存位置
+  const orderedRecords = (() => {
+    if (!recOrder.length) return records;
+    const idx = new Map(recOrder.map((k, i) => [k, i]));
+    return [...records].sort((a, b) => {
+      const ia = idx.has(a.key) ? idx.get(a.key)! : -1;
+      const ib = idx.has(b.key) ? idx.get(b.key)! : -1;
+      if (ia === -1 && ib === -1) return 0;
+      if (ia === -1) return -1;
+      if (ib === -1) return 1;
+      return ia - ib;
+    });
+  })();
+
+  const onRecDragEnd = (e: DragEndEvent) => {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const from = orderedRecords.findIndex(r => r.key === active.id);
+    const to = orderedRecords.findIndex(r => r.key === over.id);
+    if (from < 0 || to < 0 || from === to) return;
+    const next = arrayMove(orderedRecords, from, to).map(r => r.key);
+    setRecOrder(next);
+    try { localStorage.setItem(REC_ORDER_KEY, JSON.stringify(next)); } catch { /* 隐私模式忽略 */ }
+  };
+
   // 首次进入自动选中第一条记录，走 openRecord 把 A/B 两侧一起加载。
   // 之前另写了一段「恢复最近一次抓取」，只喂了 A 区，导致左栏没有选中态、
   // B 区 SIF 数据空白，用户得再点一次左侧记录才正常。
@@ -2030,7 +2761,7 @@ export function RankMonitor() {
   useEffect(() => {
     if (records.length > 0) return;
     setScrapeSnap(null); setScrapeHist([]); setScrapeTrend(null); setScrapeEvents(null);
-    setResult(null); setTrend(null); setActiveRecId(null);
+    setResult(null); setTrend(null); setActiveRecId(null); setActiveKeyword('');
   }, [records.length]);
 
   // 切词或刷新记录后重新拉「检查留痕」，并清掉上一条的回执
@@ -2047,12 +2778,25 @@ export function RankMonitor() {
   const lastCheck = (rows: any[]) =>
     rows.length ? String(rows[0].checked_at || '').replace('T', ' ').slice(5, 16) : '';
 
-  // 当前输入词已经配了哪些定时（顶部配置区回显用）
+  // 当前输入词已经配了哪些定时（「查询配置」弹窗回显用）
   const curKw = value.trim().toLowerCase();
   const curSrpSched = srpTargets.find(
     (t: any) => String(t.keyword || '').toLowerCase() === curKw) || null;
   const curSifSched = targets.find(
     (t: any) => String(t.value || '').toLowerCase() === curKw) || null;
+
+  // 右侧展示区回显的是「当前打开的记录」，不是左侧输入框 ——
+  // 否则还没查询、只在输入框里打几个字，标题和定时回显就先变了。
+  const activeKw = activeKeyword.trim().toLowerCase();
+  const activeSrpSched = srpTargets.find(
+    (t: any) => String(t.keyword || '').toLowerCase() === activeKw) || null;
+  const activeSifSched = targets.find(
+    (t: any) => String(t.value || '').toLowerCase() === activeKw) || null;
+  const activeIsAsin = /^[A-Z0-9]{10}$/.test(activeKeyword.trim().toUpperCase());
+  const activePages = activeSrpSched?.pages || scrapeSnap?.data?.pages_requested || scrapePages;
+  // 输入框改了词但还没查询：右侧仍展示旧记录，此时 A/B 的「获取最新数据」不该去抓新词
+  const inputDiffersFromActive = !!trimmed && !!activeKeyword
+    && value.trim().toLowerCase() !== activeKeyword.trim().toLowerCase();
 
   return (
     <>
@@ -2086,7 +2830,6 @@ export function RankMonitor() {
             )}
           </div>
         </div>
-
 
         <div className="ai-actions">
           <button className="btn btn-primary btn-sm" onClick={() => setRunOpen(true)}
@@ -2136,13 +2879,19 @@ export function RankMonitor() {
           {!records.length && (
             <div className="ai-empty">还没有记录。抓一次榜单或查一次 SIF 就会出现在这里。</div>
           )}
-          {records.map(r => {
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onRecDragEnd}>
+            <SortableContext items={orderedRecords.map(r => r.key)} strategy={verticalListSortingStrategy}>
+          {orderedRecords.map(r => {
             const sc = r.scrape, sf = r.sif;
             const scOff = r.scrapeSched && !r.scrapeSched.enabled;
             const sfOff = r.sifSched && r.sifSched.paused;
             return (
-              <div key={r.key} className="ai-task rk-li"
+              <SortableRec key={r.key} id={r.key}>
+                {({ attributes, listeners }) => (
+              <div className="ai-task rk-li"
                 data-active={activeRecId === r.key}>
+                <span className="rk-drag" {...attributes} {...listeners}
+                  onClick={e => e.stopPropagation()} title="拖拽排序">⠿</span>
                 {/* 这里用 div 而不是 button：行内要放「暂停/继续」按钮，
                     按钮套按钮是非法 HTML，点击也会连带触发打开记录 */}
                 <div className="ai-task-main rk-li-main" role="button" tabIndex={0}
@@ -2164,14 +2913,6 @@ export function RankMonitor() {
                           每日 {r.scrapeSched.daily_at || '随时'}
                         </span>
                       ) : <span />}
-                      {r.scrapeSched && (
-                        <button className="rk-li-pause" type="button"
-                          title={scOff ? '恢复每天自动抓取' : '暂停每天自动抓取'}
-                          aria-label={scOff ? '恢复每天自动抓取' : '暂停每天自动抓取'}
-                          onClick={e => { e.stopPropagation(); toggleSrp(r.scrapeSched); }}>
-                          {scOff ? <PlayIcon /> : <PauseIcon />}
-                        </button>
-                      )}
                     </div>
                   )}
 
@@ -2186,14 +2927,6 @@ export function RankMonitor() {
                           每周一{r.sifSched.run_at ? ' ' + r.sifSched.run_at : ''}
                         </span>
                       ) : <span />}
-                      {r.sifSched && (
-                        <button className="rk-li-pause" type="button"
-                          title={sfOff ? '恢复每周监测' : '暂停每周监测'}
-                          aria-label={sfOff ? '恢复每周监测' : '暂停每周监测'}
-                          onClick={e => { e.stopPropagation(); toggleSif(r.sifSched); }}>
-                          {sfOff ? <PlayIcon /> : <PauseIcon />}
-                        </button>
-                      )}
                     </div>
                   )}
                 </div>
@@ -2222,8 +2955,12 @@ export function RankMonitor() {
                   </button>
                 </div>
               </div>
+                )}
+              </SortableRec>
             );
           })}
+            </SortableContext>
+          </DndContext>
         </div>
 
       </div>
@@ -2241,7 +2978,7 @@ export function RankMonitor() {
             {/* 顶部只回显当前配置；改配置统一走弹窗，避免两处都能改、互相覆盖 */}
             <div className="rk-setup">
               <div className="rk-setup-bar">
-                <span className="rk-setup-title mono">{trimmed || '未选择关键词'}</span>
+                <span className="rk-setup-title mono">{activeKeyword || '未选择关键词'}</span>
                 <button type="button" className="rk-link" onClick={() => setRunOpen(true)}
                   disabled={!valid}>
                   修改配置
@@ -2252,12 +2989,20 @@ export function RankMonitor() {
                   <div className="rk-setup-head">
                     <span className="rk-setup-name">A · 前台实测</span>
                     <span className="rk-setup-hint">爬虫抓搜索页 · 实时</span>
+                    {activeSrpSched && (
+                      <button className="rk-setup-pause" type="button"
+                        title={activeSrpSched.enabled ? '暂停每天自动抓取' : '恢复每天自动抓取'}
+                        aria-label={activeSrpSched.enabled ? '暂停每天自动抓取' : '恢复每天自动抓取'}
+                        onClick={() => toggleSrp(activeSrpSched)}>
+                        {activeSrpSched.enabled ? <PauseIcon /> : <PlayIcon />}
+                      </button>
+                    )}
                   </div>
                   <div className="rk-setup-body">
                     <span className="tf-tiny">
-                      {kind !== 'keyword'
+                      {activeIsAsin
                         ? '仅关键词可用'
-                        : `${scrapePages} 页（${scrapePages * 48} 位）· ${curSrpSched ? `已加入每天 ${curSrpSched.daily_at || '随时'} 抓取` : '不自动抓取'}`}
+                        : `${activePages} 页（${activePages * 48} 位）· ${activeSrpSched ? `已加入每天 ${activeSrpSched.daily_at || '随时'} 抓取` : '不自动抓取'}`}
                     </span>
                   </div>
                 </div>
@@ -2265,10 +3010,18 @@ export function RankMonitor() {
                   <div className="rk-setup-head">
                     <span className="rk-setup-name">B · SIF 平台数据</span>
                     <span className="rk-setup-hint">ABA 周数据 · 一周查一次即可</span>
+                    {activeSifSched && (
+                      <button className="rk-setup-pause" type="button"
+                        title={activeSifSched.paused ? '恢复每周监测' : '暂停每周监测'}
+                        aria-label={activeSifSched.paused ? '恢复每周监测' : '暂停每周监测'}
+                        onClick={() => toggleSif(activeSifSched)}>
+                        {activeSifSched.paused ? <PlayIcon /> : <PauseIcon />}
+                      </button>
+                    )}
                   </div>
                   <div className="rk-setup-body">
                     <span className="tf-tiny">
-                      {`前 ${curSifSched?.competitor_n || defaultN} 名竞品 + 自然位 · ${curSifSched ? `已加入每周监测${curSifSched.run_at ? ' ' + curSifSched.run_at : ''}` : '不自动监测'}`}
+                      {`前 ${activeSifSched?.competitor_n || defaultN} 名竞品 + 自然位 · ${activeSifSched ? `已加入每周监测${activeSifSched.run_at ? ' ' + activeSifSched.run_at : ''}` : '不自动监测'}`}
                     </span>
                   </div>
                 </div>
@@ -2291,7 +3044,10 @@ export function RankMonitor() {
                     <span className={`rk-receipt rk-receipt-${receiptA.kind}`}>{receiptA.text}</span>
                   )}
                   <button className="rk-ghost-btn" onClick={() => doScrape()}
-                    disabled={scraping || !valid} title="重新抓一次亚马逊搜索结果页">
+                    disabled={scraping || !valid || inputDiffersFromActive}
+                    title={inputDiffersFromActive
+                      ? '左侧输入已改成别的词，先点「查询 / 抓取」再刷新'
+                      : '重新抓一次亚马逊搜索结果页'}>
                     {scraping
                       ? `抓取中 ${scrapeProg?.page_done ?? 0}/${scrapeProg?.page_total ?? scrapePages}…`
                       : '获取最新数据'}
@@ -2322,7 +3078,10 @@ export function RankMonitor() {
                     <span className={`rk-receipt rk-receipt-${receiptB.kind}`}>{receiptB.text}</span>
                   )}
                   <button className="rk-ghost-btn" onClick={() => doQuery()}
-                    disabled={busy || !valid} title="重新调一次 SIF（ABA 周数据，同一周内结果不变）">
+                    disabled={busy || !valid || inputDiffersFromActive}
+                    title={inputDiffersFromActive
+                      ? '左侧输入已改成别的词，先点「查询 / 抓取」再刷新'
+                      : '重新调一次 SIF（ABA 周数据，同一周内结果不变）'}>
                     {busy
                       ? `查询中${progress?.elapsed ? ' ' + Math.round(progress.elapsed) + 's' : ''}…`
                       : '获取最新数据'}
