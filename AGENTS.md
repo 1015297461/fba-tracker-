@@ -935,6 +935,21 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
   · **两个模块取数来源不同**（易混淆）：类目榜单 = 卖家精灵（`asin_meta.SOURCES=["sprite"]`）；
     排名监测 = **SIF**（`rank_monitor.enrich_asin_meta`：竞品榜 `listed_age_days` 天数倒算为主，
     `market_get_asin_profile` 兜底），且排名监测**没有定时任务**、前端也还没显示上架列。
+- **查询记录分类（2026-11-02 晚）**：两个模块共用一套实现，靠 `scope` 区分
+  （`catmon` / `rank`），代码在 `backend/routes/record_groups.py` + `src/features/tools/recordGroups.ts`。
+  · 表：`record_groups(id, scope, name, sort_order, collapsed)`（分类本体，含**折叠状态**）、
+    `record_group_members(scope, item_key, group_id, sort_order)`（归属 + **组内顺序**）。
+    `item_key`：类目榜单 = `catmon_targets.id`；排名监测 = 关键词小写（记录是派生的，没有业务主键）。
+  · 接口（`base` = `/api/catmon` | `/api/rank`）：`GET/POST/PUT/DELETE {base}/groups`、
+    `PUT {base}/groups/order {ids}`（分类排序）、`PUT {base}/items/group {keys, groupId}`（批量归组，
+    `groupId=null` = 移出）、`PUT {base}/items/order {groupId, keys}`（组内排序）。
+  · 交互：勾选条目 → 底部浮条「移动到分类 / 新建分类 / 取消」；分类头可折叠、可 ✎ 改名、可 ✕ 删除
+    （删除 → 成员回「未分类」，不删数据）；**分类头之间可拖拽排序**；条目拖到分类头 = 归组；
+    组内拖拽 = 组内排序（类目用原生 HTML5 拖拽，排名监测沿用 dnd-kit，每组一个 `SortableContext`）。
+  · 排名的「顺序存 localStorage」已废弃，改存后端 —— 换设备也一致。
+  · ⚠️ 分组视图里「未分类」是虚拟组（`group=null`），不可折叠、不可删除、恒排最后。
+  · ⚠️ `groupItems()` 的兜底：没有 member 行的条目用 `1e6 + 原索引`，排在组内已有成员之后 ——
+    这样老数据不用回填也能正常显示。
 - **暂停 / 继续（2026-10-30）**：每个 target 一个 `{"pause": Event, "cancel": Event}`（`_ctl`，`_start_run` 里创建、
   `_run_target` 的 finally 里清理）。**暂停点在「每个榜单开始之前」**（`_wait_if_paused`），
   所以绝不会停在半截榜单上、也不会重复写同日快照；暂停中的线程原地 sleep 0.5s 轮询，状态写 `paused`。

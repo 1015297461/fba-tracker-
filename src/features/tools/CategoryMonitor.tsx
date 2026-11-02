@@ -5,6 +5,8 @@ import { ProductDetailDialog } from './ProductScrape';
 import type { ScrapedProduct } from './ProductScrape';
 import { useColResize } from './colResize';
 import { DateCalendar } from './DateCalendar';
+import { groupsApi, groupItems, moveBefore } from './recordGroups';
+import type { RecGroup, RecMember, RecGroupsPayload } from './recordGroups';
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -186,22 +188,116 @@ export function CategoryMonitor() {
   const [overId, setOverId] = useState<string | null>(null);
   const didDragRef = useRef(false);
 
-  const onDropOn = async (targetId: string) => {
-    const from = dragId;
-    setDragId(null);
-    setOverId(null);
-    if (!from || from === targetId) return;
-    const ids = targets.map(t => t.id);
-    const a = ids.indexOf(from), b = ids.indexOf(targetId);
-    if (a < 0 || b < 0) return;
-    ids.splice(b, 0, ids.splice(a, 1)[0]);
-    const byId = new Map(targets.map(t => [t.id, t]));
-    setTargets(ids.map(id => byId.get(id)!));       // 先本地生效，避免闪一下
+  // ---- 查询记录分类（后端持久化，多人共享；折叠状态也在后端）----
+  const [groups, setGroups] = useState<RecGroup[]>([]);
+  const [members, setMembers] = useState<Record<string, RecMember>>({});
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [grpDragId, setGrpDragId] = useState<string | null>(null);
+  const [grpOverId, setGrpOverId] = useState<string | null>(null);
+  const [pop, setPop] = useState<'' | 'move' | 'new' | 'newAndMove' | 'rename'>('');
+  const [nameDraft, setNameDraft] = useState('');
+  const [renameId, setRenameId] = useState<string | null>(null);
+  const gapi = useMemo(() => groupsApi('/api/catmon'), []);
+
+  const applyGroups = useCallback((p: RecGroupsPayload) => {
+    setGroups(p.groups || []);
+    setMembers(p.members || {});
+  }, []);
+  // 组件挂载时可能还没登录（token 未就绪 → 401），所以失败不置位，
+  // 等 loadTargets 成功（= 已登录）后再补拉一次
+  const groupsLoaded = useRef(false);
+  const loadGroups = useCallback(async () => {
+    if (groupsLoaded.current) return;
+    try { applyGroups(await gapi.list()); groupsLoaded.current = true; }
+    catch { /* 分类拉不到不影响主流程 */ }
+  }, [gapi, applyGroups]);
+  useEffect(() => { loadGroups(); }, [loadGroups]);
+
+  const togglePick = (id: string) => {
+    setPicked(prev => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  };
+  const toggleCollapse = async (g: RecGroup) => {
+    applyGroups(await gapi.update(g.id, { collapsed: !g.collapsed }));
+  };
+  const submitName = async () => {
+    const name = nameDraft.trim();
+    if (!name) return;
     try {
-      await apiSend('/api/catmon/targets/order', 'PUT', { ids });
-    } catch (e: any) {
-      setErr(e.message);
-      await loadTargets();
+      if (pop === 'rename' && renameId) {
+        applyGroups(await gapi.update(renameId, { name }));
+      } else {
+        const p = await gapi.create(name);
+        applyGroups(p);
+        if (pop === 'newAndMove' && picked.size) {
+          const gid = (p.groups || [])[p.groups.length - 1]?.id;
+          if (gid) applyGroups(await gapi.assign([...picked], gid));
+          setPicked(new Set());
+        }
+      }
+      setPop(''); setNameDraft(''); setRenameId(null);
+    } catch (e: any) { setErr(e.message); }
+  };
+  const removeGroup = async (g: RecGroup) => {
+    if (!window.confirm(`删除分类「${g.name}」？里面的条目会回到「未分类」（不会删除数据）`)) return;
+    try { applyGroups(await gapi.remove(g.id)); } catch (e: any) { setErr(e.message); }
+  };
+  const movePicked = async (gid: string | null) => {
+    if (!picked.size) return;
+    try {
+      applyGroups(await gapi.assign([...picked], gid));
+      setPicked(new Set()); setPop('');
+    } catch (e: any) { setErr(e.message); }
+  };
+
+  // 分组视图：分类顺序按后端，未分类固定最后
+  const buckets = useMemo(
+    () => groupItems(targets, t => t.id, groups, members),
+    [targets, groups, members]);
+
+  /** 组内拖拽排序；若拖拽源不在本组，则视为「移入本组」 */
+  const dropOnCard = async (taskId: string, bucket: CatTarget[], gid: string | null) => {
+    const from = dragId;
+    setDragId(null); setOverId(null);
+    if (!from) return;
+    const ids = bucket.map(t => t.id);
+    const a = ids.indexOf(from);
+    if (a < 0) {                                  // 从别的分组拖过来
+      try { applyGroups(await gapi.assign([from], gid)); } catch (e: any) { setErr(e.message); }
+      return;
+    }
+    const b = ids.indexOf(taskId);
+    if (b < 0 || a === b) return;
+    const next = moveBefore(ids, a, b);
+    const byId = new Map(targets.map(t => [t.id, t]));
+    setTargets(next.map(id => byId.get(id)!).concat(targets.filter(t => !next.includes(t.id))));
+    try { applyGroups(await gapi.reorderItems(gid, next)); }
+    catch (e: any) { setErr(e.message); await loadTargets(); }
+  };
+
+  /** 拖到分类标题上 = 移入该分类 */
+  const dropOnGroup = async (gid: string | null) => {
+    setGrpOverId(null);
+    if (grpDragId && grpDragId !== '__none') {     // 拖的是分类标题 → 分类排序
+      const from = grpDragId;
+      setGrpDragId(null);
+      const key = gid || '__none';
+      if (from === key) return;
+      const ids = groups.map(g => g.id);
+      const a = ids.indexOf(from);
+      const b = key === '__none' ? ids.length : ids.indexOf(key);
+      if (a < 0 || b < 0) return;
+      const next = moveBefore(ids, a, b);
+      try { applyGroups(await gapi.reorderGroups(next)); } catch (e: any) { setErr(e.message); }
+      return;
+    }
+    if (dragId) {                                   // 拖的是条目 → 归组
+      const id = dragId;
+      setDragId(null); setOverId(null);
+      try { applyGroups(await gapi.assign([id], gid)); } catch (e: any) { setErr(e.message); }
     }
   };
 
@@ -209,10 +305,11 @@ export function CategoryMonitor() {
     try {
       const j = await apiGet<{ targets: CatTarget[] }>('/api/catmon/targets');
       setTargets(j.targets || []);
+      loadGroups();                    // 已登录，补拉分类（首次可能因未登录失败过）
     } catch (e: any) {
       setErr(e.message);
     }
-  }, []);
+  }, [loadGroups]);
 
   const loadSnapshot = useCallback(async (tid: string, lt: string, date?: string) => {
     setLoading(true);
@@ -469,52 +566,135 @@ export function CategoryMonitor() {
         <input className="cm-input" value={url} onChange={e => setUrl(e.target.value)}
                placeholder="粘贴 Amazon 榜单 URL" />
         <button className="cm-btn" onClick={addTarget}>添加 / 采集</button>
-        <div className="cm-sub">查询记录 <b>{targets.length}</b></div>
+
+        <div className="cm-sub">
+          <span>查询记录 <b>{targets.length}</b></span>
+          <button className="cm-mini2" title="新建分类"
+                  onClick={() => { setNameDraft(''); setRenameId(null); setPop('new'); }}>+ 分类</button>
+        </div>
+
         <div className="cm-list">
-          {targets.map(t => (
-            <div key={t.id}
-                 draggable
-                 onDragStart={e => {
-                   didDragRef.current = true;
-                   setDragId(t.id);
-                   e.dataTransfer.effectAllowed = 'move';
-                   try { e.dataTransfer.setData('text/plain', t.id); } catch { /* 老浏览器忽略 */ }
-                 }}
-                 onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (overId !== t.id) setOverId(t.id); }}
-                 onDragLeave={() => setOverId(cur => (cur === t.id ? null : cur))}
-                 onDrop={e => { e.preventDefault(); onDropOn(t.id); }}
-                 onDragEnd={() => { setDragId(null); setOverId(null); setTimeout(() => { didDragRef.current = false; }, 0); }}
-                 className={'cm-card'
-                   + (current?.id === t.id ? ' active' : '')
-                   + (dragId === t.id ? ' dragging' : '')
-                   + (overId === t.id && dragId && dragId !== t.id ? ' drag-over' : '')}
-                 onClick={() => { if (didDragRef.current) return; setSelected(t.id); }}>
-              <div className="cm-card-head">
-                <span className="cm-drag" title="拖动调整排序">⋮⋮</span>
-                <span className="cm-card-name">{t.label || t.nodeId}</span>
-                <span className="cm-card-acts">
-                  <button title="立即采集" onClick={e => { e.stopPropagation(); runNow(t.id); }}>↻</button>
-                  <button title="删除" onClick={e => { e.stopPropagation(); removeTarget(t.id); }}>✕</button>
-                </span>
+          {buckets.map(b => {
+            const gid = b.group?.id || null;
+            const gkey = gid || '__none';
+            const collapsed = !!b.group?.collapsed;
+            return (
+              <div className={'cm-grp' + (collapsed ? ' closed' : '')} key={gkey}>
+                <div className={'cm-grp-head' + (grpOverId === gkey ? ' over' : '')}
+                     draggable={!!b.group}
+                     onDragStart={e => {
+                       if (!b.group) return;
+                       setGrpDragId(b.group.id);
+                       e.dataTransfer.effectAllowed = 'move';
+                       try { e.dataTransfer.setData('text/plain', 'grp:' + b.group.id); } catch { /* 老浏览器忽略 */ }
+                     }}
+                     onDragOver={e => { e.preventDefault(); if (grpOverId !== gkey) setGrpOverId(gkey); }}
+                     onDragLeave={() => setGrpOverId(cur => (cur === gkey ? null : cur))}
+                     onDrop={e => { e.preventDefault(); dropOnGroup(gid); }}
+                     onDragEnd={() => { setGrpDragId(null); setGrpOverId(null); }}
+                     onClick={() => { if (b.group) toggleCollapse(b.group); }}>
+                  <span className="cm-grp-arrow">▾</span>
+                  <span className="cm-grp-name">{b.group?.name || '未分类'}</span>
+                  <span className="cm-grp-n">{b.items.length}</span>
+                  {b.group && (
+                    <span className="cm-grp-acts">
+                      <button title="重命名"
+                              onClick={e => { e.stopPropagation(); setNameDraft(b.group!.name); setRenameId(b.group!.id); setPop('rename'); }}>✎</button>
+                      <button title="删除分类（成员回未分类）"
+                              onClick={e => { e.stopPropagation(); removeGroup(b.group!); }}>✕</button>
+                    </span>
+                  )}
+                </div>
+                <div className="cm-grp-body">
+                  {b.items.map(t => (
+                    <div key={t.id}
+                         draggable
+                         onDragStart={e => {
+                           didDragRef.current = true;
+                           setDragId(t.id);
+                           e.dataTransfer.effectAllowed = 'move';
+                           try { e.dataTransfer.setData('text/plain', t.id); } catch { /* 老浏览器忽略 */ }
+                         }}
+                         onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (overId !== t.id) setOverId(t.id); }}
+                         onDragLeave={() => setOverId(cur => (cur === t.id ? null : cur))}
+                         onDrop={e => { e.preventDefault(); dropOnCard(t.id, b.items, gid); }}
+                         onDragEnd={() => { setDragId(null); setOverId(null); setTimeout(() => { didDragRef.current = false; }, 0); }}
+                         className={'cm-card'
+                           + (current?.id === t.id ? ' active' : '')
+                           + (picked.has(t.id) ? ' picked' : '')
+                           + (dragId === t.id ? ' dragging' : '')
+                           + (overId === t.id && dragId && dragId !== t.id ? ' drag-over' : '')}
+                         onClick={() => { if (didDragRef.current) return; setSelected(t.id); }}>
+                      <div className="cm-card-head">
+                        <span className={'cm-pick' + (picked.has(t.id) ? ' on' : '')}
+                              title="勾选后可批量移动到分类"
+                              onClick={e => { e.stopPropagation(); togglePick(t.id); }}>✓</span>
+                        <span className="cm-drag" title="拖动调整顺序 / 拖到分类标题可归组">⋮⋮</span>
+                        <span className="cm-card-name">{t.label || t.nodeId}</span>
+                        <span className="cm-card-acts">
+                          <button title="立即采集" onClick={e => { e.stopPropagation(); runNow(t.id); }}>↻</button>
+                          <button title="删除" onClick={e => { e.stopPropagation(); removeTarget(t.id); }}>✕</button>
+                        </span>
+                      </div>
+                      <div className="cm-card-node">{t.marketplace} · node {t.nodeId}</div>
+                      <div className="cm-card-row">
+                        {(t.listTypes || []).map(lt => (
+                          <span key={lt}
+                                className={'cm-b' + (current?.id === t.id && listType === lt ? ' on' : '')}>
+                            {LIST_LABEL[lt] || lt}
+                          </span>
+                        ))}
+                        <span className="cm-freq">{freqText(t)}</span>
+                      </div>
+                      <div className="cm-card-row">
+                        <span className={'cm-st ' + (t.lastStatus || 'idle')}>{statusText(t.lastStatus)}</span>
+                        {t.lastRunAt && <span className="cm-muted">{fmtTs(t.lastRunAt)}</span>}
+                      </div>
+                    </div>
+                  ))}
+                  {!b.items.length && <div className="cm-grp-empty">（空分类，可把条目拖到这里）</div>}
+                </div>
               </div>
-              <div className="cm-card-node">{t.marketplace} · node {t.nodeId}</div>
-              <div className="cm-card-row">
-                {(t.listTypes || []).map(lt => (
-                  <span key={lt}
-                        className={'cm-b' + (current?.id === t.id && listType === lt ? ' on' : '')}>
-                    {LIST_LABEL[lt] || lt}
-                  </span>
-                ))}
-                <span className="cm-freq">{freqText(t)}</span>
-              </div>
-              <div className="cm-card-row">
-                <span className={'cm-st ' + (t.lastStatus || 'idle')}>{statusText(t.lastStatus)}</span>
-                {t.lastRunAt && <span className="cm-muted">{fmtTs(t.lastRunAt)}</span>}
-              </div>
-            </div>
-          ))}
+            );
+          })}
           {!targets.length && <div className="cm-empty">还没有监控对象，粘贴榜单 URL 添加</div>}
         </div>
+
+        {picked.size > 0 && (
+          <div className="cm-pickbar">
+            <span>已选 <b>{picked.size}</b> 项</span>
+            <span className="cm-spacer" />
+            <button className="cm-ghost" onClick={() => setPop('move')}>移动到分类 ▾</button>
+            <button className="cm-ghost"
+                    onClick={() => { setNameDraft(''); setRenameId(null); setPop('newAndMove'); }}>新建分类</button>
+            <button className="cm-ghost" onClick={() => setPicked(new Set())}>取消</button>
+          </div>
+        )}
+
+        {pop === 'move' && (
+          <div className="cm-pop">
+            <div className="cm-pop-ttl">移动到</div>
+            {groups.map(g => (
+              <div key={g.id} className="cm-pop-opt" onClick={() => movePicked(g.id)}>{g.name}</div>
+            ))}
+            <div className="cm-pop-opt" onClick={() => movePicked(null)}>移出分类（未分类）</div>
+            <div className="cm-pop-opt new" onClick={() => { setNameDraft(''); setRenameId(null); setPop('newAndMove'); }}>+ 新建分类并移入</div>
+          </div>
+        )}
+        {(pop === 'new' || pop === 'newAndMove' || pop === 'rename') && (
+          <div className="cm-pop cm-pop-form">
+            <div className="cm-pop-ttl">{pop === 'rename' ? '重命名分类' : '新建分类'}</div>
+            <input className="cm-input" autoFocus value={nameDraft}
+                   onChange={e => setNameDraft(e.target.value)}
+                   onKeyDown={e => { if (e.key === 'Enter') submitName(); if (e.key === 'Escape') setPop(''); }}
+                   placeholder="分类名称，如「风扇类」" maxLength={20} />
+            <div className="cm-pop-row">
+              <button className="cm-ghost" onClick={() => setPop('')}>取消</button>
+              <button className="cm-btn" style={{ marginTop: 0, padding: '5px 12px' }}
+                      onClick={submitName}>确定</button>
+            </div>
+          </div>
+        )}
       </aside>
 
       {/* ===== 右栏 ===== */}
@@ -1334,7 +1514,7 @@ export function toScrapedProduct(d: CatDetail, marketplace: string): ScrapedProd
 // ---------------------------------------------------------------------------
 const CSS = `
 .cm-wrap{display:flex;min-height:0;height:100%;}
-.cm-records{width:328px;flex:0 0 328px;border-right:1px solid var(--border);background:var(--bg-2);padding:12px;overflow:auto;}
+.cm-records{width:328px;flex:0 0 328px;border-right:1px solid var(--border);background:var(--bg-2);padding:12px 12px 8px;overflow:auto;position:relative;display:flex;flex-direction:column;}
 .cm-detail{flex:1;min-width:0;overflow:auto;padding:14px;}
 .cm-label{font-size:11px;color:var(--ink-4);margin-bottom:6px;}
 .cm-input{width:100%;background:var(--bg);border:1px solid var(--border-strong);color:var(--ink);border-radius:8px;padding:8px 10px;font-size:12px;box-sizing:border-box;}
@@ -1343,6 +1523,48 @@ const CSS = `
 .cm-ghost{background:transparent;border:1px solid var(--border-strong);color:var(--ink-2);border-radius:7px;padding:6px 10px;font-size:12px;cursor:pointer;}
 .cm-ghost:disabled{opacity:.55;cursor:default;}
 .cm-sub{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--ink-3);margin:14px 0 8px;}
+.cm-sub .cm-mini2{margin-left:auto;border:1px solid var(--border);background:transparent;color:var(--ink-3);
+  font-size:11px;padding:5px 8px;border-radius:6px;cursor:pointer;line-height:1;}
+.cm-sub .cm-mini2:hover{border-color:var(--blue);color:var(--blue);}
+/* 分类分组 */
+.cm-grp{margin-bottom:4px;}
+.cm-grp-head{display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:7px;cursor:pointer;user-select:none;}
+.cm-grp-head:hover{background:var(--card-bg);}
+.cm-grp-head.over{background:var(--blue-soft);outline:1px dashed rgba(37,99,235,.5);outline-offset:-1px;}
+.cm-grp-arrow{color:var(--ink-4);font-size:10px;width:12px;text-align:center;transition:transform .14s;}
+.cm-grp.closed .cm-grp-arrow{transform:rotate(-90deg);}
+.cm-grp-name{font-size:12px;font-weight:600;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:170px;}
+.cm-grp-n{font-size:10.5px;color:var(--ink-4);}
+.cm-grp-acts{margin-left:auto;display:none;gap:2px;}
+.cm-grp-head:hover .cm-grp-acts{display:flex;}
+.cm-grp-acts button{border:0;background:transparent;color:var(--ink-4);font-size:11px;padding:2px 4px;border-radius:4px;cursor:pointer;}
+.cm-grp-acts button:hover{background:var(--border);color:var(--ink);}
+.cm-grp-body{display:flex;flex-direction:column;gap:6px;}
+.cm-grp.closed .cm-grp-body{display:none;}
+.cm-grp-empty{font-size:11px;color:var(--ink-4);padding:8px;border:1px dashed var(--border);border-radius:8px;text-align:center;}
+/* 卡片勾选 */
+.cm-pick{flex:0 0 auto;width:14px;height:14px;border:1.5px solid var(--border-strong);border-radius:4px;
+  display:flex;align-items:center;justify-content:center;font-size:9px;color:transparent;
+  background:var(--card-bg);cursor:pointer;}
+.cm-card:hover .cm-pick{border-color:var(--ink-4);}
+.cm-pick.on{background:var(--blue);border-color:var(--blue);color:#fff;}
+.cm-card.picked{border-color:rgba(37,99,235,.5);background:var(--blue-soft);}
+/* 底部批量操作条 */
+.cm-pickbar{position:sticky;bottom:0;margin-top:auto;display:flex;align-items:center;gap:6px;
+  padding:8px;border:1px solid var(--border-strong);border-radius:9px;background:var(--card-bg);
+  box-shadow:var(--shadow-md);font-size:11.5px;color:var(--ink-2);}
+.cm-pickbar b{color:var(--blue);}
+.cm-pickbar .cm-ghost{padding:4px 8px;font-size:11.5px;}
+/* 弹层 */
+.cm-pop{position:absolute;left:12px;right:12px;bottom:52px;z-index:30;background:var(--card-bg);
+  border:1px solid var(--border-strong);border-radius:10px;box-shadow:var(--shadow-md);padding:6px;}
+.cm-pop-ttl{font-size:10.5px;color:var(--ink-4);padding:4px 8px;}
+.cm-pop-opt{padding:6px 8px;border-radius:6px;font-size:12px;color:var(--ink-2);cursor:pointer;}
+.cm-pop-opt:hover{background:var(--bg-2);}
+.cm-pop-opt.new{color:var(--green);border-top:1px solid var(--border);margin-top:4px;padding-top:8px;border-radius:0 0 6px 6px;}
+.cm-pop-form{padding:8px;}
+.cm-pop-row{display:flex;justify-content:flex-end;gap:6px;margin-top:8px;}
+
 .cm-sub b{color:var(--ink);}
 .cm-list{display:flex;flex-direction:column;gap:8px;}
 .cm-card{border:1px solid var(--border);border-radius:10px;padding:10px;background:var(--card-bg);cursor:pointer;position:relative;}

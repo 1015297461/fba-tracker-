@@ -163,6 +163,10 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             handler._send_json(401, {"error": "请先登录"})
         return user
 
+    # 查询记录分类（与排名监测共用同一套实现，scope 区分）
+    from .record_groups import register_groups as _register_groups
+    _register_groups("catmon", "/api/catmon", GET, POST, PUT, DELETE, state, _verify)
+
     # ---- 监控对象 ----
 
     def get_targets(self):

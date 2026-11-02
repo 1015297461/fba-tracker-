@@ -187,6 +187,30 @@ class DbState:
                 );
                 CREATE INDEX IF NOT EXISTS idx_catmon_events
                     ON catmon_events(target_id, run_date);
+
+                -- 查询记录分类（两个模块共用一套结构，靠 scope 区分）
+                --   scope='catmon' → item_key = catmon_targets.id
+                --   scope='rank'   → item_key = 关键词小写（记录是派生的，没有业务表主键）
+                CREATE TABLE IF NOT EXISTS record_groups (
+                    id          TEXT PRIMARY KEY,
+                    scope       TEXT NOT NULL,
+                    name        TEXT NOT NULL,
+                    sort_order  INTEGER NOT NULL DEFAULT 0,
+                    collapsed   INTEGER NOT NULL DEFAULT 0,
+                    created_at  TEXT
+                );
+                CREATE INDEX IF NOT EXISTS ix_record_groups_scope
+                    ON record_groups(scope, sort_order);
+                -- 成员表：既是「归属哪个分类」，也是「组内顺序」
+                --   group_id 为 NULL = 未分类；没有行 = 还没排过序（前端按默认顺序兜底）
+                CREATE TABLE IF NOT EXISTS record_group_members (
+                    scope       TEXT NOT NULL,
+                    item_key    TEXT NOT NULL,
+                    group_id    TEXT,
+                    sort_order  INTEGER NOT NULL DEFAULT 0,
+                    updated_at  TEXT,
+                    PRIMARY KEY (scope, item_key)
+                );
             """)
             cols = {r[1] for r in conn.execute("PRAGMA table_info(catmon_targets)").fetchall()}
             if "last_progress" not in cols:
@@ -276,6 +300,124 @@ class DbState:
                 for i, tid in enumerate(ids):
                     conn.execute("UPDATE catmon_targets SET sort_order=? WHERE id=?", [i, tid])
                 conn.commit()
+
+    # ------------------------------------------------------------------
+    # 查询记录分类（scope = 'catmon' | 'rank'，两个模块共用）
+    # ------------------------------------------------------------------
+    def list_record_groups(self, scope: str):
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM record_groups WHERE scope=? "
+                "ORDER BY sort_order ASC, created_at ASC", [scope]).fetchall()
+        return [self._row_to_record_group(r) for r in rows]
+
+    def _row_to_record_group(self, row):
+        return {
+            "id": row["id"],
+            "scope": row["scope"],
+            "name": row["name"],
+            "sortOrder": row["sort_order"],
+            "collapsed": bool(row["collapsed"]),
+            "createdAt": row["created_at"],
+        }
+
+    def create_record_group(self, scope: str, name: str):
+        gid = "grp" + secrets.token_hex(6)
+        with self.lock:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(sort_order), -1) AS m FROM record_groups WHERE scope=?",
+                    [scope]).fetchone()
+                nxt = int(row["m"] or 0) + 1
+                conn.execute(
+                    "INSERT INTO record_groups (id, scope, name, sort_order, collapsed, created_at) "
+                    "VALUES (?,?,?,?,0,?)",
+                    [gid, scope, name, nxt, _now_iso()])
+                conn.commit()
+        return self.list_record_groups(scope)
+
+    def update_record_group(self, gid: str, fields: dict):
+        sets, params = [], []
+        if "name" in fields and fields["name"] is not None:
+            sets.append("name=?")
+            params.append(str(fields["name"]))
+        if "collapsed" in fields and fields["collapsed"] is not None:
+            sets.append("collapsed=?")
+            params.append(1 if fields["collapsed"] else 0)
+        if not sets:
+            return
+        params.append(gid)
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(f"UPDATE record_groups SET {', '.join(sets)} WHERE id=?", params)
+                conn.commit()
+
+    def delete_record_group(self, gid: str):
+        """删分类：成员回到「未分类」（保留成员行，只清 group_id）。"""
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute("UPDATE record_group_members SET group_id=NULL WHERE group_id=?", [gid])
+                conn.execute("DELETE FROM record_groups WHERE id=?", [gid])
+                conn.commit()
+
+    def reorder_record_groups(self, scope: str, ids):
+        with self.lock:
+            with self._conn() as conn:
+                for i, gid in enumerate(ids):
+                    conn.execute(
+                        "UPDATE record_groups SET sort_order=? WHERE id=? AND scope=?",
+                        [i, gid, scope])
+                conn.commit()
+
+    def list_record_members(self, scope: str):
+        """{item_key: {group_id, sort_order}}"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT item_key, group_id, sort_order FROM record_group_members WHERE scope=?",
+                [scope]).fetchall()
+        return {r["item_key"]: {"group_id": r["group_id"], "sort_order": r["sort_order"]}
+                for r in rows}
+
+    def assign_record_members(self, scope: str, keys, group_id):
+        """批量归组。新进组的排在该组末尾（sort_order 取组内最大值 +1 递增）。"""
+        keys = [str(k) for k in (keys or []) if k]
+        if not keys:
+            return 0
+        now = _now_iso()
+        with self.lock:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(sort_order), -1) AS m FROM record_group_members "
+                    "WHERE scope=? AND group_id IS ?", [scope, group_id]).fetchone()
+                nxt = int(row["m"] or 0) + 1
+                for k in keys:
+                    conn.execute(
+                        "INSERT INTO record_group_members (scope, item_key, group_id, sort_order, updated_at) "
+                        "VALUES (?,?,?,?,?) "
+                        "ON CONFLICT(scope, item_key) DO UPDATE SET group_id=excluded.group_id, "
+                        "sort_order=excluded.sort_order, updated_at=excluded.updated_at",
+                        [scope, k, group_id, nxt, now])
+                    nxt += 1
+                conn.commit()
+        return len(keys)
+
+    def reorder_record_items(self, scope: str, group_id, keys):
+        """组内排序：按给定顺序写 sort_order（缺失的成员行顺带补上）。"""
+        keys = [str(k) for k in (keys or []) if k]
+        if not keys:
+            return 0
+        now = _now_iso()
+        with self.lock:
+            with self._conn() as conn:
+                for i, k in enumerate(keys):
+                    conn.execute(
+                        "INSERT INTO record_group_members (scope, item_key, group_id, sort_order, updated_at) "
+                        "VALUES (?,?,?,?,?) "
+                        "ON CONFLICT(scope, item_key) DO UPDATE SET sort_order=excluded.sort_order, "
+                        "updated_at=excluded.updated_at",
+                        [scope, k, group_id, i, now])
+                conn.commit()
+        return len(keys)
 
     def get_catmon_target(self, tid: str):
         with self._conn() as conn:

@@ -4308,3 +4308,55 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .rk-my-table th{text-align:left;font-size:11px;color:var(--ink-3);font-weight:600;
   padding:5px 8px;border-bottom:1px solid var(--border);}
 .rk-my-table td{padding:5px 8px;border-bottom:1px solid rgba(128,128,128,.18);}
+
+/* ------------------------------------------------------------------ */
+/* 查询记录分类（类目榜单监控 / 排名监测共用；后端 record_groups）    */
+/* ------------------------------------------------------------------ */
+.rk-hist-head .rk-mini2{margin-left:auto;border:1px solid var(--border);background:transparent;
+  color:var(--ink-3);font-size:10.5px;padding:3px 7px;border-radius:5px;line-height:1.3;}
+.rk-hist-head .rk-mini2:hover{border-color:var(--blue);color:var(--blue);}
+.rk-grp{display:flex;flex-direction:column;gap:4px;}
+.rk-grp-head{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:7px;
+  cursor:pointer;user-select:none;}
+.rk-grp-head:hover{background:var(--bg-2);}
+.rk-grp-head.over{background:var(--blue-soft);outline:1px dashed rgba(37,99,235,.5);outline-offset:-1px;}
+.rk-grp-arrow{width:12px;text-align:center;font-size:10px;color:var(--ink-4);transition:transform .14s;}
+.rk-grp.closed .rk-grp-arrow{transform:rotate(-90deg);}
+.rk-grp-name{font-size:11.5px;font-weight:600;color:var(--ink-2);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;max-width:170px;}
+.rk-grp-n{font-size:10.5px;color:var(--ink-4);}
+.rk-grp-acts{margin-left:auto;display:none;gap:2px;}
+.rk-grp-head:hover .rk-grp-acts{display:flex;}
+.rk-grp-acts button{border:0;background:transparent;color:var(--ink-4);font-size:11px;
+  padding:2px 4px;border-radius:4px;cursor:pointer;}
+.rk-grp-acts button:hover{background:var(--border);color:var(--ink);}
+.rk-grp-body{display:flex;flex-direction:column;gap:6px;}
+.rk-grp.closed .rk-grp-body{display:none;}
+.rk-grp-empty{font-size:11px;color:var(--ink-4);padding:8px;border:1px dashed var(--border);
+  border-radius:8px;text-align:center;}
+
+/* 记录行勾选框 */
+.rk-pick{flex:0 0 auto;width:14px;height:14px;border:1.5px solid var(--border-strong);border-radius:4px;
+  display:flex;align-items:center;justify-content:center;font-size:9px;color:transparent;
+  background:var(--card-bg);cursor:pointer;margin-top:2px;}
+.rk-li:hover .rk-pick{border-color:var(--ink-4);}
+.rk-pick.on{background:var(--blue);border-color:var(--blue);color:#fff;}
+.rk-li:has(.rk-pick.on){border-color:rgba(37,99,235,.5);background:var(--blue-soft);}
+
+/* 批量操作条 + 弹层 */
+.ai-history{position:relative;}
+.rk-pickbar{position:sticky;bottom:4px;z-index:6;display:flex;align-items:center;gap:6px;
+  padding:7px 8px;border:1px solid var(--border-strong);border-radius:9px;background:var(--card-bg);
+  box-shadow:var(--shadow-md);font-size:11.5px;color:var(--ink-2);}
+.rk-pickbar b{color:var(--blue);}
+.rk-pickbar .rk-ghost-btn{padding:3px 8px;font-size:11.5px;}
+.rk-pop{position:absolute;left:0;right:0;bottom:44px;z-index:30;background:var(--card-bg);
+  border:1px solid var(--border-strong);border-radius:10px;box-shadow:var(--shadow-md);padding:6px;}
+.rk-pop-ttl{font-size:10.5px;color:var(--ink-4);padding:4px 8px;}
+.rk-pop-opt{padding:6px 8px;border-radius:6px;font-size:12px;color:var(--ink-2);cursor:pointer;}
+.rk-pop-opt:hover{background:var(--bg-2);}
+.rk-pop-opt.new{color:var(--green);border-top:1px solid var(--border);margin-top:4px;padding-top:8px;}
+.rk-pop-form{padding:8px;}
+.rk-pop-form input{width:100%;padding:6px 8px;font-size:12px;border:1px solid var(--border);
+  border-radius:6px;background:var(--bg);color:var(--ink);outline:none;font-family:inherit;}
+.rk-pop-form input:focus{border-color:var(--blue);}

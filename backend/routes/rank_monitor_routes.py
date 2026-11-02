@@ -51,6 +51,10 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             return None
         return user
 
+    # 查询记录分类（与类目榜单监控共用同一套实现，scope 区分）
+    from .record_groups import register_groups as _register_groups
+    _register_groups("rank", "/api/rank", GET, POST, PUT, DELETE, state, _user)
+
     def _norm_kind(kind: str) -> str:
         k = (kind or "keyword").strip().lower()
         return k if k in ("keyword", "asin") else "keyword"

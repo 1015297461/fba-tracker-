@@ -5,6 +5,8 @@ import { LineChart } from './SifKeyword';
 import { ProductDetailDialog } from './ProductScrape';
 import { toScrapedProduct } from './CategoryMonitor';
 import { useColResize } from './colResize';
+import { groupsApi, groupItems } from './recordGroups';
+import type { RecGroup, RecMember, RecGroupsPayload } from './recordGroups';
 import { DateCalendar } from './DateCalendar';
 import type { CatDetail } from './CategoryMonitor';
 import {
@@ -1118,8 +1120,7 @@ function HoverTip({ head, content, children }:
   );
 }
 
-/** 查询记录拖拽排序：顺序存本机浏览器（与产品列表同款 dnd-kit，但列表是派生的，没法塞进业务表） */
-const REC_ORDER_KEY = 'rk.recorder.v1';
+/** 查询记录拖拽排序：顺序现在存后端（`record_group_members.sort_order`），换设备也一致 */
 
 function SortableRec({ id, children }: {
   id: string;
@@ -2352,14 +2353,85 @@ export function RankMonitor() {
   // 右侧「当前展示的记录」关键词。只有打开记录 / 真正跑完一次查询才更新；
   // 左侧输入框随便打字不能改它 —— 否则还没查询，右侧标题就先变了。
   const [activeKeyword, setActiveKeyword] = useState('');
-  // 查询记录自定义顺序（存本机浏览器；换设备/清缓存会回到按时间倒序）
-  const [recOrder, setRecOrder] = useState<string[]>(() => {
+  // ---- 查询记录分类（后端持久化：分类、归属、组内顺序、折叠状态都在后端）----
+  const [groups, setGroups] = useState<RecGroup[]>([]);
+  const [members, setMembers] = useState<Record<string, RecMember>>({});
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [grpDragId, setGrpDragId] = useState<string | null>(null);
+  const [grpOverId, setGrpOverId] = useState<string | null>(null);
+  const [pop, setPop] = useState<'' | 'move' | 'new' | 'newAndMove' | 'rename'>('');
+  const [nameDraft, setNameDraft] = useState('');
+  const [renameId, setRenameId] = useState<string | null>(null);
+  const gapi = useMemo(() => groupsApi('/api/rank'), []);
+
+  const applyGroups = useCallback((p: RecGroupsPayload) => {
+    setGroups(p.groups || []);
+    setMembers(p.members || {});
+  }, []);
+  // 挂载时可能还没登录（token 未就绪 → 401），失败不置位，等列表加载成功后补拉
+  const groupsLoaded = useRef(false);
+  const loadGroups = useCallback(async () => {
+    if (groupsLoaded.current) return;
+    try { applyGroups(await gapi.list()); groupsLoaded.current = true; }
+    catch { /* 分类拉不到不影响主流程 */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => { loadGroups(); }, [loadGroups]);
+  const togglePick = (key: string) => {
+    setPicked(prev => {
+      const n = new Set(prev);
+      if (n.has(key)) n.delete(key); else n.add(key);
+      return n;
+    });
+  };
+  const toggleCollapse = async (g: RecGroup) => {
+    applyGroups(await gapi.update(g.id, { collapsed: !g.collapsed }));
+  };
+  const submitName = async () => {
+    const name = nameDraft.trim();
+    if (!name) return;
     try {
-      const raw = localStorage.getItem(REC_ORDER_KEY);
-      const arr = raw ? JSON.parse(raw) : [];
-      return Array.isArray(arr) ? arr.filter((x: any) => typeof x === 'string') : [];
-    } catch { return []; }
-  });
+      if (pop === 'rename' && renameId) {
+        applyGroups(await gapi.update(renameId, { name }));
+      } else {
+        const p = await gapi.create(name);
+        applyGroups(p);
+        if (pop === 'newAndMove' && picked.size) {
+          const gid = (p.groups || [])[p.groups.length - 1]?.id;
+          if (gid) applyGroups(await gapi.assign([...picked], gid));
+          setPicked(new Set());
+        }
+      }
+      setPop(''); setNameDraft(''); setRenameId(null);
+    } catch (e: any) { setErr({ title: e.message || '保存失败' }); }
+  };
+  const removeGroup = async (g: RecGroup) => {
+    if (!window.confirm(`删除分类「${g.name}」？里面的条目会回到「未分类」（不会删除记录）`)) return;
+    try { applyGroups(await gapi.remove(g.id)); }
+    catch (e: any) { setErr({ title: e.message || '删除失败' }); }
+  };
+  const movePicked = async (gid: string | null) => {
+    if (!picked.size) return;
+    try { applyGroups(await gapi.assign([...picked], gid)); setPicked(new Set()); setPop(''); }
+    catch (e: any) { setErr({ title: e.message || '移动失败' }); }
+  };
+  /** 拖到分类标题：分类标题之间 = 分类排序；条目拖过来 = 归组 */
+  const dropOnGroup = async (gid: string | null) => {
+    setGrpOverId(null);
+    if (grpDragId && grpDragId !== '__none') {
+      const from = grpDragId;
+      setGrpDragId(null);
+      const key = gid || '__none';
+      if (from === key) return;
+      const ids = groups.map(g => g.id);
+      const a = ids.indexOf(from);
+      const b = key === '__none' ? ids.length : ids.indexOf(key);
+      if (a < 0 || b < 0) return;
+      ids.splice(b, 0, ids.splice(a, 1)[0]);
+      try { applyGroups(await gapi.reorderGroups(ids)); }
+      catch (e: any) { setErr({ title: e.message || '排序失败' }); }
+    }
+  };
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -2380,12 +2452,14 @@ export function RankMonitor() {
   }, []);
 
   const loadQueries = useCallback(async () => {
-    try { setQueries(await apiQueries()); }
-    catch (e: any) {
+    try {
+      setQueries(await apiQueries());
+      loadGroups();                // 已登录，补拉分类（首次可能因未登录失败过）
+    } catch (e: any) {
       const ae = authError(e);
       if (ae) setErr(ae);        // 登录失效要显示；其余静默，免得打断主流程
     }
-  }, []);
+  }, [loadGroups]);
 
   /** 左栏列表里的爬虫记录 */
   const loadSrpList = useCallback(async () => {
@@ -2814,28 +2888,28 @@ export function RankMonitor() {
   })();
 
   // 套用自定义顺序：没在顺序表里的新记录排最前（保持按时间倒序），已排序的按保存位置
-  const orderedRecords = (() => {
-    if (!recOrder.length) return records;
-    const idx = new Map(recOrder.map((k, i) => [k, i]));
-    return [...records].sort((a, b) => {
-      const ia = idx.has(a.key) ? idx.get(a.key)! : -1;
-      const ib = idx.has(b.key) ? idx.get(b.key)! : -1;
-      if (ia === -1 && ib === -1) return 0;
-      if (ia === -1) return -1;
-      if (ib === -1) return 1;
-      return ia - ib;
-    });
-  })();
+  // 分类分组视图：分类顺序与组内顺序都来自后端，未分类固定最后
+  const recBuckets = groupItems(records, (r: any) => String(r.key), groups, members);
 
   const onRecDragEnd = (e: DragEndEvent) => {
     const { active, over } = e;
     if (!over || active.id === over.id) return;
-    const from = orderedRecords.findIndex(r => r.key === active.id);
-    const to = orderedRecords.findIndex(r => r.key === over.id);
+    // 只处理「同一分类内」的排序；跨分类请用勾选 →（移动工具条）
+    const bucket = recBuckets.find(b => b.items.some((r: any) => String(r.key) === String(active.id)));
+    if (!bucket) return;
+    const keys = bucket.items.map((r: any) => String(r.key));
+    const from = keys.indexOf(String(active.id));
+    const to = keys.indexOf(String(over.id));
     if (from < 0 || to < 0 || from === to) return;
-    const next = arrayMove(orderedRecords, from, to).map(r => r.key);
-    setRecOrder(next);
-    try { localStorage.setItem(REC_ORDER_KEY, JSON.stringify(next)); } catch { /* 隐私模式忽略 */ }
+    const next = arrayMove(keys, from, to);
+    const gid = bucket.group?.id || null;
+    // 先本地生效（松手后不会闪回原位），再落库
+    setMembers(prev => {
+      const m = { ...prev };
+      next.forEach((k, i) => { m[k] = { group_id: gid, sort_order: i }; });
+      return m;
+    });
+    gapi.reorderItems(gid, next).then(applyGroups).catch(() => { /* 失败时下次刷新回后端值 */ });
   };
 
   // 首次进入自动选中第一条记录，走 openRecord 把 A/B 两侧一起加载。
@@ -2970,14 +3044,47 @@ export function RankMonitor() {
         <div className="ai-history">
           <div className="rk-hist-head">
             <span className="rk-hist-title">查询记录 <i>{records.length}</i></span>
+            <button className="rk-mini2" title="新建分类"
+                    onClick={() => { setNameDraft(''); setRenameId(null); setPop('new'); }}>+ 分类</button>
           </div>
 
           {!records.length && (
             <div className="ai-empty">还没有记录。抓一次榜单或查一次 SIF 就会出现在这里。</div>
           )}
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onRecDragEnd}>
-            <SortableContext items={orderedRecords.map(r => r.key)} strategy={verticalListSortingStrategy}>
-          {orderedRecords.map(r => {
+          {recBuckets.map(b => {
+            const gid = b.group?.id || null;
+            const gkey = gid || '__none';
+            return (
+            <div className={'rk-grp' + (b.group?.collapsed ? ' closed' : '')} key={gkey}>
+              <div className={'rk-grp-head' + (grpOverId === gkey ? ' over' : '')}
+                   draggable={!!b.group}
+                   onDragStart={e => {
+                     if (!b.group) return;
+                     setGrpDragId(b.group.id);
+                     e.dataTransfer.effectAllowed = 'move';
+                     try { e.dataTransfer.setData('text/plain', 'grp:' + b.group.id); } catch { /* 忽略 */ }
+                   }}
+                   onDragOver={e => { e.preventDefault(); if (grpOverId !== gkey) setGrpOverId(gkey); }}
+                   onDragLeave={() => setGrpOverId(cur => (cur === gkey ? null : cur))}
+                   onDrop={e => { e.preventDefault(); dropOnGroup(gid); }}
+                   onDragEnd={() => { setGrpDragId(null); setGrpOverId(null); }}
+                   onClick={() => { if (b.group) toggleCollapse(b.group); }}>
+                <span className="rk-grp-arrow">▾</span>
+                <span className="rk-grp-name">{b.group?.name || '未分类'}</span>
+                <span className="rk-grp-n">{b.items.length}</span>
+                {b.group && (
+                  <span className="rk-grp-acts">
+                    <button title="重命名"
+                            onClick={e => { e.stopPropagation(); setNameDraft(b.group!.name); setRenameId(b.group!.id); setPop('rename'); }}>✎</button>
+                    <button title="删除分类（成员回未分类）"
+                            onClick={e => { e.stopPropagation(); removeGroup(b.group!); }}>✕</button>
+                  </span>
+                )}
+              </div>
+              <div className="rk-grp-body">
+            <SortableContext items={b.items.map((r: any) => r.key)} strategy={verticalListSortingStrategy}>
+          {b.items.map(r => {
             const sc = r.scrape, sf = r.sif;
             const scOff = r.scrapeSched && !r.scrapeSched.enabled;
             const sfOff = r.sifSched && r.sifSched.paused;
@@ -2986,6 +3093,9 @@ export function RankMonitor() {
                 {({ attributes, listeners }) => (
               <div className="ai-task rk-li"
                 data-active={activeRecId === r.key}>
+                <span className={'rk-pick' + (picked.has(String(r.key)) ? ' on' : '')}
+                  title="勾选后可批量移动到分类"
+                  onClick={e => { e.stopPropagation(); togglePick(String(r.key)); }}>✓</span>
                 <span className="rk-drag" {...attributes} {...listeners}
                   onClick={e => e.stopPropagation()} title="拖拽排序">⠿</span>
                 {/* 这里用 div 而不是 button：行内要放「暂停/继续」按钮，
@@ -3056,7 +3166,48 @@ export function RankMonitor() {
             );
           })}
             </SortableContext>
+              </div>
+              {!b.items.length && <div className="rk-grp-empty">（空分类，可把记录拖到这里）</div>}
+            </div>
+            );
+          })}
           </DndContext>
+
+          {picked.size > 0 && (
+            <div className="rk-pickbar">
+              <span>已选 <b>{picked.size}</b> 项</span>
+              <span style={{ flex: 1 }} />
+              <button className="rk-ghost-btn" onClick={() => setPop('move')}>移动到分类 ▾</button>
+              <button className="rk-ghost-btn"
+                      onClick={() => { setNameDraft(''); setRenameId(null); setPop('newAndMove'); }}>新建分类</button>
+              <button className="rk-ghost-btn" onClick={() => setPicked(new Set())}>取消</button>
+            </div>
+          )}
+
+          {pop === 'move' && (
+            <div className="rk-pop">
+              <div className="rk-pop-ttl">移动到</div>
+              {groups.map(g => (
+                <div key={g.id} className="rk-pop-opt" onClick={() => movePicked(g.id)}>{g.name}</div>
+              ))}
+              <div className="rk-pop-opt" onClick={() => movePicked(null)}>移出分类（未分类）</div>
+              <div className="rk-pop-opt new"
+                   onClick={() => { setNameDraft(''); setRenameId(null); setPop('newAndMove'); }}>+ 新建分类并移入</div>
+            </div>
+          )}
+          {(pop === 'new' || pop === 'newAndMove' || pop === 'rename') && (
+            <div className="rk-pop rk-pop-form">
+              <div className="rk-pop-ttl">{pop === 'rename' ? '重命名分类' : '新建分类'}</div>
+              <input autoFocus value={nameDraft}
+                     onChange={e => setNameDraft(e.target.value)}
+                     onKeyDown={e => { if (e.key === 'Enter') submitName(); if (e.key === 'Escape') setPop(''); }}
+                     placeholder="分类名称，如「风扇相关词」" maxLength={20} />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 8 }}>
+                <button className="rk-ghost-btn" onClick={() => setPop('')}>取消</button>
+                <button className="btn btn-sm" onClick={submitName}>确定</button>
+              </div>
+            </div>
+          )}
         </div>
 
       </div>
