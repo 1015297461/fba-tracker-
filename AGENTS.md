@@ -154,6 +154,22 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   起）留在磁盘，可按需 `rm -rf data/chrome-profile` 清掉（下次自动重建）。
                               #   `local` 实现要点：新标签先开 about:blank 再 /navigate（`/new` 会等整页加载），
                               #   /navigate 客户端只等 8s，就绪靠轮询 `readyState + productTitle`；标签复用、闲置 240s 关。
+  sprite_fetch.py              # 卖家精灵「查竞品」批量取上架时间（2026-11-02 新增）。
+                              #   接口 `POST https://www.sellersprite.com/v3/api/competing-lookup`：同域、cookie
+                              #   认证、**无签名**。在**已登录页面的上下文里 fetch()** 调用（不逆向、不解析 DOM）。
+                              #   ⚠️ **`symbolFlag: true` 才是「精确查询」**（只返回传入的 ASIN；5 个 ASIN → total=5）。
+                              #   传 false 会展开成竞品池（5 个 ASIN → 148 条，目标散落到第 54 位）。
+                              #   ⚠️ **`size` 只能用合法档位 20/60/100**：传 92、200、3 都返回 `total=null`/items 空。
+                              #   实测 100 个 ASIN 一次请求 1.08s 返回 99 条、漏 0、95 条有 `availableDate`。
+                              #   前台查询**不扣额度**（query-quota 返回 -1）。
+                              #   专用 Chrome：profile 在 `data/sprite-profile/`，CDP 端口 9333（`SPRITE_CDP_PORT`）。
+                              #   **登录态持久**：取到数据后用 CDP `Browser.close` 优雅关闭（强杀会丢 cookie，踩过）；
+                              #   检测到停在登录页时返回 `need_login` 且**不关窗口**，让用户能登。
+  asin_meta.py                 # ASIN 静态属性（上架时间/品牌）统一取数入口 + **来源开关**。
+                              #   全局属性表 `rmon_asin_meta`（asin 主键），每个 ASIN 一辈子只查一次。
+                              #   `SOURCES = ["sprite"]` ← 开关在这里：当前只用卖家精灵；
+                              #   想恢复 SIF 兜底改成 `["sprite", "sif"]`（`_fill_sif()` 代码保留未删）。
+                              #   未取到的写负缓存（空串 + src=None），避免反复请求。
   review_media.py              # 评论媒体（Customer photos and videos）按需抓取 —— 走本机 CDP 的模块。
                               #   评论图片/视频由详情页懒加载 widget cr-customer-videos 提供，端点为
                               #   POST /portal/customer-reviews/ajax/lazy-widgets/stream。该端点**要求有效会话**：
@@ -891,7 +907,13 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
   `GET /snapshot`、`/trend?start=&end=&asins=&topN=`（多 ASIN 区间，返回 `{dates, series}`）、
   `/matrix?start=&end=`（区间内全部 ASIN 的每日位次矩阵，返回 `{dates, rows}`）、
   `/events?start=&end=`（区间事件，前端已不用，接口保留）、`/snapshots?targetId&listType`（历史快照日期列表，供榜单列表切换）、
-  `/runs`、`GET /detail?refresh=1`、`POST /pause`、`POST /resume`。
+  `/runs`、`GET /detail?refresh=1`、`POST /pause`、`POST /resume`、
+  `POST /asin-dates/fill`（补齐上架时间）、`GET /sprite/status`（专用浏览器/登录态诊断）。
+- **榜单列表「上架」列（2026-11-02）**：数据来自 `rmon_asin_meta`（按 ASIN，与快照日期无关），
+  `GET /snapshot` 直接带出 `firstAvailable`；列可排序（空值恒最后）。
+  补齐走 `POST /api/catmon/asin-dates/fill {targetId,listType,date?}` → `asin_meta.ensure()`：
+  先读库 → 缺的按 `SOURCES` 顺序问（当前只有卖家精灵）→ 写库。实测一个榜单
+  `asked 100 / fetched 92 / covered 100`、1.2 秒。前端按钮「补齐上架时间」在 header 右侧。
 - **暂停 / 继续（2026-10-30）**：每个 target 一个 `{"pause": Event, "cancel": Event}`（`_ctl`，`_start_run` 里创建、
   `_run_target` 的 finally 里清理）。**暂停点在「每个榜单开始之前」**（`_wait_if_paused`），
   所以绝不会停在半截榜单上、也不会重复写同日快照；暂停中的线程原地 sleep 0.5s 轮询，状态写 `paused`。

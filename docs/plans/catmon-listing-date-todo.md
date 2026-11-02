@@ -1,7 +1,22 @@
 # TODO：类目榜单「上架时间」列
 
-> 状态：**未实现**（2026-10-30 只做了调研与方案，先记档，后续再落地）
+> 状态：**已实现 v1**（2026-11-02）—— 卖家精灵通道，SIF 暂停用（开关见 `backend/asin_meta.py`）
 > 目标模块：AI 分析 · 类目榜单监控 → 榜单列表
+>
+> ## 实现（2026-11-02）
+> - `backend/sprite_fetch.py`：专用 Chrome（`data/sprite-profile/`，CDP 9333）+ 页面内 `fetch()`
+>   调 `POST /v3/api/competing-lookup`（cookie 认证、无签名）。
+> - `backend/asin_meta.py`：统一入口，**`SOURCES = ["sprite"]` 就是开关**（SIF 代码保留未删，
+>   改成 `["sprite","sif"]` 即恢复兜底）。
+> - 路由：`POST /api/catmon/asin-dates/fill`、`GET /api/catmon/sprite/status`；
+>   `GET /snapshot` 每条带 `firstAvailable`。
+> - 前端：榜单列表新增「上架」列（可排序、空值 `—`）+ header「补齐上架时间」按钮。
+> - 实测：`asked 100 / fetched 92 / covered 100`，1.2 秒；前端列渲染 + 排序正常。
+> - 踩坑（**改这个接口前必读**）：
+>   · `symbolFlag: true` 才是精确查询；`false` 会展开成竞品池（5 个 ASIN → 148 条）。
+>   · `size` 只能用 20/60/100 档位，传 92/200/3 直接返回空。
+>   · 专用 Chrome 强杀会丢登录态，必须 `Browser.close`（已实现）。
+>   · CDP `Runtime.evaluate` 的结果是 `{result:{value}}`，多套一层会永远拿到 None（曾因此"0 条但不报错"）。
 
 ## 需求
 

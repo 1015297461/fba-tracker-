@@ -37,6 +37,8 @@ interface CatItem {
   productUrl: string | null;
   prevRank?: number | null;
   delta?: number | null;
+  /** 上架时间 'YYYY-MM-DD'（来自全局 ASIN 属性表，按 ASIN 取，与快照日期无关） */
+  firstAvailable?: string | null;
 }
 interface CatSnapshot {
   date: string;
@@ -168,6 +170,7 @@ export function CategoryMonitor() {
   const [url, setUrl] = useState('https://www.amazon.com/gp/bestsellers/home-garden/3732191/');
   const [q, setQ] = useState('');
   const [runBusy, setRunBusy] = useState(false);
+  const [fillBusy, setFillBusy] = useState(false);
   const [detail, setDetail] = useState<CatDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [tab, setTab] = useState<'trend' | 'events' | 'runs'>('trend');
@@ -352,8 +355,32 @@ export function CategoryMonitor() {
     }
   };
 
-  const resumeRun = async (id: string) => {
+  /** 补齐「上架时间」：卖家精灵通道，取数来源见 backend/asin_meta.py 的 SOURCES 开关 */
+  const fillDates = async () => {
+    if (!current) return;
+    setFillBusy(true);
     setErr('');
+    try {
+      const j = await apiSend<{ fetched: number; covered: number; asked: number; sources: Record<string, string> }>(
+        '/api/catmon/asin-dates/fill', 'POST',
+        { targetId: current.id, listType, date: snapDate || undefined });
+      await loadSnapshot(current.id, listType, snapDate || undefined);
+      const ch = Object.values(j.sources || {})[0] || 'sprite';
+      if (ch === 'need_login') {
+        setErr('需要先在专用浏览器窗口登录卖家精灵（登录后重试即可）');
+      } else if (j.fetched > 0) {
+        setErr(`已补齐 ${j.fetched} 个（覆盖 ${j.covered}/${j.asked}）`);
+      } else {
+        setErr(`没有新增（覆盖 ${j.covered}/${j.asked}）`);
+      }
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setFillBusy(false);
+    }
+  };
+
+  const resumeRun = async (id: string) => {    setErr('');
     setRunBusy(true);
     try {
       await apiSend('/api/catmon/resume', 'POST', { id });
@@ -406,6 +433,7 @@ export function CategoryMonitor() {
         case 'price': return i.price != null ? Number(i.price) : null;
         case 'rating': return i.rating;
         case 'reviews': return i.reviewCount;
+        case 'listed': return i.firstAvailable || null;
         case 'delta': return i.delta ?? null;
         case 'title': return (i.title || i.asin || '').toLowerCase();
         default: return null;
@@ -429,7 +457,7 @@ export function CategoryMonitor() {
   // 「较上次」列常驻显示：有上一次快照时显示涨跌，否则整列显示「—」
   const hasPrev = !!snap?.prevDate;
   // 列宽可拖拽：排名62/价格92/商品(自动)/评分108/评论82/较上次92/详情66
-  const catListCols = useColResize('catmon-list', [62, 92, null, 108, 82, 92, 66]);
+  const catListCols = useColResize('catmon-list', [62, 88, null, 100, 78, 78, 88, 62]);
 
   return (
     <div className="cm-wrap">
@@ -521,6 +549,10 @@ export function CategoryMonitor() {
                 <button className="cm-ghost" onClick={() => runNow(current.id)} disabled={runBusy}>
                   {runBusy ? '采集中…' : '立即采集'}
                 </button>
+                <button className="cm-ghost" onClick={fillDates} disabled={fillBusy}
+                        title="用卖家精灵批量补齐本榜单缺失的上架时间">
+                  {fillBusy ? '补齐中…' : '补齐上架时间'}
+                </button>
                 {current.lastStatus === 'running' && (
                   <button className="cm-ghost" onClick={() => pauseRun(current.id)}>暂停</button>
                 )}
@@ -574,6 +606,7 @@ export function CategoryMonitor() {
                     <SortTh label="商品" k="title" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
                     <SortTh label="评分" k="rating" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
                     <SortTh label="评论" k="reviews" cls="r" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+                    <SortTh label="上架" k="listed" cls="r" title="上架时间（来源：卖家精灵）" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
                     <SortTh label="较上次" k="delta" title={hasPrev ? `对比 ${snap?.prevDate}` : '暂无上一次快照，再采集一次后显示涨跌'} sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
                     <th></th>
                   </tr>
@@ -598,6 +631,9 @@ export function CategoryMonitor() {
                         </td>
                         <td>{i.rating ? <span className="cm-stars">{stars(i.rating)} {i.rating.toFixed(1)}</span> : '—'}</td>
                         <td className="cm-muted r">{i.reviewCount ? i.reviewCount.toLocaleString() : '—'}</td>
+                        <td className="cm-muted r" title={i.firstAvailable || '未知（点右侧「补齐上架时间」）'}>
+                          {i.firstAvailable || '—'}
+                        </td>
                         <td>
                           {!hasPrev
                             ? <span className="cm-muted">—</span>
@@ -616,7 +652,7 @@ export function CategoryMonitor() {
                     );
                   })}
                   {!sortedRows.length && (
-                    <tr><td colSpan={7} className="cm-empty-cell">
+                    <tr><td colSpan={8} className="cm-empty-cell">
                       {loading ? '加载中…' : (snap ? '无匹配结果' : '还没有采集数据，点「立即采集」')}
                     </td></tr>
                   )}

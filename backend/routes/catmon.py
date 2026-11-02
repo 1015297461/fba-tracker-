@@ -21,7 +21,9 @@ import time
 from urllib.parse import urlparse, parse_qs
 
 from ..utils import _extract_token, _now_iso, _log
+from .. import asin_meta
 from .. import catmon_fetcher
+from .. import sprite_fetch
 
 # 同一 target 同时只允许一个采集任务（模块级，单进程有效）
 _running = set()
@@ -305,8 +307,72 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             return
         lt = (q.get("listType") or ["bestsellers"])[0]
         date = (q.get("date") or [None])[0]
-        self._send_json(200, {"snapshot": state.list_catmon_snapshot(tid, lt, date)})
+        snap = state.list_catmon_snapshot(tid, lt, date)
+        # 上架时间来自全局属性表（按 ASIN，与快照日期无关）；顺带把品牌补上
+        if snap and snap.get("items"):
+            try:
+                meta = asin_meta.get_meta(state, [it.get("asin") for it in snap["items"]])
+                for it in snap["items"]:
+                    m = meta.get(str(it.get("asin") or "").upper()) or {}
+                    it["firstAvailable"] = m.get("first_available_day") or None
+            except Exception as e:
+                _log(f"[catmon] 合并上架时间失败：{type(e).__name__}: {e}")
+        self._send_json(200, {"snapshot": snap})
     GET["/api/catmon/snapshot"] = get_snapshot
+
+    # ---- 补齐上架时间（卖家精灵通道） ----
+
+    def post_fill_dates(self):
+        """给指定快照里缺上架时间的 ASIN 补数据。
+
+        取数来源由 `backend/asin_meta.py` 的 SOURCES 开关决定（当前只有 sprite）。
+        """
+        if not _verify(self):
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        tid = (payload.get("targetId") or "").strip()
+        lt = (payload.get("listType") or "bestsellers").strip()
+        date = payload.get("date") or None
+        if not tid:
+            self._send_json(400, {"error": "targetId required"})
+            return
+        snap = state.list_catmon_snapshot(tid, lt, date)
+        items = (snap or {}).get("items") or []
+        if not items:
+            self._send_json(200, {"ok": True, "asked": 0, "fetched": 0, "covered": 0,
+                                  "sources": {}, "note": "该快照没有数据"})
+            return
+        asins = [it.get("asin") for it in items if it.get("asin")]
+        try:
+            res = asin_meta.ensure(state, asins)
+        except Exception as e:
+            _log(f"[catmon] 补齐上架时间失败：{type(e).__name__}: {e}")
+            self._send_json(500, {"error": f"{type(e).__name__}: {e}"[:200]})
+            return
+        self._send_json(200, {
+            "ok": True,
+            "asked": res.get("asked", 0),
+            "toFetch": res.get("to_fetch", 0),
+            "fetched": res.get("fetched", 0),
+            "covered": res.get("covered", 0),
+            "sources": res.get("sources", {}),
+            "dates": res.get("dates", {}),
+        })
+    POST["/api/catmon/asin-dates/fill"] = post_fill_dates
+
+    def get_sprite_status(self):
+        """诊断用：专用浏览器是否在跑、登录态是否有效。"""
+        if not _verify(self):
+            return
+        try:
+            st = sprite_fetch.status()
+        except Exception as e:
+            st = {"running": False, "logged_in": False, "error": f"{type(e).__name__}: {e}"}
+        st["sources"] = asin_meta.enabled_sources()
+        self._send_json(200, st)
+    GET["/api/catmon/sprite/status"] = get_sprite_status
 
     def get_snapshots(self):
         """历史快照日期列表（供「榜单列表」选择历史快照）。"""
