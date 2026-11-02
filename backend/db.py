@@ -2555,6 +2555,9 @@ class DbState:
         "default_competitor_n": "10",
         # 爬虫抓搜索页的默认页数（每页 48 条，5 页 = 240 位是安全上限）
         "scrape_pages": "3",
+        # 「我的 ASIN」列表（JSON 数组字符串，最多 5 个）；前台实测表里高亮、
+        # 没抓到的在表格下方以「—」占位显示。
+        "my_asins": "[]",
     }
 
     def get_rmon_settings(self) -> dict:

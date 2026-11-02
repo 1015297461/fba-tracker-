@@ -446,6 +446,13 @@ data/                          # 运行时数据（.gitignore 忽略，不进 gi
 
 ### 排名监测（`rank_monitor.py`）
 
+- **「我的 ASIN」（2026-11-02）**：A · 前台实测表格里高亮自己的商品，最多 **5 个**。
+  存 `rmon_settings.my_asins`（JSON 数组字符串，白名单键在 `DbState.RMON_DEFAULT_SETTINGS`），
+  走既有的 `GET/PUT /api/rank/settings`（PUT 里校验 10 位 ASIN 格式 + 去重 + ≤5，超了直接 400）。
+  前端 `MyAsinsEditor`（A 区头部，chips + 弹层输入，空格/逗号分隔自动识别）→ 保存即写库，
+  失败回滚。命中行沿用既有 `.rk-mine` 高亮 + `我` 标签；**没抓到的**在表格下方 `.rk-my-miss`
+  区块以 `—` 占位列出（避免"以为没设上"）。历史单值 `ownAsin`（每次查询带的那一个）仍兼容，
+  与列表合并成集合判定。
 - **ASIN 点击**：`RankMonitor.tsx` 的 `AsinPeek` 现在复用「产品采集」的 `ProductDetailDialog`
   （走 `/api/catmon/detail?asin=&marketplace=US`，带 10 分钟内存缓存 + `refresh=1` 重试），不再直接跳 Amazon。
 

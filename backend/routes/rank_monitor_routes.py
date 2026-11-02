@@ -489,6 +489,26 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         if payload is None:
             return
         kw = {}
+        # 我的 ASIN（最多 5 个）：字母数字 10 位，去重保序
+        if "myAsins" in payload:
+            raw = payload.get("myAsins") or []
+            if not isinstance(raw, list):
+                self._send_json(400, {"error": "myAsins 需为数组"})
+                return
+            clean = []
+            for a in raw:
+                v = str(a or "").strip().upper()
+                if not v:
+                    continue
+                if not re.match(r"^[A-Z0-9]{10}$", v):
+                    self._send_json(400, {"error": f"ASIN 格式不对：{v}"})
+                    return
+                if v not in clean:
+                    clean.append(v)
+            if len(clean) > 5:
+                self._send_json(400, {"error": "最多 5 个 ASIN"})
+                return
+            kw["my_asins"] = json.dumps(clean)
         if "defaultCompetitorN" in payload:
             try:
                 kw["default_competitor_n"] = str(max(1, min(15, int(payload.get("defaultCompetitorN")))))

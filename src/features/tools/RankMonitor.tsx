@@ -137,6 +137,11 @@ const apiQueryStatus = (taskId: string) => api('/api/rank/query/status?taskId=' 
 const apiOrganicInKeyword = (asin: string, keyword: string) =>
   api(`/api/rank/asin-in-keyword?asin=${q(asin)}&keyword=${q(keyword)}`);
 const apiSettings = () => api('/api/rank/settings').then((d: any) => d.settings || {});
+/** 保存「我的 ASIN」（最多 5 个，后端会校验格式与数量） */
+const apiSaveMyAsins = (asins: string[]) => api('/api/rank/settings', {
+  method: 'PUT', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ myAsins: asins }),
+});
 const apiUpdateTarget = (body: any) =>
   api('/api/rank/targets/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 const apiAsinProfile = (asin: string) =>
@@ -1898,10 +1903,40 @@ function KeywordTrendCard({ keyword }: { keyword: string }) {
   );
 }
 
+/** 「我的 ASIN」编辑：最多 5 个，空格/逗号分隔，存全局设置 */
+function MyAsinsEditor({ value, onSave }: { value: string[]; onSave: (v: string[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState(value.join(' '));
+  useEffect(() => { setText(value.join(' ')); }, [value.join(' ')]);
+  const save = () => {
+    const list = Array.from(new Set((text.toUpperCase().match(/[A-Z0-9]{10}/g) || []))).slice(0, 5);
+    onSave(list);
+    setOpen(false);
+  };
+  return (
+    <span className="rk-my">
+      <span className="rk-my-tag">我的 <b>{value.length}</b>/5</span>
+      {value.map(a => <span key={a} className="rk-my-chip mono">{a}</span>)}
+      <button className="rk-ghost-btn" onClick={() => setOpen(o => !o)}>{value.length ? '编辑' : '设置'}</button>
+      {open && (
+        <span className="rk-my-pop">
+          <input autoFocus value={text} onChange={e => setText(e.target.value)}
+                 onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setOpen(false); }}
+                 placeholder="最多 5 个 ASIN，空格或逗号分隔" />
+          <button className="btn btn-sm" onClick={save}>保存</button>
+          <span className="tf-tiny">抓不到的会在表格下方以 — 显示</span>
+        </span>
+      )}
+    </span>
+  );
+}
+
 /** 前台实测榜单主体 */
-function ScrapeResult({ snap, ownAsin, history, trend, events, onPick, onDel }: {
+function ScrapeResult({ snap, ownAsin, myAsins, history, trend, events, onPick, onDel }: {
   snap: any;
   ownAsin?: string;
+  /** 「我的 ASIN」列表（最多 5 个，来自全局设置） */
+  myAsins?: string[];
   history: any[];
   trend: any;
   events: any;
@@ -1933,7 +1968,14 @@ function ScrapeResult({ snap, ownAsin, history, trend, events, onPick, onDel }: 
   }, [snap?.id]);
 
   const myAsin = (ownAsin || '').trim().toUpperCase();
-  const myHits = myAsin ? items.filter((i: any) => String(i.asin || '').toUpperCase() === myAsin) : [];
+  // 我的 ASIN：历史单值 ownAsin + 全局列表 myAsins，合并去重
+  const mineSet = new Set<string>();
+  if (myAsin) mineSet.add(myAsin);
+  for (const a of (myAsins || [])) {
+    const v = String(a || '').trim().toUpperCase();
+    if (v) mineSet.add(v);
+  }
+  const myHits = items.filter((i: any) => mineSet.has(String(i.asin || '').toUpperCase()));
   const myBestOrg = myHits.find((i: any) => !i.ad);
   const myBestAd = myHits.find((i: any) => i.ad);
 
@@ -1987,6 +2029,9 @@ function ScrapeResult({ snap, ownAsin, history, trend, events, onPick, onDel }: 
     });
   })();
   const shown = needle ? sorted : sorted.slice(0, limit);
+  // 「我的 ASIN」里没有出现在本次抓取结果中的（用于表格下方以 — 占位展示）
+  const foundSet = new Set(items.map((i: any) => String(i.asin || '').toUpperCase()));
+  const myMissing = [...mineSet].filter(a => !foundSet.has(a));
   const thSort = (key: string, label: string, cls?: string, tip?: string) => {
     const on = sort?.key === key;
     return (
@@ -2099,7 +2144,7 @@ function ScrapeResult({ snap, ownAsin, history, trend, events, onPick, onDel }: 
           </thead>
           <tbody>
             {shown.map((it: any) => {
-              const isMine = !!myAsin && String(it.asin || '').toUpperCase() === myAsin;
+              const isMine = mineSet.has(String(it.asin || '').toUpperCase());
               return (
                 <tr key={it.page + '-' + it.pos + '-' + it.asin}
                   data-ad={it.ad || undefined}
@@ -2159,6 +2204,26 @@ function ScrapeResult({ snap, ownAsin, history, trend, events, onPick, onDel }: 
         </table>
       </div>
 
+      {myMissing.length > 0 && (
+        <div className="rk-my-miss">
+          <div className="rk-my-miss-head">
+            我的 ASIN · 本次未抓到 <b>{myMissing.length}</b> 个（其余已在上表高亮）
+          </div>
+          <table className="rk-my-table">
+            <thead><tr><th>ASIN</th><th>排名</th><th>状态</th></tr></thead>
+            <tbody>
+              {myMissing.map(a => (
+                <tr key={a} className="rk-mine">
+                  <td className="mono">{a} <i className="tf-me">我的</i></td>
+                  <td>—</td>
+                  <td className="tf-note">本次抓取结果里没有</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {!needle && list.length > shown.length && (
         <div className="ai-actions">
           <button className="btn btn-sm" onClick={() => setLimit(l => l + 100)}>
@@ -2215,8 +2280,21 @@ const DownloadIcon = () => (
 export function RankMonitor() {
   // 一个输入框：10 位字母数字自动当 ASIN，其余当关键词。省掉"先选方向再输入"这一步，
   // 也避免切完 tab 还留着上一次的错误提示。
+  useEffect(() => {
+    apiSettings().then((st: any) => {
+      try { setMyAsins(JSON.parse(st.my_asins || '[]')); } catch { setMyAsins([]); }
+    }).catch(() => {});
+  }, []);
+
+  const saveMyAsins = async (list: string[]) => {
+    const prev = myAsins;
+    setMyAsins(list);
+    try { await apiSaveMyAsins(list); } catch (e: any) { setMyAsins(prev); setErr({ title: '保存失败', hint: e.message }); }
+  };
   const [input, setInput] = useState('');
   const [own, setOwn] = useState('');
+  // 「我的 ASIN」：最多 5 个，存后端设置（rmon_settings.my_asins），前台实测表里高亮
+  const [myAsins, setMyAsins] = useState<string[]>([]);
   const [forceKind, setForceKind] = useState<Kind | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<{ title: string; hint?: string; sticky?: boolean } | null>(null);
@@ -3043,6 +3121,7 @@ export function RankMonitor() {
                   {receiptA && (
                     <span className={`rk-receipt rk-receipt-${receiptA.kind}`}>{receiptA.text}</span>
                   )}
+                  <MyAsinsEditor value={myAsins} onSave={saveMyAsins} />
                   <button className="rk-ghost-btn" onClick={() => doScrape()}
                     disabled={scraping || !valid || inputDiffersFromActive}
                     title={inputDiffersFromActive
@@ -3055,7 +3134,7 @@ export function RankMonitor() {
                 </div>
               </div>
               {scrapeSnap ? (
-                <ScrapeResult snap={scrapeSnap} ownAsin={own} history={scrapeHist} trend={scrapeTrend}
+                <ScrapeResult snap={scrapeSnap} ownAsin={own} myAsins={myAsins} history={scrapeHist} trend={scrapeTrend}
                   events={scrapeEvents} onPick={pickScrapeDate} onDel={deleteCurrentScrape} />
               ) : (
                 <div className="ai-empty">
