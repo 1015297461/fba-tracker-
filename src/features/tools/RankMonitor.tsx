@@ -7,6 +7,7 @@ import { toScrapedProduct } from './CategoryMonitor';
 import { useColResize } from './colResize';
 import { groupsApi, groupItems } from './recordGroups';
 import type { RecGroup, RecMember, RecGroupsPayload } from './recordGroups';
+import { NameDialog, MoveDialog } from './RecordGroupDialogs';
 import { DateCalendar } from './DateCalendar';
 import type { CatDetail } from './CategoryMonitor';
 import {
@@ -2387,8 +2388,8 @@ export function RankMonitor() {
   const toggleCollapse = async (g: RecGroup) => {
     applyGroups(await gapi.update(g.id, { collapsed: !g.collapsed }));
   };
-  const submitName = async () => {
-    const name = nameDraft.trim();
+  const submitName = async (nameArg?: string) => {
+    const name = (nameArg ?? nameDraft).trim();
     if (!name) return;
     try {
       if (pop === 'rename' && renameId) {
@@ -2890,6 +2891,9 @@ export function RankMonitor() {
   // 套用自定义顺序：没在顺序表里的新记录排最前（保持按时间倒序），已排序的按保存位置
   // 分类分组视图：分类顺序与组内顺序都来自后端，未分类固定最后
   const recBuckets = groupItems(records, (r: any) => String(r.key), groups, members);
+  // 每个分类当前条数（移动弹窗展示用）
+  const grpCounts: Record<string, number> = {};
+  recBuckets.forEach(b => { if (b.group) grpCounts[b.group.id] = b.items.length; });
 
   const onRecDragEnd = (e: DragEndEvent) => {
     const { active, over } = e;
@@ -3184,30 +3188,16 @@ export function RankMonitor() {
             </div>
           )}
 
-          {pop === 'move' && (
-            <div className="rk-pop">
-              <div className="rk-pop-ttl">移动到</div>
-              {groups.map(g => (
-                <div key={g.id} className="rk-pop-opt" onClick={() => movePicked(g.id)}>{g.name}</div>
-              ))}
-              <div className="rk-pop-opt" onClick={() => movePicked(null)}>移出分类（未分类）</div>
-              <div className="rk-pop-opt new"
-                   onClick={() => { setNameDraft(''); setRenameId(null); setPop('newAndMove'); }}>+ 新建分类并移入</div>
-            </div>
-          )}
-          {(pop === 'new' || pop === 'newAndMove' || pop === 'rename') && (
-            <div className="rk-pop rk-pop-form">
-              <div className="rk-pop-ttl">{pop === 'rename' ? '重命名分类' : '新建分类'}</div>
-              <input autoFocus value={nameDraft}
-                     onChange={e => setNameDraft(e.target.value)}
-                     onKeyDown={e => { if (e.key === 'Enter') submitName(); if (e.key === 'Escape') setPop(''); }}
-                     placeholder="分类名称，如「风扇相关词」" maxLength={20} />
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 8 }}>
-                <button className="rk-ghost-btn" onClick={() => setPop('')}>取消</button>
-                <button className="btn btn-sm" onClick={submitName}>确定</button>
-              </div>
-            </div>
-          )}
+          <MoveDialog open={pop === 'move'} count={picked.size} groups={groups} counts={grpCounts}
+                      onPick={gid => movePicked(gid)}
+                      onNew={() => { setNameDraft(''); setRenameId(null); setPop('newAndMove'); }}
+                      onClose={() => setPop('')} />
+          <NameDialog open={pop === 'new' || pop === 'newAndMove' || pop === 'rename'}
+                      title={pop === 'rename' ? '重命名分类' : '新建分类'}
+                      sub={pop === 'newAndMove' && picked.size ? `${picked.size} 项将移入新分类` : undefined}
+                      defaultValue={pop === 'rename' ? nameDraft : ''}
+                      onOk={(n: string) => submitName(n)}
+                      onClose={() => setPop('')} />
         </div>
 
       </div>

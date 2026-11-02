@@ -7,6 +7,7 @@ import { useColResize } from './colResize';
 import { DateCalendar } from './DateCalendar';
 import { groupsApi, groupItems, moveBefore } from './recordGroups';
 import type { RecGroup, RecMember, RecGroupsPayload } from './recordGroups';
+import { NameDialog, MoveDialog } from './RecordGroupDialogs';
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -223,8 +224,8 @@ export function CategoryMonitor() {
   const toggleCollapse = async (g: RecGroup) => {
     applyGroups(await gapi.update(g.id, { collapsed: !g.collapsed }));
   };
-  const submitName = async () => {
-    const name = nameDraft.trim();
+  const submitName = async (nameArg?: string) => {
+    const name = (nameArg ?? nameDraft).trim();
     if (!name) return;
     try {
       if (pop === 'rename' && renameId) {
@@ -257,6 +258,12 @@ export function CategoryMonitor() {
   const buckets = useMemo(
     () => groupItems(targets, t => t.id, groups, members),
     [targets, groups, members]);
+  // 每个分类当前条数（移动弹窗里展示用）
+  const grpCounts = useMemo(() => {
+    const m: Record<string, number> = {};
+    buckets.forEach(b => { if (b.group) m[b.group.id] = b.items.length; });
+    return m;
+  }, [buckets]);
 
   /** 组内拖拽排序；若拖拽源不在本组，则视为「移入本组」 */
   const dropOnCard = async (taskId: string, bucket: CatTarget[], gid: string | null) => {
@@ -671,30 +678,16 @@ export function CategoryMonitor() {
           </div>
         )}
 
-        {pop === 'move' && (
-          <div className="cm-pop">
-            <div className="cm-pop-ttl">移动到</div>
-            {groups.map(g => (
-              <div key={g.id} className="cm-pop-opt" onClick={() => movePicked(g.id)}>{g.name}</div>
-            ))}
-            <div className="cm-pop-opt" onClick={() => movePicked(null)}>移出分类（未分类）</div>
-            <div className="cm-pop-opt new" onClick={() => { setNameDraft(''); setRenameId(null); setPop('newAndMove'); }}>+ 新建分类并移入</div>
-          </div>
-        )}
-        {(pop === 'new' || pop === 'newAndMove' || pop === 'rename') && (
-          <div className="cm-pop cm-pop-form">
-            <div className="cm-pop-ttl">{pop === 'rename' ? '重命名分类' : '新建分类'}</div>
-            <input className="cm-input" autoFocus value={nameDraft}
-                   onChange={e => setNameDraft(e.target.value)}
-                   onKeyDown={e => { if (e.key === 'Enter') submitName(); if (e.key === 'Escape') setPop(''); }}
-                   placeholder="分类名称，如「风扇类」" maxLength={20} />
-            <div className="cm-pop-row">
-              <button className="cm-ghost" onClick={() => setPop('')}>取消</button>
-              <button className="cm-btn" style={{ marginTop: 0, padding: '5px 12px' }}
-                      onClick={submitName}>确定</button>
-            </div>
-          </div>
-        )}
+        <MoveDialog open={pop === 'move'} count={picked.size} groups={groups} counts={grpCounts}
+                    onPick={gid => movePicked(gid)}
+                    onNew={() => { setNameDraft(''); setRenameId(null); setPop('newAndMove'); }}
+                    onClose={() => setPop('')} />
+        <NameDialog open={pop === 'new' || pop === 'newAndMove' || pop === 'rename'}
+                    title={pop === 'rename' ? '重命名分类' : '新建分类'}
+                    sub={pop === 'newAndMove' && picked.size ? `${picked.size} 项将移入新分类` : undefined}
+                    defaultValue={pop === 'rename' ? nameDraft : ''}
+                    onOk={n => submitName(n)}
+                    onClose={() => setPop('')} />
       </aside>
 
       {/* ===== 右栏 ===== */}
@@ -1555,15 +1548,6 @@ const CSS = `
   box-shadow:var(--shadow-md);font-size:11.5px;color:var(--ink-2);}
 .cm-pickbar b{color:var(--blue);}
 .cm-pickbar .cm-ghost{padding:4px 8px;font-size:11.5px;}
-/* 弹层 */
-.cm-pop{position:absolute;left:12px;right:12px;bottom:52px;z-index:30;background:var(--card-bg);
-  border:1px solid var(--border-strong);border-radius:10px;box-shadow:var(--shadow-md);padding:6px;}
-.cm-pop-ttl{font-size:10.5px;color:var(--ink-4);padding:4px 8px;}
-.cm-pop-opt{padding:6px 8px;border-radius:6px;font-size:12px;color:var(--ink-2);cursor:pointer;}
-.cm-pop-opt:hover{background:var(--bg-2);}
-.cm-pop-opt.new{color:var(--green);border-top:1px solid var(--border);margin-top:4px;padding-top:8px;border-radius:0 0 6px 6px;}
-.cm-pop-form{padding:8px;}
-.cm-pop-row{display:flex;justify-content:flex-end;gap:6px;margin-top:8px;}
 
 .cm-sub b{color:var(--ink);}
 .cm-list{display:flex;flex-direction:column;gap:8px;}
