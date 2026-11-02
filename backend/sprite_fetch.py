@@ -21,6 +21,12 @@
 profile 存 `data/sprite-profile/`。登录一次后长期有效；**退出时走 CDP 的
 `Browser.close` 优雅关闭**，让 cookie 落盘（强杀进程会丢登录态，踩过）。
 若检测到停在登录页，返回 `need_login`，不抛异常。
+
+窗口可见性
+----------
+因为每次取完就关（保住 cookie），下次必然要重新拉起进程。**默认用 `--headless=new`
+无头启动，屏幕上不会有任何弹窗**；只有当检测到未登录（profile 里没有有效 cookie）时，
+才关掉无头实例、改用可见窗口重新拉起，让用户登录。
 """
 
 import json
@@ -109,11 +115,33 @@ def _is_login_page(tab):
     return ("/login" in u) or ("/w/user" in u) or (not u)
 
 
-def _launch_chrome():
+def _is_auth_error(err):
+    """接口层判断登录态：比猜 URL 可靠（登录后跳到 /w/user 也不会误判）。"""
+    e = str(err or "")
+    if e in ("http_401", "http_403"):
+        return True
+    up = e.upper()
+    return ("LOGIN" in up) or ("AUTH" in up) or ("NOT_SIGN" in up) or ("UNSIGN" in up)
+
+
+def _clear_stale_locks():
+    """清掉上次异常退出遗留的 profile 锁，否则新进程会弹「配置文件正在使用」对话框。"""
+    for n in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        p = os.path.join(PROFILE_DIR, n)
+        try:
+            if os.path.islink(p) or os.path.exists(p):
+                os.unlink(p)
+        except Exception:
+            pass
+
+
+def _launch_chrome(headless=True):
     chrome = _chrome_bin()
     if not chrome:
         return False, "chrome_not_found"
     os.makedirs(PROFILE_DIR, exist_ok=True)
+    if not _alive():
+        _clear_stale_locks()
     cmd = [
         chrome,
         "--no-sandbox",            # 后端在受限环境里跑时，Chrome 自带沙箱会起不来
@@ -123,8 +151,12 @@ def _launch_chrome():
         "--no-first-run",
         "--no-default-browser-check",
         "--window-size=1400,900",
-        ENTRY_URL,
     ]
+    if headless:
+        # 无头：屏幕上不出现任何窗口/弹窗，cookie 与登录态照常走同一 profile
+        cmd += ["--headless=new", "--hide-scrollbars", "--mute-audio",
+                "--disable-features=Translate"]
+    cmd.append(ENTRY_URL)
     try:
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          stdin=subprocess.DEVNULL, start_new_session=True)
@@ -134,16 +166,32 @@ def _launch_chrome():
     while time.time() < deadline:
         if _alive():
             time.sleep(1.5)          # 给页面一点加载时间
-            return True, "started"
+            return True, ("started_headless" if headless else "started_headed")
         time.sleep(0.5)
     return False, "cdp_timeout"
 
 
-def _ensure_browser():
+def _ensure_browser(headless=True):
     """返回 (ok, detail)。已开则复用。"""
     if _alive():
         return True, "reused"
-    return _launch_chrome()
+    return _launch_chrome(headless=headless)
+
+
+def _logged_in_tab(timeout=12):
+    """等出现「已登录」的 sellersprite 页。
+
+    headless 冷启动时页面可能还停在 about:blank/加载中，此时不能直接判成"未登录"
+    （误判会白白弹出可见窗口）。所以轮询到超时为止。
+    """
+    deadline = time.time() + timeout
+    while True:
+        tab = _page()
+        if tab and not _is_login_page(tab):
+            return tab, True
+        if time.time() >= deadline:
+            return tab, False
+        time.sleep(0.8)
 
 
 def _ws_call(tab_id, expression):
@@ -241,20 +289,21 @@ def fetch_dates(asins, country="US", close_browser=True):
         return {}, {"status": "no_asins", "asked": 0}
 
     with _run_lock:
-        ok, detail = _ensure_browser()
+        ok, detail = _ensure_browser(headless=True)   # 默认无头，界面上不会有弹窗
         if not ok:
             _log(f"[sprite] 浏览器不可用：{detail}")
             return {}, {"status": detail, "asked": len(uniq)}
 
         tab = _page()
         if not tab:
+            # 页面还没加载出来（headless 冷启动），再等一会
+            tab, _ = _logged_in_tab(timeout=10)
+        if not tab:
             _log("[sprite] 没有可用的 sellersprite 标签页")
             return {}, {"status": "no_tab", "asked": len(uniq)}
-        if _is_login_page(tab):
-            _log("[sprite] 需要登录：请在专用窗口登录一次（data/sprite-profile）")
-            return {}, {"status": "need_login", "asked": len(uniq)}
 
         result, info = {}, {"asked": len(uniq), "batches": 0, "errors": []}
+        auth_failed = False
         try:
             for i in range(0, len(uniq), BATCH_SIZE):
                 chunk = uniq[i:i + BATCH_SIZE]
@@ -272,17 +321,40 @@ def fetch_dates(asins, country="US", close_browser=True):
                     info["errors"].append("bad_payload")
                     continue
                 if payload.get("error"):
+                    if _is_auth_error(payload["error"]):
+                        auth_failed = True
+                        break
                     info["errors"].append(payload["error"])
                     continue
                 for a, d in (payload.get("dates") or {}).items():
                     if d:
                         result[a] = d
         finally:
-            # 只有真取到数据才关浏览器；登录页/失败时**保持窗口开着**，否则用户没法登录
+            # 只有真取到数据才关浏览器；失败/需登录时**保持窗口开着**，否则用户没法登录
             if close_browser and result:
                 close_browser_gracefully()
+            elif auth_failed:
+                # 唯一需要"看得见窗口"的场景：profile 里登录态失效。
+                # 关掉无头实例，换有头窗口弹出，让用户登录；此时不关窗口。
+                _log("[sprite] 登录态失效，切换为可见窗口等待登录（profile: data/sprite-profile）")
+                close_browser_gracefully()
+                time.sleep(1.2)
+                ok2, detail2 = _launch_chrome(headless=False)
+                info["headed"] = ok2
+                info["detail"] = detail2
 
-        info["status"] = "ok" if result else ("empty" if not info["errors"] else "error")
+        # 兜底：接口没给认证错误、但一条都没取到、且页面确实停在登录页 —— 也算需要登录
+        if not auth_failed and not result and _is_login_page(_page()):
+            auth_failed = True
+            _log("[sprite] 页面停在登录页且取不到数据，切换为可见窗口等待登录")
+            close_browser_gracefully()
+            time.sleep(1.2)
+            _launch_chrome(headless=False)
+
+        if auth_failed:
+            info["status"] = "need_login"
+        else:
+            info["status"] = "ok" if result else ("empty" if not info["errors"] else "error")
         info["got"] = len(result)
         _log(f"[sprite] 取上架时间：{info['got']}/{info['asked']} 个"
              f"，{info['batches']} 批" + (f"，异常 {info['errors']}" if info["errors"] else ""))
