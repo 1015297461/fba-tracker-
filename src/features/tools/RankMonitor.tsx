@@ -208,12 +208,12 @@ const apiScrapeEvents = (keyword: string, prev?: string, curr?: string) =>
   api(`/api/rank/scrape/events?keyword=${q(keyword)}&country=${SCRAPE_MARKET}`
     + (prev ? `&prev=${encodeURIComponent(prev)}` : '')
     + (curr ? `&curr=${encodeURIComponent(curr)}` : ''));
-/** ASIN 静态属性（上架日期/品牌）：优先用该词竞品榜的上架天数（覆盖率 100%），
- *  缓存按 ASIN 永久保存；两者都没有才去问 asin_profile 兜底 */
-const apiScrapeMeta = (asins: string[], keyword?: string) =>
+/** ASIN 静态属性（上架日期/品牌）：走卖家精灵（与类目榜单监控同一通道），
+ *  按 ASIN 永久缓存；`retry=true` 会把之前"查过但没有"的再问一次（手动补齐用） */
+const apiScrapeMeta = (asins: string[], keyword?: string, retry = false) =>
   api('/api/rank/scrape/meta', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ asins, country: SCRAPE_MARKET, keyword }),
+    body: JSON.stringify({ asins, country: SCRAPE_MARKET, keyword, retry }),
   });
 /** 检查留痕：点过「获取最新数据」但内容没变的那几次（A/B 各自一套） */
 const apiChecks = (source: 'scrape' | 'sif', keyword: string) =>
@@ -1761,11 +1761,12 @@ function daysOnline(day?: string | null): number | null {
 function dateTip(m: any): string {
   if (!m) return '还没有这条 ASIN 的上架记录';
   if (!m.first_available_day) {
-    return 'SIF 没有这个 ASIN 的上架日期（asin 档案里多数为空，且该词竞品榜里也没有它）';
+    return '卖家精灵没有这个 ASIN 的上架日期（点榜单上方「补齐上架时间」可重试一次）';
   }
   const d = daysOnline(m.first_available_day);
   const brand = m.brand ? ` · 品牌 ${m.brand}` : '';
-  const src = m.src === 'age' ? '（由 SIF 上架天数换算，可能差 1 天）' : '';
+  // 历史数据可能是早期 SIF「上架天数倒算」写入的，日期会差几天
+  const src = m.src === 'age' ? '（历史数据：由 SIF 上架天数换算，可能差 1 天）' : '';
   return (d == null ? `上架 ${m.first_available_day}${brand}` : `上架 ${d} 天${brand}`) + src;
 }
 
@@ -1954,6 +1955,7 @@ function ScrapeResult({ snap, ownAsin, myAsins, history, trend, events, onPick, 
   // 命中缓存不再调用；所以打开多少次都只付一次成本）
   const [meta, setMeta] = useState<Record<string, any>>({});
   const [metaBusy, setMetaBusy] = useState(false);
+  const [dateBusy, setDateBusy] = useState(false);
   useEffect(() => {
     const asins = Array.from(new Set(items.map((i: any) => String(i.asin || '').toUpperCase())))
       .filter(Boolean);
@@ -1966,6 +1968,18 @@ function ScrapeResult({ snap, ownAsin, myAsins, history, trend, events, onPick, 
       .finally(() => setMetaBusy(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snap?.id]);
+
+  /** 手动补齐上架时间：把本榜全部 ASIN 发给后端，负缓存超期或缺失的会重取一次 */
+  const refillDates = async () => {
+    const asins = Array.from(new Set(items.map((i: any) => String(i.asin || '').toUpperCase()))).filter(Boolean);
+    if (!asins.length) return;
+    setDateBusy(true);
+    try {
+      const d = await apiScrapeMeta(asins, snap?.keyword || data.keyword, true);
+      setMeta(d.meta || {});
+    } catch { /* 失败就保持原样，不打断浏览 */ }
+    finally { setDateBusy(false); }
+  };
 
   const myAsin = (ownAsin || '').trim().toUpperCase();
   // 我的 ASIN：历史单值 ownAsin + 全局列表 myAsins，合并去重
@@ -2116,6 +2130,10 @@ function ScrapeResult({ snap, ownAsin, myAsins, history, trend, events, onPick, 
         <span className="tf-tiny" style={{ marginLeft: 'auto' }}>
           {needle ? `匹配 ${list.length} / ${baseList.length} 条` : `共 ${list.length} 条，显示前 ${shown.length} 条`}
         </span>
+        <button className="rk-ghost-btn" onClick={refillDates} disabled={dateBusy}
+                title="用卖家精灵补齐本榜缺失的上架时间（已取过的不再重复取）">
+          {dateBusy ? '补齐中…' : '补齐上架时间'}
+        </button>
         <button className="rk-ghost-btn" onClick={() => exportSrpCsv(snap, meta)} title="导出当前实测榜单 CSV">
           <DownloadIcon />
           导出 CSV

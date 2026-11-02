@@ -609,6 +609,29 @@ class RankMonitorWorker(threading.Thread):
         except Exception as e:
             _log(f"[rank-monitor] 趋势刷新失败「{kw}」: {str(e)[:120]}")
 
+    def _kick_asin_dates(self, res: dict):
+        """抓完后**在后台**补这批 ASIN 的上架时间（卖家精灵通道），不阻塞定时任务。
+
+        上架时间不会变、按 ASIN 永久缓存，所以日常只有几个新面孔要取；
+        已全有缓存时连浏览器都不会启动。
+        """
+        asins = [str(i.get("asin") or "").upper()
+                 for i in (res.get("items") or []) if i.get("asin")]
+        asins = list(dict.fromkeys(asins))
+        if not asins:
+            return
+
+        def _worker():
+            try:
+                from . import asin_meta
+                r = asin_meta.ensure(self.state, asins, max_new=len(asins))
+                _log(f"[srp] 自动补上架时间：覆盖 {r.get('covered')}/{r.get('asked')}"
+                     f"，本次新取 {r.get('fetched')}，来源 {r.get('sources') or '缓存'}")
+            except Exception as e:
+                _log(f"[srp] 自动补上架时间失败：{type(e).__name__}: {e}")
+
+        threading.Thread(target=_worker, daemon=True, name="SrpAsinDates").start()
+
     def _run_srp_target(self, t: dict):
         """抓一个词的搜索页榜单并落库。
 
@@ -639,6 +662,8 @@ class RankMonitorWorker(threading.Thread):
             if res.get("ok"):
                 # 定时抓完顺手刷趋势，避免「定时跑了但趋势还是旧的」
                 self._refresh_trend(kw, country)
+                # 抓完在后台补上架时间（卖家精灵），不阻塞定时任务
+                self._kick_asin_dates(res)
         except Exception as e:
             _log(f"[srp] 定时抓取异常「{kw}」: {str(e)[:120]}")
             self.state.mark_srp_target_run(t["id"], "failed", f"{type(e).__name__}: {e}")
@@ -1095,15 +1120,21 @@ def _age_days_map(state, keyword: str, country: str = "US") -> dict:
 
 
 def enrich_asin_meta(state, asins: list, country: str = "US", limit: int = 200,
-                     keyword: str = None) -> dict:
-    """补齐 ASIN 的上架日期。三路取数，按可靠性从高到低：
+                     keyword: str = None, retry_days: int = 0) -> dict:
+    """补齐 ASIN 的上架日期。
 
-      1. `rmon_asin_meta` 缓存（查到过就不再问）
-      2. 该词 SIF 竞品榜的 `listed_age_days`（覆盖率 100%，零额外调用）
-      3. `market_get_asin_profile` 的 `first_available_day`（覆盖率很低，只兜底）
+    **2026-11-02 起统一走卖家精灵**（`asin_meta.SOURCES = ["sprite"]`），与「类目榜单监控」
+    同一套口径、同一张全局属性表 `rmon_asin_meta`。
 
-    返回 {"meta": {ASIN: {...}}, "asked": 实际问 SIF 的个数, "calls": 调用次数}
+    历史说明：此前主通道是 SIF 竞品榜的 `listed_age_days`（上架天数倒算），
+    覆盖率虽 100%，但日期是「今天 − 天数」算出来的、且与卖家精灵实测日期有偏差；
+    现在改为取真实日期，并把来源不是 sprite 的旧记录重取一遍（`prefer_src`），
+    重取后 `src` 变 `sprite`，之后不再重复取。
+
+    返回值保持老结构，前端不用改：{"meta", "asked", "calls", "fromRank"}。
     """
+    from . import asin_meta
+
     keys = []
     for a in asins or []:
         k = str(a or "").upper()
@@ -1111,51 +1142,26 @@ def enrich_asin_meta(state, asins: list, country: str = "US", limit: int = 200,
             keys.append(k)
     keys = keys[:max(1, limit)]
     if not keys:
-        return {"meta": {}, "asked": 0, "calls": 0}
+        return {"meta": {}, "asked": 0, "calls": 0, "fromRank": 0}
+
+    prev = state.get_rmon_asin_meta(keys)
+
+    try:
+        res = asin_meta.ensure(state, keys, country, max_new=len(keys),
+                               retry_days=retry_days,
+                               prefer_src=tuple(asin_meta.enabled_sources()))
+    except Exception as e:
+        _log(f"[srp-meta] 补齐上架日期失败：{type(e).__name__}: {e}")
+        return {"meta": prev, "asked": 0, "calls": 0, "fromRank": 0}
 
     cached = state.get_rmon_asin_meta(keys)
-
-    # 第 2 路：竞品榜的上架天数。**优先于缓存里的空值** —— 早期版本用 asin_profile
-    # 查询时把「没有日期」也缓存成了空串（负缓存），不覆盖的话永远补不上。
-    ages = _age_days_map(state, keyword or "", country)
-    filled = []
-    for a in keys:
-        day = ages.get(a)
-        if day and (cached.get(a) or {}).get("first_available_day") != day:
-            filled.append({"asin": a, "first_available_day": day, "src": "age",
-                           "brand": (cached.get(a) or {}).get("brand") or ""})
-    if filled:
-        state.upsert_rmon_asin_meta(filled)
-        cached = state.get_rmon_asin_meta(keys)
-
-    # 第 3 路：还没有日期的才去问 asin_profile
-    missing = [a for a in keys if not (cached.get(a) or {}).get("first_available_day")]
-    calls = 0
-    if missing:
-        fresh = []
-        for i in range(0, len(missing), 20):
-            chunk = missing[i:i + 20]
-            try:
-                rows = sf.asin_profiles(chunk, country)
-                calls += 1
-            except Exception as e:
-                _log(f"[srp-meta] 批量取 ASIN 档案失败（{len(chunk)} 个）：{e}")
-                continue
-            got = {str(r.get("asin") or "").upper(): r for r in rows}
-            for a in chunk:
-                r = got.get(a)
-                day = (r or {}).get("first_available_day") or ""
-                fresh.append({
-                    "asin": a,
-                    "first_available_day": day,
-                    "src": "asin" if day else None,   # 空值不覆盖已有的 age 来源
-                    "brand": (r or {}).get("brand") or (cached.get(a) or {}).get("brand") or "",
-                })
-        state.upsert_rmon_asin_meta(fresh)
-        cached = state.get_rmon_asin_meta(keys)
-
-    return {"meta": cached, "asked": len(missing), "calls": calls,
-            "fromRank": sum(1 for a in keys if ages.get(a))}
+    return {
+        "meta": cached,
+        "asked": res.get("to_fetch", 0),
+        "calls": res.get("fetched", 0),
+        "fromRank": 0,                       # 不再用「天数倒算」这条路
+        "sources": res.get("sources") or {},
+    }
 
 
 # ---------------------------------------------------------------------------

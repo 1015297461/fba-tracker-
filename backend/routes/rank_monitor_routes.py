@@ -1019,8 +1019,11 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             return
         country = str(payload.get("country") or "US").upper()[:4]
         keyword = str(payload.get("keyword") or "").strip() or None
+        # retry=true：手动「补齐上架时间」点的时候，把「查过但没有」的负缓存再问一次
+        retry_days = 15 if payload.get("retry") else 0
         try:
-            data = rank_monitor.enrich_asin_meta(state, asins, country, keyword=keyword)
+            data = rank_monitor.enrich_asin_meta(state, asins, country, keyword=keyword,
+                                                 retry_days=retry_days)
         except Exception as e:
             self._send_json(500, {"error": f"{type(e).__name__}: {e}"})
             return

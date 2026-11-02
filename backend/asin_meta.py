@@ -43,12 +43,15 @@ def get_meta(state, asins):
     return state.get_rmon_asin_meta(keys)
 
 
-def missing_dates(meta, asins, retry_days=0):
+def missing_dates(meta, asins, retry_days=0, prefer_src=None):
     """返回还需要去问的 ASIN（保持入参顺序、去重）。
 
     ⚠️ 负缓存语义：库里**有记录但日期为空** = 之前问过、上游确实没有。
     这类默认**不再重问**（否则每天定时任务都会把同一批老品再问一遍，
     白白启动浏览器）——只有 `retry_days>0` 且距上次超过该天数时才重试。
+
+    prefer_src：口径统一用。库里虽然有日期，但 `src` 不在这个集合里（例如早期由
+    SIF 天数倒算写入的 `age`），也算「待取」——重取一次后 src 变成当前来源，之后就跳过。
     """
     out, seen = [], set()
     for a in asins or []:
@@ -61,6 +64,8 @@ def missing_dates(meta, asins, retry_days=0):
             out.append(k)
             continue
         if rec.get("first_available_day"):   # 已有日期
+            if prefer_src and (rec.get("src") or "") not in prefer_src:
+                out.append(k)                # 来源不是当前首选 → 重取，统一口径
             continue
         if retry_days > 0 and _older_than(rec.get("fetched_at"), retry_days):
             out.append(k)
@@ -78,11 +83,12 @@ def _older_than(ts, days):
     return (time.time() - t) >= days * 86400
 
 
-def ensure(state, asins, country="US", max_new=100, retry_days=0):
+def ensure(state, asins, country="US", max_new=100, retry_days=0, prefer_src=None):
     """确保这批 ASIN 有上架时间：先读库，缺的按 SOURCES 顺序补。
 
     retry_days：负缓存（查过但没取到）多少天后重试；0 = 不重试（默认，给定时任务用）。
                 手动「补齐上架时间」会传 15，让久未重试的条目再问一次。
+    prefer_src：把「来源不是当前首选」的旧记录也重取一遍（统一口径用）。
 
     返回 {"dates": {asin: 'YYYY-MM-DD'}, "asked": n, "fetched": n, "sources": {...}}
     """
@@ -96,7 +102,8 @@ def ensure(state, asins, country="US", max_new=100, retry_days=0):
         return {"dates": {}, "asked": 0, "fetched": 0, "sources": {}}
 
     meta = get_meta(state, keys)
-    todo = missing_dates(meta, keys, retry_days=retry_days)[:max(1, int(max_new))]
+    todo = missing_dates(meta, keys, retry_days=retry_days,
+                         prefer_src=prefer_src)[:max(1, int(max_new))]
 
     info = {"asked": len(keys), "to_fetch": len(todo), "fetched": 0, "sources": {}}
     if todo:
