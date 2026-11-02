@@ -1018,6 +1018,8 @@ function TrendChart({ data, imageByAsin }: {
 interface CatMatrixRow {
   asin: string; title: string | null; image: string | null; price: number | null;
   ranks: (number | null)[]; present: number; best: number | null; last: number | null;
+  /** 上架时间 'YYYY-MM-DD'（全局 ASIN 属性表，按 ASIN 取） */
+  firstAvailable?: string | null;
 }
 interface CatMatrix { dates: string[]; rows: CatMatrixRow[]; }
 
@@ -1031,8 +1033,10 @@ function MatrixPanel({ targetId, listType, onOpen }: {
   const [to, setTo] = useState('');
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
   const [tip, setTip] = useState<{ x: number; y: number; head: string; body: string } | null>(null);
+  const [fillBusy, setFillBusy] = useState(false);
+  const [fillMsg, setFillMsg] = useState('');
   const stripIdx = useRef<number | null>(null);
-  const cols = useColResize('catmon-matrix', undefined, 9);
+  const cols = useColResize('catmon-matrix', undefined, 10);
 
   const load = useCallback(async () => {
     setLoading(true); setErr('');
@@ -1073,6 +1077,7 @@ function MatrixPanel({ targetId, listType, onOpen }: {
       case 'asin': return String(r.asin || '');
       case 'title': return String(r.title || '').toLowerCase();
       case 'price': return r.price != null ? Number(r.price) : null;
+      case 'listed': return r.firstAvailable || null;
       case 'days': return r.present;
       case 'best': return r.bestW;
       case 'last': return r.lastW;
@@ -1122,6 +1127,22 @@ function MatrixPanel({ targetId, listType, onOpen }: {
     if (y < pad) y = pad;
     setTip({ x, y, head: winDates[i], body: v == null ? '掉榜（当天不在抓取范围内）' : `自然位 #${v}` });
   };
+  /** 把当前区间内「还没有上架时间」的 ASIN 一次补齐（卖家精灵通道，取到后永久缓存） */
+  const fillMissingDates = async () => {
+    const miss = rows.filter(r => !r.firstAvailable).map(r => r.asin).filter(Boolean);
+    if (!miss.length) { setFillMsg('区间内都已有上架时间'); return; }
+    setFillBusy(true); setFillMsg('');
+    try {
+      const j = await apiSend<{ fetched: number; covered: number; asked: number; sources: Record<string, string> }>(
+        '/api/catmon/asin-dates/fill', 'POST', { targetId, listType, asins: miss });
+      const ch = Object.values(j.sources || {})[0];
+      if (ch === 'need_login') setFillMsg('需要在专用浏览器窗口登录卖家精灵，登录后再点一次');
+      else setFillMsg(`新补 ${j.fetched} 个（本区间已有 ${j.covered}/${j.asked}）`);
+      await load();
+    } catch (e: any) { setFillMsg(e.message); }
+    finally { setFillBusy(false); }
+  };
+
   const stripLeave = () => { stripIdx.current = null; setTip(null); };
 
   return (
@@ -1132,6 +1153,12 @@ function MatrixPanel({ targetId, listType, onOpen }: {
         <span className="rk-range-arrow">→</span>
         <DateCalendar value={to} dates={allDates} onChange={setTo} />
         <span className="rk-ev-count">（{winDates.length} 天）{loading ? ' 读取中…' : ''}</span>
+        <button className="cm-ghost" style={{ marginLeft: 'auto' }}
+                title="用卖家精灵补齐本区间内缺失的上架时间（补过就永久缓存，不会重复取）"
+                onClick={fillMissingDates} disabled={fillBusy || loading}>
+          {fillBusy ? '补齐中…' : '补齐上架时间'}
+        </button>
+        {fillMsg && <span className="cm-muted" style={{ fontSize: 11.5, marginLeft: 8 }}>{fillMsg}</span>}
       </div>
       {err && <div className="cm-err">{err}</div>}
       {!err && data && !rows.length && <div className="cm-muted" style={{ fontSize: 12 }}>该区间没有数据</div>}
@@ -1145,6 +1172,7 @@ function MatrixPanel({ targetId, listType, onOpen }: {
                 {th('asin', 'ASIN', 'c-asin')}
                 {th('title', '标题', 'c-title')}
                 {th('price', '价格', 'c-price')}
+                {th('listed', '上架', 'c-date', '上架时间（来源：卖家精灵）')}
                 {th('days', '出现天数', 'c-days', '区间内有数据的天数中该 ASIN 出现的天数')}
                 {th('best', '最好', 'c-num', '区间内最好自然位')}
                 {th('last', '最新', 'c-num')}
@@ -1164,6 +1192,9 @@ function MatrixPanel({ targetId, listType, onOpen }: {
                     </td>
                     <td className="c-title">{r.title ? <span className="rk-el" title={r.title}>{r.title}</span> : '—'}</td>
                     <td className="c-price mono">{r.price != null ? `$${Number(r.price).toFixed(2)}` : '—'}</td>
+                    <td className="c-date mono" title={r.firstAvailable ? `上架 ${r.firstAvailable}` : '未知（点上方「补齐上架时间」）'}>
+                      {r.firstAvailable || '—'}
+                    </td>
                     <td className="c-days mono" title={`区间内共 ${winDates.length} 天有数据`}>{r.present}/{winDates.length}</td>
                     <td className="c-num mono">
                       {r.bestW != null

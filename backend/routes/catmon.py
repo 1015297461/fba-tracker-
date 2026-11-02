@@ -68,6 +68,29 @@ def _start_run(state, target):
     return True
 
 
+def _kick_asin_dates(state, tid, asins):
+    """采集完成后**后台**补上架时间，不阻塞状态落库、也不拖慢下一次定时任务。
+
+    上架时间不会变，每个 ASIN 一辈子只查一次（`asin_meta.ensure` 先读库再补），
+    所以日常增量通常只有几个新面孔，几乎不耗时；已全有缓存时连浏览器都不会启动。
+    """
+    keys = [str(a or "").strip().upper() for a in (asins or []) if str(a or "").strip()]
+    keys = list(dict.fromkeys(keys))
+    if not keys:
+        return
+
+    def _worker():
+        try:
+            res = asin_meta.ensure(state, keys, max_new=len(keys))
+            _log(f"[catmon] 自动补上架时间 {tid}：覆盖 {res.get('covered')}/{res.get('asked')}"
+                 f"，本次新取 {res.get('fetched')}（待取 {res.get('to_fetch')}）"
+                 f"，来源 {res.get('sources') or '缓存'}")
+        except Exception as e:
+            _log(f"[catmon] 自动补上架时间失败 {tid}：{type(e).__name__}: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="CatmonAsinDates").start()
+
+
 def _run_target(state, target, ctl=None):
     tid = target["id"]
     run_id = state.add_catmon_run(tid)
@@ -77,6 +100,7 @@ def _run_target(state, target, ctl=None):
     total_pages = total_reqs = total_items = 0
     errors = []
     cancelled = False
+    run_asins = []                              # 本次采到的全部 ASIN（采集完后台补上架时间）
     try:
         for lt in (target.get("listTypes") or DEFAULT_LIST_TYPES):
             # 暂停点：只在「开始下一个榜单之前」等，绝不停在两个榜单中间，
@@ -93,6 +117,7 @@ def _run_target(state, target, ctl=None):
             if res["items"]:
                 state.save_catmon_snapshot(tid, lt, res["runDate"], res["items"], res["status"])
                 total_items += len(res["items"])
+                run_asins.extend(it.get("asin") for it in res["items"] if it.get("asin"))
             if res.get("label") and not target.get("label"):
                 state.update_catmon_target(tid, {"label": res["label"]})
                 target["label"] = res["label"]
@@ -107,6 +132,7 @@ def _run_target(state, target, ctl=None):
             state.finish_catmon_run(run_id, "cancelled", total_pages, total_reqs,
                                     total_items, "已取消")
             _log(f"[catmon] {tid} 已取消（已采集 {total_items} 条已保留）")
+            _kick_asin_dates(state, tid, run_asins)      # 已采到的照样补
             return
 
         status = "ok" if not errors else ("partial" if total_items else "error")
@@ -115,6 +141,8 @@ def _run_target(state, target, ctl=None):
         state.finish_catmon_run(run_id, status, total_pages, total_reqs, total_items, err)
         _log(f"[catmon] {target['marketplace']}/{target['nodeId']} 完成："
              f"{total_items} 条 / {total_pages} 页 / {total_reqs} 请求")
+        # 上架时间在后台补（不阻塞状态、不影响用户点「立即采集」）
+        _kick_asin_dates(state, tid, run_asins)
     except Exception as e:
         msg = f"{type(e).__name__}: {e}"
         state.set_catmon_target_status(tid, "error", msg, _now_iso(), progress="")
@@ -338,15 +366,23 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         if not tid:
             self._send_json(400, {"error": "targetId required"})
             return
-        snap = state.list_catmon_snapshot(tid, lt, date)
-        items = (snap or {}).get("items") or []
-        if not items:
-            self._send_json(200, {"ok": True, "asked": 0, "fetched": 0, "covered": 0,
-                                  "sources": {}, "note": "该快照没有数据"})
-            return
-        asins = [it.get("asin") for it in items if it.get("asin")]
+        # 两种调用方式：
+        #   ① 传 asins：补这批（矩阵页补齐区间内的全部 ASIN 用）
+        #   ② 不传：补该 target+榜单某天快照的 100 条
+        raw_asins = payload.get("asins")
+        if isinstance(raw_asins, list) and raw_asins:
+            asins = [str(a or "").strip().upper() for a in raw_asins if str(a or "").strip()]
+        else:
+            snap = state.list_catmon_snapshot(tid, lt, date)
+            items = (snap or {}).get("items") or []
+            if not items:
+                self._send_json(200, {"ok": True, "asked": 0, "fetched": 0, "covered": 0,
+                                      "sources": {}, "note": "该快照没有数据"})
+                return
+            asins = [it.get("asin") for it in items if it.get("asin")]
         try:
-            res = asin_meta.ensure(state, asins)
+            # 手动补齐：允许把「15 天前查过但没取到」的负缓存再问一次
+            res = asin_meta.ensure(state, asins, max_new=len(asins) or 1, retry_days=15)
         except Exception as e:
             _log(f"[catmon] 补齐上架时间失败：{type(e).__name__}: {e}")
             self._send_json(500, {"error": f"{type(e).__name__}: {e}"[:200]})
@@ -437,7 +473,17 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         if not tid:
             self._send_json(400, {"error": "targetId required"})
             return
-        self._send_json(200, state.list_catmon_matrix(tid, lt, start, end))
+        payload = state.list_catmon_matrix(tid, lt, start, end)
+        # 上架时间按 ASIN 从全局属性表带出（只读，不在 GET 里触发抓取，避免接口变慢）
+        if payload.get("rows"):
+            try:
+                meta = asin_meta.get_meta(state, [r.get("asin") for r in payload["rows"]])
+                for r in payload["rows"]:
+                    m = meta.get(str(r.get("asin") or "").upper()) or {}
+                    r["firstAvailable"] = m.get("first_available_day") or None
+            except Exception as e:
+                _log(f"[catmon] 矩阵合并上架时间失败：{type(e).__name__}: {e}")
+        self._send_json(200, payload)
     GET["/api/catmon/matrix"] = get_matrix
 
     def get_runs(self):

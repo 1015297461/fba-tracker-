@@ -921,6 +921,18 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
   补齐走 `POST /api/catmon/asin-dates/fill {targetId,listType,date?}` → `asin_meta.ensure()`：
   先读库 → 缺的按 `SOURCES` 顺序问（当前只有卖家精灵）→ 写库。实测一个榜单
   `asked 100 / fetched 92 / covered 100`、1.2 秒。前端按钮「补齐上架时间」在 header 右侧。
+- **上架时间自动化（2026-11-02 晚）**：
+  · **采集完自动补**：`_run_target` 收尾调 `_kick_asin_dates()` 起后台线程补本次采到的全部 ASIN，
+    **不阻塞**状态落库（主线程 0.00s 返回）。定时任务、立即采集、取消（已采部分）三条路径都覆盖。
+  · **负缓存语义**：`rmon_asin_meta` 里**有记录但日期为空** = 查过且上游确实没有 →
+    `missing_dates(retry_days=0)` 默认**不再重问**（否则每天把同一批老品重问一遍、白启浏览器）；
+    手动补齐传 `retry_days=15` 让 15 天前的负缓存重试一次。
+  · **矩阵「上架」列**：`GET /matrix` 只读合并 `firstAvailable`（不在 GET 里抓取，避免接口变慢）；
+    工具条右侧「补齐上架时间」按钮把区间内缺失的 ASIN 一次发给 `POST /asin-dates/fill {asins:[...]}`。
+    实测该 target 137 行：102 → 补齐 35 个（10 秒）→ 137/137；再点一次 `toFetch=0`、0.01 秒、不启浏览器。
+  · **两个模块取数来源不同**（易混淆）：类目榜单 = 卖家精灵（`asin_meta.SOURCES=["sprite"]`）；
+    排名监测 = **SIF**（`rank_monitor.enrich_asin_meta`：竞品榜 `listed_age_days` 天数倒算为主，
+    `market_get_asin_profile` 兜底），且排名监测**没有定时任务**、前端也还没显示上架列。
 - **暂停 / 继续（2026-10-30）**：每个 target 一个 `{"pause": Event, "cancel": Event}`（`_ctl`，`_start_run` 里创建、
   `_run_target` 的 finally 里清理）。**暂停点在「每个榜单开始之前」**（`_wait_if_paused`），
   所以绝不会停在半截榜单上、也不会重复写同日快照；暂停中的线程原地 sleep 0.5s 轮询，状态写 `paused`。
