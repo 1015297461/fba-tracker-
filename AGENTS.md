@@ -864,6 +864,10 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
   `localStorage: fba-colw-v1:<key>`。已接入 8 张表：排名监测（竞品份额榜 / ASIN 关键词 / 全部 ASIN 位次 /
   榜单异动 / 自然位列表）、类目榜单（榜单列表 / 全部 ASIN 位次 / 运行记录）。
   ⚠️ 保留 `.cw-fixed th,.cw-fixed td{width:auto!important}` 让单元格宽度让位给 `<col>`（按规范 `<col>` 本就优先，这样更稳）。
+  ⚠️ **表头 sticky 会被 `.col-rsz thead th{position:relative}` 覆盖**：`styles.css` 那条给列宽手柄定位用的规则
+  特异度是 (0,1,2)，高于 `.cm-table th`(0,1,1) → 表头滚动时跟着走。类目榜单表格已用
+  `.cm-table.col-rsz thead th{position:sticky}`(0,2,2) 压回；新增带 `col-rsz` 的表若发现表头不粘，先查这条。
+  （`sticky` 本身也是 positioned 元素，手柄绝对定位仍有参照物，两者不冲突。）
 - **「全部 ASIN 位次」矩阵（2026-10-30 起替代「变动事件」，两模块展示完全一致）**：
   · 排名监测：`build_srp_trend(all_in_range=1)`（去掉"出现≥2天"过滤）→ 区间内出现过的**全部** ASIN；
     列＝主图 / ASIN / 标题 / 价格 / **上架** / 出现天数 / 最好 / 最新 / 变化 / 趋势条。时间筛选用 `DateCalendar`。
@@ -871,6 +875,10 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
     前端 `MatrixPanel` 用同一套 `.rk-mtx` 类渲染，**列完全一致但去掉「上架」**。
   · 两模块共用的日期选择器在 `src/features/tools/DateCalendar.tsx`（类名 `rkd-*`，与既有 `SnapPicker` 的 `rk-cal-*` 隔离）。
   · 出现天数＝区间内有数据的天里该 ASIN 出现天数（`present/总数`）。
+  · **「变化」列排序按方向分组**（2026-11-02）：用**带符号**的 `delta`（尾 − 首），而不是绝对值。
+    升序 = 上升(-n，涨幅大的在前) → 持平(0) → 下降(+n)；降序反之。早先用 `Math.abs(delta)` 会把
+    涨幅 +1 和 −1 混排在一起（用户反馈「上升和下降搅在一起」）。榜单列表的「较上次」列本来就是
+    带符号排序，两处口径现已一致。
 - **表（`db.py` 的 `_init_catmon`）**：`catmon_targets / catmon_snapshots / catmon_items / catmon_runs / catmon_events`。
   一个 target 可覆盖两榜（`list_types` JSON）；保存同日快照按 `(target,list_type,run_date)` 覆盖，
   并与上一快照对比生成 `new/out/up/down` 事件（阈值 ±20）。

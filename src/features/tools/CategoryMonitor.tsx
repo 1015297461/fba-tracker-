@@ -1040,7 +1040,9 @@ function MatrixPanel({ targetId, listType, onOpen }: {
       case 'days': return r.present;
       case 'best': return r.bestW;
       case 'last': return r.lastW;
-      case 'delta': return r.delta == null ? null : Math.abs(r.delta);
+      // 用**带符号**的原始 delta（不用绝对值）：升序时「上升(-n) → 持平(0) → 下降(+n)」三段各自聚在一起，
+      // 与榜单「较上次」列的口径一致。用 Math.abs 会把 +1 和 -1 混排，正是之前的问题。
+      case 'delta': return r.delta;
       case 'trend': {
         const v = r.seq.filter((x: number | null) => x != null) as number[];
         return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
@@ -1339,7 +1341,11 @@ const CSS = `
 .cm-kpi .v{font-size:17px;font-weight:700;margin-top:3px;}
 .cm-table-wrap{border:1px solid var(--border);border-radius:10px;overflow:auto;max-height:520px;background:var(--card-bg);}
 .cm-table{width:100%;border-collapse:collapse;font-size:12.5px;table-layout:fixed;}
-.cm-table th{position:sticky;top:0;z-index:1;background:var(--card-bg);text-align:left;font-size:11px;color:var(--ink-3);font-weight:600;padding:9px 12px;border-bottom:1px solid var(--border);white-space:nowrap;}
+.cm-table thead th{position:sticky;top:0;z-index:2;background:var(--card-bg);text-align:left;font-size:11px;color:var(--ink-3);font-weight:600;padding:9px 12px;border-bottom:1px solid var(--border);white-space:nowrap;}
+/* styles.css 的 .col-rsz thead th{position:relative}（给列宽手柄定位用）特异度是 (0,1,2)，
+   会盖掉 .cm-table th(0,1,1) → 表头粘不住。这里用 (0,2,2) 明确压过它。
+   sticky 本身也是 positioned 元素，手柄的绝对定位照样有参照物。 */
+.cm-table.col-rsz thead th{position:sticky;top:0;}
 .cm-table th.cm-sort{cursor:pointer;user-select:none;}
 .cm-table th.cm-sort:hover{color:var(--ink-2);}
 .cm-table th.cm-sort-on{color:var(--blue);}
