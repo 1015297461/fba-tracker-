@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { authHeaders } from './AiAnalyze';
 import { ProductDetailDialog } from './ProductScrape';
+import { useAsinDetail } from './useAsinDetail';
 import type { ScrapedProduct } from './ProductScrape';
 import { useColResize } from './colResize';
 import { DateCalendar } from './DateCalendar';
@@ -177,8 +178,8 @@ export function CategoryMonitor() {
   const [runBusy, setRunBusy] = useState(false);
   const [fillBusy, setFillBusy] = useState(false);
   const [spriteTick, setSpriteTick] = useState(0);   // 触发状态条刷新
-  const [detail, setDetail] = useState<CatDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  // 详情按天存快照：这里只记「正在看哪个 ASIN」，取数/切日期交给 useAsinDetail
+  const [detailAsin, setDetailAsin] = useState<string | null>(null);
   const [tab, setTab] = useState<'trend' | 'events' | 'runs'>('trend');
   // 分析区（趋势图 / 位次矩阵）**自己的**榜单类型，与上方榜单列表的 tab 互不影响
   const [anaLT, setAnaLT] = useState('');
@@ -187,6 +188,7 @@ export function CategoryMonitor() {
   const pollRef = useRef<number | null>(null);
 
   const current = targets.find(t => t.id === selected) || targets[0] || null;
+  const det = useAsinDetail(detailAsin, current?.marketplace || 'US', !!detailAsin);
   // 查询记录拖拽排序
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
@@ -506,22 +508,8 @@ export function CategoryMonitor() {
     }
   };
 
-  const openDetail = async (asin: string, refresh = false) => {
-    setDetailLoading(true);
-    setDetail(null);
-    try {
-      const mk = current?.marketplace || 'US';
-      const j = await apiGet<CatDetail>(
-        `/api/catmon/detail?asin=${encodeURIComponent(asin)}&marketplace=${encodeURIComponent(mk)}${refresh ? '&refresh=1' : ''}`);
-      setDetail(j);
-    } catch (e: any) {
-      setDetail({ asin, error: e.message });
-    } finally {
-      setDetailLoading(false);
-    }
-  };
-
-  const closeDetail = () => { setDetail(null); setDetailLoading(false); };
+  const openDetail = (asin: string) => setDetailAsin(asin);
+  const closeDetail = () => setDetailAsin(null);
 
   const items = snap?.items || [];
   // ASIN → 缩略图（趋势悬浮窗用；趋势接口不返回图，从当前快照映射）
@@ -878,36 +866,54 @@ export function CategoryMonitor() {
         )}
       </section>
 
-      {/* ===== 详情弹窗：完全复用「产品采集」的 ProductDetailDialog ===== */}
-      {detailLoading && (
+      {/* ===== 详情弹窗：按天快照（一天一条，可切历史，可手动重新获取）===== */}
+      {detailAsin && det.loading && (
         <div className="modal-backdrop">
           <div className="modal ps-detail-modal" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--ink-3)' }}>
-              <span className="cm-spin" /> 正在采集详情…
+              <span className="cm-spin" /> 正在读取详情…
             </div>
           </div>
         </div>
       )}
 
-      {!detailLoading && detail && detail.error && !detail.title && (
+      {detailAsin && !det.loading && det.error && !(det.data && det.data.title) && (
         <div className="modal-backdrop" onClick={closeDetail}>
           <div className="modal" style={{ padding: 20, maxWidth: 460 }} onClick={e => e.stopPropagation()}>
-            <div style={{ fontWeight: 600, marginBottom: 8 }}>详情采集失败</div>
-            <div className="cm-err" style={{ marginBottom: 12 }}>{detail.error}</div>
-            <button className="cm-btn" style={{ marginTop: 0 }} onClick={() => openDetail(detail.asin, true)}>↻ 重试</button>
+            <div style={{ fontWeight: 600, marginBottom: 8 }}>详情读取失败</div>
+            <div className="cm-err" style={{ marginBottom: 12 }}>{det.error}</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="cm-btn" style={{ marginTop: 0 }} onClick={() => det.refresh()}>↻ 重新获取</button>
+              <button className="cm-ghost" onClick={closeDetail}>关闭</button>
+            </div>
           </div>
         </div>
       )}
 
-      {!detailLoading && detail && !(detail.error && !detail.title) && (
-        <ProductDetailDialog
-          product={toScrapedProduct(detail, current?.marketplace || 'US')}
-          open={true}
-          onClose={closeDetail}
-          taskId=""
-          onRefresh={() => openDetail(detail.asin, true)}
-        />
+      {detailAsin && det.data && !(det.error && !det.data.title) && (
+        <>
+          {det.error && (
+            <div className="cm-err" style={{ position: 'fixed', left: '50%', transform: 'translateX(-50%)',
+                                            bottom: 24, zIndex: 1200, maxWidth: 520, margin: 0 }}>
+              重新获取失败：{det.error}（当前显示的是已有快照）
+            </div>
+          )}
+          <ProductDetailDialog
+            product={toScrapedProduct(det.data, current?.marketplace || 'US')}
+            open={true}
+            onClose={closeDetail}
+            taskId=""
+            onRefresh={() => det.refresh()}
+            refreshing={det.refreshing}
+            snapDate={det.snapDate}
+            fetchedAt={det.fetchedAt}
+            snapDates={det.dates}
+            onPickDate={d => det.pickDate(d)}
+            onPickLatest={() => det.pickDate('')}
+          />
+        </>
       )}
+
     </div>
   );
 }

@@ -116,7 +116,7 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   同一套稳机制：会话预热 + 多次退避重试 + 指纹/referer 轮换 + 限速 +
                               #   验证码/Dog页/503 检测）。此前用裸 _http_get 单独抓 /dp/，Amazon 软性
                               #   限流下会稳定失败（批量却成功），故统一改为 scrape_product。
-                              #   落库缓存 TTL 24h（asin_details 表）+ 内存 600s，refresh=True 覆盖。
+                              #   按天快照 asin_detail_snapshots（一天一条，同日覆盖）+ 内存 600s。
   product_fetcher.py           # 产品详情抓取器（bs4 解析 + 反爬：会话池/令牌桶/CAPTCHA/Dog-page检测）；
                               #   ⚠️ fetch_product_page 还会识别「200 但无 id="productTitle" 的空壳/软封页」
                               #   （Amazon 对被标记会话返回的空壳中间页）→ 清 cookie + 换指纹 + 重试，
@@ -884,13 +884,24 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
   ② 浏览器不可用/没取到 → `product_fetcher.scrape_product_robust`（HTTP 完整重试预算 + 第二轮补采，与批量同款）；
   ③ `_DETAIL_FETCH_LOCK` **串行化**单条详情（连点不会打成突发并发），并做双检缓存；
   进程内存缓存 `_DETAIL_CACHE`（TTL 600s），`refresh=True` 覆盖；**默认不采集，前端点击缩略图/标题才请求**。
-- **详情落库缓存（2026-11-03）**：内存缓存只有 10 分钟，用户隔十几分钟再点同一个 ASIN 就重抓一遍
-  （实测 11:45 与 11:58 各抓一次，间隔 12.5 分钟），服务重启更是全丢。
-  现在新增 `asin_details(asin, marketplace, data, fetched_at)` 表，
-  `GET /api/catmon/detail` 的顺序是：**先查库（24h 内直接返回，约 15ms）→ 再抓 → 抓到落库**；
-  `?refresh=1` 跳过库缓存强制重抓并覆盖。两个模块（类目榜单/排名监测）共用这个接口，一起受益。
-  单条 JSON 约 15KB（含 12 张图、A+ 图、五点、规格、评论摘要），一千个 ASIN 约 15MB。
-  ⚠️ 内存那一层仍保留：同一秒内连点多个入口不会重复抓，`_DETAIL_FETCH_LOCK` 也还在。
+- **详情「按天快照」（2026-11-03，与榜单快照同一心智模型）**：
+  · 表 `asin_detail_snapshots(asin, marketplace, snap_date, data, fetched_at)`，主键
+    `(asin, marketplace, snap_date)` —— **一天最多一条，同日多次抓取覆盖只留最新**。
+  · **不再有「过期自动重抓」**：`GET /api/catmon/detail` 不传 refresh 时**只读快照**
+    （`date` 指定某天，不传取最新一天）；一条都没有（首次点开）才抓一次并落当天快照。
+    想更新只能手动「↻ 重新获取」（`?refresh=1`，抓完覆盖当天）。
+  · `GET /api/catmon/detail/dates?asin=&marketplace=` 返回有快照的日期（降序），
+    弹窗日历只点亮这些天；指定日期没快照时接口返回 **404 `no_snapshot_for_date`**，
+    绝不偷偷补一条塞进那天。
+  · **保留条数可配置**：`db.ASIN_DETAIL_KEEP = 30`（每 ASIN 最多留 30 条，写入时按日期倒序裁剪）。
+    单条约 15KB，1000 个 ASIN × 30 条 ≈ 450MB 上限，实际只受手动刷新次数影响。
+  · 前端 `src/features/tools/useAsinDetail.ts` 是共享钩子（类目榜单 / 排名监测都用它）：
+    返回 `data / snapDate / fetchedAt / dates / refresh() / pickDate()`；
+    `ProductDetailDialog` 新增 `snapDate / fetchedAt / snapDates / onPickDate / onPickLatest / refreshing`
+    等可选 props，头部显示「快照 2026-11-03（采集于 11-03 12:31）」+ 日历 + 最新 + 重新获取。
+  · ⚠️ 迁移必须放在 `_init_catmon()` 里（新表在那里建）：曾放进 `_init_db()`，
+    因「表还不存在」静默失败，旧表一直没被迁移（踩过）。
+  · ⚠️ 刷新失败时**保留当前显示的快照**（不清空），只浮一条提示——否则用户反而看不到内容。
 - **为什么「单条详情」比「批量采集」容易失败（2026-10-30 复盘）**：
   ⚠️ 两条链路**早就是同一套抓取函数**，差别不在"采集方式"，而在**机会数与时间分布**：
   批量一个 ASIN 有 4（函数内重试）× 2（失败项重试轮）= 8 次机会、跨数分钟摊开，失败还被第二轮盖过去

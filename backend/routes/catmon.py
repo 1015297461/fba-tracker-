@@ -12,7 +12,8 @@ GET    /api/catmon/snapshot?targetId=&listType=&date=   某次快照（100 条�
 GET    /api/catmon/trend?targetId=&listType=&asin=      某 ASIN 排名历史
 GET    /api/catmon/events?targetId=&days=               进出榜/升降榜
 GET    /api/catmon/runs?targetId=                       运行日志
-GET    /api/catmon/detail?asin=&marketplace=&refresh=   按需采集详情（落库缓存 24h + 内存 10min）
+GET    /api/catmon/detail?asin=&marketplace=&date=&refresh=  详情按天快照（一天一条，同日覆盖）
+GET    /api/catmon/detail/dates?asin=&marketplace=      有快照的日期列表（弹窗日历用）
 """
 
 import datetime
@@ -517,7 +518,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         self._send_json(200, {"runs": state.list_catmon_runs(tid)})
     GET["/api/catmon/runs"] = get_runs
 
-    # ---- 详情（点击才采集；先查落库缓存，refresh 强制重抓） ----
+    # ---- 详情（按天快照：一天一条，同日覆盖；打开只看快照，重抓靠手动） ----
 
     def get_detail(self):
         if not _verify(self):
@@ -525,42 +526,70 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         q = parse_qs(urlparse(self.path).query)
         asin = (q.get("asin") or [""])[0].strip().upper()
         mk = (q.get("marketplace") or ["US"])[0].strip().upper() or "US"
+        date = ((q.get("date") or [""])[0] or "").strip()[:10] or None
         refresh = (q.get("refresh") or ["0"])[0].lower() in ("1", "true", "yes")
         if not asin:
             self._send_json(400, {"error": "asin required"})
             return
-        # ① 先查**持久化缓存**（24 小时）：看过一次的商品，再点就是秒开，不再抓 Amazon。
-        #    加 ?refresh=1 才强制重抓。
-        if not refresh:
-            hit = state.get_asin_detail(asin, mk)
-            if hit and _detail_fresh(hit.get("fetched_at")):
-                self._send_json(200, dict(hit["data"], cached=True,
-                                          cachedAt=hit.get("fetched_at")))
-                return
 
-        # ② 抓（内部还有 10 分钟内存缓存 + 并发闸门）
+        def _wrap(snap, cached):
+            return dict(snap["data"], cached=cached,
+                        snapDate=snap["snap_date"], fetchedAt=snap["fetched_at"])
+
+        # ① 不刷新 → 只读快照（指定日期，或最新一天）
+        if not refresh:
+            snap = state.get_asin_detail_snapshot(asin, mk, date)
+            if snap:
+                self._send_json(200, _wrap(snap, True))
+                return
+            if date:
+                # 指定日期没有快照：明确告诉前端，别偷偷抓一条塞进那天
+                self._send_json(404, {"error": "no_snapshot_for_date", "date": date,
+                                      "asin": asin})
+                return
+            # ② 一条快照都没有（首次点开）→ 抓一次，落今天的快照
+
+        # 抓取（内部有 10 分钟内存缓存 + 并发闸门）
         try:
-            data = catmon_fetcher.fetch_detail(asin, mk, refresh=refresh)
+            data = catmon_fetcher.fetch_detail(asin, mk, refresh=True)
         except Exception as e:
             _log(f"[catmon] 详情失败 {asin}: {type(e).__name__}: {e}")
-            self._send_json(502, {"error": f"{type(e).__name__}: {e}"})
+            self._send_json(502, {"error": f"{type(e).__name__}: {e}", "asin": asin})
             return
         if data.get("error") and not data.get("title"):
             self._send_json(502, data)
             return
 
-        # ③ 抓到就落库（cached/cachedAt 是内存缓存的运行时标记，不进库）
+        # 落库：写/覆盖**当天**快照（一天最多一条，超出保留条数的自动清掉）
+        saved = None
         if data.get("title"):
             try:
                 payload = {k: v for k, v in data.items() if k not in ("cached", "cachedAt")}
-                state.save_asin_detail(asin, mk, payload)
+                saved = state.save_asin_detail_snapshot(asin, mk, payload)
             except Exception as e:
-                _log(f"[catmon] 详情缓存写入失败 {asin}: {type(e).__name__}: {e}")
+                _log(f"[catmon] 详情快照写入失败 {asin}: {type(e).__name__}: {e}")
 
-        _log(f"[catmon] 详情 {asin} {'刷新' if refresh else ''} "
-             f"{'命中缓存' if data.get('cached') else '已采集'}")
-        self._send_json(200, data)
+        body = dict(data, cached=False)
+        if saved:
+            body["snapDate"] = saved["snap_date"]
+            body["fetchedAt"] = saved["fetched_at"]
+        _log(f"[catmon] 详情 {asin} 已采集 → 快照 {saved['snap_date'] if saved else '(未落库)'}")
+        self._send_json(200, body)
     GET["/api/catmon/detail"] = get_detail
+
+    def get_detail_dates(self):
+        """某个 ASIN 有哪些日期的详情快照（给弹窗日历）。"""
+        if not _verify(self):
+            return
+        q = parse_qs(urlparse(self.path).query)
+        asin = (q.get("asin") or [""])[0].strip().upper()
+        mk = (q.get("marketplace") or ["US"])[0].strip().upper() or "US"
+        if not asin:
+            self._send_json(400, {"error": "asin required"})
+            return
+        self._send_json(200, {"asin": asin, "marketplace": mk,
+                              "dates": state.list_asin_detail_dates(asin, mk)})
+    GET["/api/catmon/detail/dates"] = get_detail_dates
 
 
 # ---------------------------------------------------------------------------

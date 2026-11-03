@@ -4410,3 +4410,8 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .sprite-note-btn:hover{background:rgba(0,0,0,.04);}
 .sprite-note-btn.ghost{border-color:var(--border-strong);color:var(--ink-3);}
 .sprite-note-btn:disabled{opacity:.55;cursor:default;}
+
+/* ---- 详情弹窗：快照时间 + 历史日期选择 ---- */
+.ps-detail-snap{font-size:11.5px;color:var(--ink-4);font-variant-numeric:tabular-nums;}
+.ps-snap-pick{display:inline-flex;align-items:center;}
+.ps-snap-pick .rkd-btn{height:28px;}

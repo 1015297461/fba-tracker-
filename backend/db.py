@@ -15,6 +15,11 @@ from .utils import _now_iso, PROJECT_ROOT, _log
 SIF_RETRY_BACKOFF_MIN = (5, 30, 120)
 SIF_MAX_RETRIES_PER_DAY = len(SIF_RETRY_BACKOFF_MIN) + 1
 
+# 每个 ASIN 保留多少条「详情快照」（一天最多一条）。
+# 改这一个数即可调整历史深度：30 条 ≈ 一个月的日更量；调大要给 data/ 留够空间
+# （单条约 15KB，1000 个 ASIN × 30 条 ≈ 450MB 上限，实际只会更少）。
+ASIN_DETAIL_KEEP = 30
+
 
 # ---------------------------------------------------------------------------
 # 货件跟踪：camelCase(接口/原项目) <-> snake_case(SQLite) 机械互转
@@ -188,16 +193,16 @@ class DbState:
                 CREATE INDEX IF NOT EXISTS idx_catmon_events
                     ON catmon_events(target_id, run_date);
 
-                -- 商品详情缓存（点「查看详情」时抓的那份，持久化）
-                -- 以前只放进程内存 + 10 分钟 TTL：隔十几分钟再看同一个 ASIN 会重抓一遍，
-                -- 服务重启更是全丢。详情是商品档案（标题/图片/五点/规格/评论摘要），
-                -- 变动很慢，落库按 ASIN 存一份即可，手动「刷新」才覆盖。
-                CREATE TABLE IF NOT EXISTS asin_details (
+                -- 商品详情「按天快照」（点「查看详情」时抓的那份）
+                -- 与榜单快照同一心智模型：一天一条，同日多次抓取只留最新；
+                -- 想看历史就选日期，想更新就手动「重新获取」——**不会自动过期重抓**。
+                CREATE TABLE IF NOT EXISTS asin_detail_snapshots (
                     asin        TEXT NOT NULL,
                     marketplace TEXT NOT NULL DEFAULT 'US',
+                    snap_date   TEXT NOT NULL,
                     data        TEXT NOT NULL,
                     fetched_at  TEXT NOT NULL,
-                    PRIMARY KEY (asin, marketplace)
+                    PRIMARY KEY (asin, marketplace, snap_date)
                 );
 
                 -- 查询记录分类（两个模块共用一套结构，靠 scope 区分）
@@ -235,6 +240,29 @@ class DbState:
                     "SELECT id FROM catmon_targets ORDER BY created_at DESC").fetchall()
                 for i, r in enumerate(rows):
                     conn.execute("UPDATE catmon_targets SET sort_order=? WHERE id=?", [i, r[0]])
+
+            # 详情缓存 → 详情「按天快照」（2026-11-03）
+            # 旧表 asin_details 是「一个 ASIN 一条、覆盖式」；改成按天存后，
+            # 把老数据按 fetched_at 的日期搬过去（一天一条），再删掉旧表。
+            # ⚠️ 必须放在这里：新表是在上面 executescript 里建的，
+            #    放进 _init_db 会因「表还不存在」而静默失败（踩过）。
+            try:
+                _has_old = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='asin_details'"
+                ).fetchone()
+                if _has_old:
+                    _old = conn.execute(
+                        "SELECT asin, marketplace, data, fetched_at FROM asin_details").fetchall()
+                    for r in _old:
+                        _a, _mk, _d, _ts = r[0], r[1], r[2], r[3] or _now_iso()
+                        conn.execute(
+                            "INSERT OR IGNORE INTO asin_detail_snapshots "
+                            "(asin, marketplace, snap_date, data, fetched_at) VALUES (?,?,?,?,?)",
+                            [_a, _mk, str(_ts)[:10], _d, _ts])
+                    conn.execute("DROP TABLE asin_details")
+                    _log(f"[db] 详情缓存已迁移为按天快照：{len(_old)} 条")
+            except Exception as e:
+                _log(f"[db] 详情快照迁移跳过：{type(e).__name__}: {e}")
 
     def _row_to_catmon_target(self, row):
         try:
@@ -763,48 +791,88 @@ class DbState:
                 conn.commit()
 
     # ------------------------------------------------------------------
-    # 商品详情缓存（点「查看详情」抓的那份，持久化；键 = asin + marketplace）
+    # 商品详情「按天快照」（键 = asin + marketplace + 日期）
+    #   · 一天最多一条；同日多次抓取用 ON CONFLICT 覆盖 → 只留最新
+    #   · 打开弹窗只看最新快照，**不会自动重抓**；要新的就手动「重新获取」
     # ------------------------------------------------------------------
-    def get_asin_detail(self, asin, marketplace="US"):
-        """返回 {"data": {...}, "fetched_at": "..."}；没缓存返回 None。"""
+    def get_asin_detail_snapshot(self, asin, marketplace="US", date=None):
+        """date 为空取最新一天。返回 {snap_date, data, fetched_at}；没有返回 None。"""
         a = str(asin or "").strip().upper()
         mk = str(marketplace or "US").strip().upper()
         if not a:
             return None
         with self._conn() as conn:
-            row = conn.execute(
-                "SELECT data, fetched_at FROM asin_details WHERE asin=? AND marketplace=?",
-                [a, mk]).fetchone()
+            if date:
+                row = conn.execute(
+                    "SELECT snap_date, data, fetched_at FROM asin_detail_snapshots "
+                    "WHERE asin=? AND marketplace=? AND snap_date=?",
+                    [a, mk, str(date)[:10]]).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT snap_date, data, fetched_at FROM asin_detail_snapshots "
+                    "WHERE asin=? AND marketplace=? ORDER BY snap_date DESC LIMIT 1",
+                    [a, mk]).fetchone()
         if not row:
             return None
         try:
             d = json.loads(row["data"] or "{}")
         except Exception:
             return None
-        return {"data": d, "fetched_at": row["fetched_at"]}
+        return {"snap_date": row["snap_date"], "data": d, "fetched_at": row["fetched_at"]}
 
-    def save_asin_detail(self, asin, marketplace, data):
+    def save_asin_detail_snapshot(self, asin, marketplace, data,
+                                  snap_date=None, keep=None):
+        """写/覆盖当天快照，并清掉超出 keep 条的旧快照。
+
+        keep 默认取模块常量 `ASIN_DETAIL_KEEP`（可配置：每个 ASIN 留多少条历史）。
+        返回 {"snap_date": "...", "fetched_at": "..."}；失败返回 None。
+        """
         a = str(asin or "").strip().upper()
         mk = str(marketplace or "US").strip().upper()
         if not a or not isinstance(data, dict):
-            return False
+            return None
+        day = str(snap_date or _now_iso())[:10]
+        now = _now_iso()
+        n_keep = max(1, int(keep or ASIN_DETAIL_KEEP))
         with self.lock:
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT INTO asin_details (asin, marketplace, data, fetched_at) "
-                    "VALUES (?,?,?,?) ON CONFLICT(asin, marketplace) DO UPDATE SET "
+                    "INSERT INTO asin_detail_snapshots "
+                    "(asin, marketplace, snap_date, data, fetched_at) VALUES (?,?,?,?,?) "
+                    "ON CONFLICT(asin, marketplace, snap_date) DO UPDATE SET "
                     "data=excluded.data, fetched_at=excluded.fetched_at",
-                    [a, mk, json.dumps(data, ensure_ascii=False), _now_iso()])
+                    [a, mk, day, json.dumps(data, ensure_ascii=False), now])
+                # 只留最近 n_keep 条（按日期倒序，其余删掉）
+                conn.execute(
+                    "DELETE FROM asin_detail_snapshots "
+                    "WHERE asin=? AND marketplace=? AND snap_date NOT IN ("
+                    "  SELECT snap_date FROM asin_detail_snapshots "
+                    "   WHERE asin=? AND marketplace=? ORDER BY snap_date DESC LIMIT ?)",
+                    [a, mk, a, mk, n_keep])
                 conn.commit()
-        return True
+        return {"snap_date": day, "fetched_at": now}
+
+    def list_asin_detail_dates(self, asin, marketplace="US", limit=365):
+        """有快照的日期（降序），给弹窗日历用。"""
+        a = str(asin or "").strip().upper()
+        mk = str(marketplace or "US").strip().upper()
+        if not a:
+            return []
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT snap_date FROM asin_detail_snapshots "
+                "WHERE asin=? AND marketplace=? ORDER BY snap_date DESC LIMIT ?",
+                [a, mk, max(1, int(limit))]).fetchall()
+        return [r["snap_date"] for r in rows]
 
     def clear_asin_detail(self, asin, marketplace="US"):
+        """删掉某个 ASIN 的全部详情快照。"""
         a = str(asin or "").strip().upper()
         mk = str(marketplace or "US").strip().upper()
         with self.lock:
             with self._conn() as conn:
                 n = conn.execute(
-                    "DELETE FROM asin_details WHERE asin=? AND marketplace=?",
+                    "DELETE FROM asin_detail_snapshots WHERE asin=? AND marketplace=?",
                     [a, mk]).rowcount
                 conn.commit()
         return n

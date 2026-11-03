@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { authHeaders, rankCls } from './AiAnalyze';
 import { LineChart } from './SifKeyword';
 import { ProductDetailDialog } from './ProductScrape';
+import { useAsinDetail } from './useAsinDetail';
 import { toScrapedProduct } from './CategoryMonitor';
 import { useColResize } from './colResize';
 import { groupsApi, groupItems } from './recordGroups';
@@ -453,8 +454,8 @@ function AsinPeek({ asin, profile, keyword, isMine }: {
   const [hover, setHover] = useState(false);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const [modal, setModal] = useState(false);
-  const [detail, setDetail] = useState<CatDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  // 详情按天快照：弹窗打开才取数（首访无快照后端会自动抓一次）
+  const det = useAsinDetail(asin, 'US', modal);
   const [prof, setProf] = useState<any>(profile || null);
   const timer = useRef<any>(null);
 
@@ -486,21 +487,9 @@ function AsinPeek({ asin, profile, keyword, isMine }: {
     apiAsinProfile(asin).then(setProf).catch(() => {});
   }, [hover, asin, prof]);
 
-  async function loadDetail(refresh = false) {
-    setDetailLoading(true);
-    try {
-      const d = await api(`/api/catmon/detail?asin=${encodeURIComponent(asin)}&marketplace=US${refresh ? '&refresh=1' : ''}`);
-      setDetail(d);
-    } catch (e: any) {
-      setDetail({ asin, error: e.message });
-    } finally {
-      setDetailLoading(false);
-    }
-  }
   function openModal(e: React.MouseEvent) {
     e.preventDefault();
-    setModal(true);
-    if (!detail) loadDetail(false);
+    setModal(true);      // 取数交给 useAsinDetail（打开时才拉）
   }
 
   return (
@@ -533,22 +522,39 @@ function AsinPeek({ asin, profile, keyword, isMine }: {
           ) : <div className="rk-peek-loading">加载中…</div>}
         </div>, document.body)}
 
-      {modal && (
-        detailLoading
-          ? <div className="modal-backdrop">
-              <div className="modal ps-detail-modal" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <div style={{ fontSize: 13, color: 'var(--ink-3)' }}>正在采集详情…</div>
-              </div>
+      {modal && det.loading && (
+        <div className="modal-backdrop">
+          <div className="modal ps-detail-modal" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ fontSize: 13, color: 'var(--ink-3)' }}>正在读取详情…</div>
+          </div>
+        </div>
+      )}
+      {modal && !det.loading && det.error && !(det.data && det.data.title) && (
+        <div className="modal-backdrop" onClick={() => setModal(false)}>
+          <div className="modal" style={{ padding: 20, maxWidth: 460 }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontWeight: 600, marginBottom: 8 }}>详情读取失败</div>
+            <div className="cm-err" style={{ marginBottom: 12 }}>{det.error}</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="cm-btn" style={{ marginTop: 0 }} onClick={() => det.refresh()}>↻ 重新获取</button>
+              <button className="cm-ghost" onClick={() => setModal(false)}>关闭</button>
             </div>
-          : detail
-            ? <ProductDetailDialog
-                product={toScrapedProduct(detail, 'US')}
-                open={true}
-                onClose={() => setModal(false)}
-                taskId=""
-                onRefresh={() => loadDetail(true)}
-              />
-            : null
+          </div>
+        </div>
+      )}
+      {modal && det.data && !(det.error && !det.data.title) && (
+        <ProductDetailDialog
+          product={toScrapedProduct(det.data, 'US')}
+          open={true}
+          onClose={() => setModal(false)}
+          taskId=""
+          onRefresh={() => det.refresh()}
+          refreshing={det.refreshing}
+          snapDate={det.snapDate}
+          fetchedAt={det.fetchedAt}
+          snapDates={det.dates}
+          onPickDate={d => det.pickDate(d)}
+          onPickLatest={() => det.pickDate('')}
+        />
       )}
     </>
   );

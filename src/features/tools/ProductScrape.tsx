@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useProducts } from '../../context/ProductContext';
+import { DateCalendar } from './DateCalendar';
 
 const AUTH_TOKEN_KEY = 'fba-auth-v1';
 function authHeaders(): Record<string, string> {
@@ -45,7 +46,17 @@ interface ProductDetailProps {
   open: boolean;
   onClose: () => void;
   taskId: string;   // 评论媒体接口需要（缓存按 task+asin 定位）
-  onRefresh?: () => void;   // 传入则在头部显示「↻ 重试」（类目榜单监控用）
+  onRefresh?: () => void;      // 传入则显示「↻ 重新获取」（抓最新并覆盖当天快照）
+  refreshing?: boolean;        // 正在抓取（按钮文案）
+  /** 快照日期 YYYY-MM-DD（详情按天存，一天一条） */
+  snapDate?: string;
+  /** 采集时间（ISO 串），显示成「采集于 11-03 12:04」 */
+  fetchedAt?: string;
+  /** 有哪些日期的快照 —— 传了才显示日历 */
+  snapDates?: string[];
+  onPickDate?: (d: string) => void;
+  /** 当前看的是历史快照（不是最新一天）→ 给个回「最新」的入口 */
+  onPickLatest?: () => void;
 }
 // Customers say 单个关注点：默认折叠（只显示名称+提及数），点击展开明细
 function CsAspectRow({ aspect }: { aspect: CsAspect }) {
@@ -213,7 +224,14 @@ function ReviewMediaPanel({ product, taskId }: { product: ScrapedProduct; taskId
   );
 }
 
-function ProductDetailDialog({ product, open, onClose, taskId, onRefresh }: ProductDetailProps) {
+/** ISO 串 → `11-03 12:04`（快照时间显示用；解析失败就原样截断） */
+function fmtSnapTime(ts: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(ts || ''));
+  return m ? `${m[2]}-${m[3]} ${m[4]}:${m[5]}` : String(ts || '').slice(0, 16);
+}
+
+function ProductDetailDialog({ product, open, onClose, taskId, onRefresh, refreshing,
+                            snapDate, fetchedAt, snapDates, onPickDate, onPickLatest }: ProductDetailProps) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxImages, setLightboxImages] = useState<string[]>([]);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -253,11 +271,29 @@ function ProductDetailDialog({ product, open, onClose, taskId, onRefresh }: Prod
                 <div className="ps-detail-title">
                   {product.title || "未获取标题"}
                 </div>
-                <div className="ps-detail-meta">ASIN: {product.asin}</div>
+                <div className="ps-detail-meta">
+                  ASIN: {product.asin}
+                  {snapDate && (
+                    <span className="ps-detail-snap">
+                      {' · '}快照 {snapDate}
+                      {fetchedAt ? `（采集于 ${fmtSnapTime(fetchedAt)}）` : ''}
+                    </span>
+                  )}
+                </div>
               </div>
-              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+              <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
+                {onPickDate && snapDates && snapDates.length > 0 && (
+                  <span className="ps-snap-pick">
+                    <DateCalendar value={snapDate || ''} dates={snapDates} onChange={onPickDate} />
+                  </span>
+                )}
+                {onPickLatest && snapDate !== snapDates?.[0] && (
+                  <button type="button" className="btn btn-sm" onClick={onPickLatest}>最新</button>
+                )}
                 {onRefresh && (
-                  <button type="button" className="btn btn-sm" onClick={onRefresh}>↻ 重试</button>
+                  <button type="button" className="btn btn-sm" onClick={onRefresh} disabled={refreshing}>
+                    {refreshing ? '获取中…' : '↻ 重新获取'}
+                  </button>
                 )}
                 <a href={productUrl(product.asin, product.marketplace)} target="_blank" rel="noopener noreferrer" className="btn btn-sm">
                   查看
