@@ -72,7 +72,8 @@ export interface CatDetail {
   availability?: string | null;
   customerReviews?: any;
   cached?: boolean;
-  cachedAt?: number;
+  /** 采集时间：内存缓存是时间戳(float)，落库缓存是 ISO 字符串 */
+  cachedAt?: number | string;
   error?: string | null;
 }
 interface TrendPoint { date: string; rank: number | null; }

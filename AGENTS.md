@@ -106,7 +106,7 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                  #   Excel 导入只把工作簿转成 TSV 文本，列映射解析留在前端（与原项目一致）。
                                  #   权限 admin/root。
     catmon.py                    # /api/catmon/*，类目榜单监控：监控对象 CRUD + 立即采集（后台线程）
-                                 #   + 快照/趋势/事件/运行日志 + 按需详情（进程内存缓存，?refresh=1 强制刷新）
+                                 #   + 快照/趋势/事件/运行日志 + 按需详情（落库缓存，?refresh=1 强制刷新）
   rank_fetcher.py              # 关键词排名抓取器（正则解析，无 bs4 依赖）
   catmon_fetcher.py            # 类目榜单采集器（Best Sellers / New Releases）：
                               #   URL 解析 → 抓第 1 页 + 跟随 a-last Next 抓第 2 页；
@@ -116,7 +116,7 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   同一套稳机制：会话预热 + 多次退避重试 + 指纹/referer 轮换 + 限速 +
                               #   验证码/Dog页/503 检测）。此前用裸 _http_get 单独抓 /dp/，Amazon 软性
                               #   限流下会稳定失败（批量却成功），故统一改为 scrape_product。
-                              #   进程内存缓存 TTL 600s，refresh=True 覆盖。
+                              #   落库缓存 TTL 24h（asin_details 表）+ 内存 600s，refresh=True 覆盖。
   product_fetcher.py           # 产品详情抓取器（bs4 解析 + 反爬：会话池/令牌桶/CAPTCHA/Dog-page检测）；
                               #   ⚠️ fetch_product_page 还会识别「200 但无 id="productTitle" 的空壳/软封页」
                               #   （Amazon 对被标记会话返回的空壳中间页）→ 清 cookie + 换指纹 + 重试，
@@ -884,6 +884,13 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
   ② 浏览器不可用/没取到 → `product_fetcher.scrape_product_robust`（HTTP 完整重试预算 + 第二轮补采，与批量同款）；
   ③ `_DETAIL_FETCH_LOCK` **串行化**单条详情（连点不会打成突发并发），并做双检缓存；
   进程内存缓存 `_DETAIL_CACHE`（TTL 600s），`refresh=True` 覆盖；**默认不采集，前端点击缩略图/标题才请求**。
+- **详情落库缓存（2026-11-03）**：内存缓存只有 10 分钟，用户隔十几分钟再点同一个 ASIN 就重抓一遍
+  （实测 11:45 与 11:58 各抓一次，间隔 12.5 分钟），服务重启更是全丢。
+  现在新增 `asin_details(asin, marketplace, data, fetched_at)` 表，
+  `GET /api/catmon/detail` 的顺序是：**先查库（24h 内直接返回，约 15ms）→ 再抓 → 抓到落库**；
+  `?refresh=1` 跳过库缓存强制重抓并覆盖。两个模块（类目榜单/排名监测）共用这个接口，一起受益。
+  单条 JSON 约 15KB（含 12 张图、A+ 图、五点、规格、评论摘要），一千个 ASIN 约 15MB。
+  ⚠️ 内存那一层仍保留：同一秒内连点多个入口不会重复抓，`_DETAIL_FETCH_LOCK` 也还在。
 - **为什么「单条详情」比「批量采集」容易失败（2026-10-30 复盘）**：
   ⚠️ 两条链路**早就是同一套抓取函数**，差别不在"采集方式"，而在**机会数与时间分布**：
   批量一个 ASIN 有 4（函数内重试）× 2（失败项重试轮）= 8 次机会、跨数分钟摊开，失败还被第二轮盖过去

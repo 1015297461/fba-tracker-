@@ -188,6 +188,18 @@ class DbState:
                 CREATE INDEX IF NOT EXISTS idx_catmon_events
                     ON catmon_events(target_id, run_date);
 
+                -- 商品详情缓存（点「查看详情」时抓的那份，持久化）
+                -- 以前只放进程内存 + 10 分钟 TTL：隔十几分钟再看同一个 ASIN 会重抓一遍，
+                -- 服务重启更是全丢。详情是商品档案（标题/图片/五点/规格/评论摘要），
+                -- 变动很慢，落库按 ASIN 存一份即可，手动「刷新」才覆盖。
+                CREATE TABLE IF NOT EXISTS asin_details (
+                    asin        TEXT NOT NULL,
+                    marketplace TEXT NOT NULL DEFAULT 'US',
+                    data        TEXT NOT NULL,
+                    fetched_at  TEXT NOT NULL,
+                    PRIMARY KEY (asin, marketplace)
+                );
+
                 -- 查询记录分类（两个模块共用一套结构，靠 scope 区分）
                 --   scope='catmon' → item_key = catmon_targets.id
                 --   scope='rank'   → item_key = 关键词小写（记录是派生的，没有业务表主键）
@@ -749,6 +761,53 @@ class DbState:
                     "UPDATE catmon_runs SET finished_at=?, status=?, pages=?, requests=?, items=?, error=? "
                     "WHERE id=?", [_now_iso(), status, pages, requests, items, error, run_id])
                 conn.commit()
+
+    # ------------------------------------------------------------------
+    # 商品详情缓存（点「查看详情」抓的那份，持久化；键 = asin + marketplace）
+    # ------------------------------------------------------------------
+    def get_asin_detail(self, asin, marketplace="US"):
+        """返回 {"data": {...}, "fetched_at": "..."}；没缓存返回 None。"""
+        a = str(asin or "").strip().upper()
+        mk = str(marketplace or "US").strip().upper()
+        if not a:
+            return None
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT data, fetched_at FROM asin_details WHERE asin=? AND marketplace=?",
+                [a, mk]).fetchone()
+        if not row:
+            return None
+        try:
+            d = json.loads(row["data"] or "{}")
+        except Exception:
+            return None
+        return {"data": d, "fetched_at": row["fetched_at"]}
+
+    def save_asin_detail(self, asin, marketplace, data):
+        a = str(asin or "").strip().upper()
+        mk = str(marketplace or "US").strip().upper()
+        if not a or not isinstance(data, dict):
+            return False
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO asin_details (asin, marketplace, data, fetched_at) "
+                    "VALUES (?,?,?,?) ON CONFLICT(asin, marketplace) DO UPDATE SET "
+                    "data=excluded.data, fetched_at=excluded.fetched_at",
+                    [a, mk, json.dumps(data, ensure_ascii=False), _now_iso()])
+                conn.commit()
+        return True
+
+    def clear_asin_detail(self, asin, marketplace="US"):
+        a = str(asin or "").strip().upper()
+        mk = str(marketplace or "US").strip().upper()
+        with self.lock:
+            with self._conn() as conn:
+                n = conn.execute(
+                    "DELETE FROM asin_details WHERE asin=? AND marketplace=?",
+                    [a, mk]).rowcount
+                conn.commit()
+        return n
 
     def list_catmon_runs(self, target_id, limit=20):
         with self._conn() as conn:

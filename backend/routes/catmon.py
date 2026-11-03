@@ -12,7 +12,7 @@ GET    /api/catmon/snapshot?targetId=&listType=&date=   某次快照（100 条�
 GET    /api/catmon/trend?targetId=&listType=&asin=      某 ASIN 排名历史
 GET    /api/catmon/events?targetId=&days=               进出榜/升降榜
 GET    /api/catmon/runs?targetId=                       运行日志
-GET    /api/catmon/detail?asin=&marketplace=&refresh=   按需采集详情（进程内存缓存）
+GET    /api/catmon/detail?asin=&marketplace=&refresh=   按需采集详情（落库缓存 24h + 内存 10min）
 """
 
 import datetime
@@ -35,6 +35,22 @@ _ctl = {}
 DEFAULT_LIST_TYPES = ["bestsellers", "new-releases"]
 
 PAUSE_HINT = "已暂停（点「继续」接着跑）"
+
+# 详情落地缓存的有效期：24 小时。详情是商品档案（标题/图片/五点/规格/评论摘要），
+# 变动很慢；以前只放进程内存 + 10 分钟，隔十几分钟再看同一个 ASIN 就又抓一遍。
+DETAIL_TTL = 24 * 3600
+
+
+def _detail_fresh(ts):
+    """fetched_at 是否还在有效期内。解析失败当作过期（宁可重抓一次）。"""
+    if not ts:
+        return False
+    try:
+        t = time.mktime(time.strptime(str(ts)[:19].replace("T", " "),
+                                      "%Y-%m-%d %H:%M:%S"))
+    except Exception:
+        return False
+    return (time.time() - t) < DETAIL_TTL
 
 
 def _wait_if_paused(state, tid, ctl):
@@ -501,7 +517,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         self._send_json(200, {"runs": state.list_catmon_runs(tid)})
     GET["/api/catmon/runs"] = get_runs
 
-    # ---- 详情（点击才采集；进程内存缓存 + refresh 强制刷新） ----
+    # ---- 详情（点击才采集；先查落库缓存，refresh 强制重抓） ----
 
     def get_detail(self):
         if not _verify(self):
@@ -513,6 +529,16 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         if not asin:
             self._send_json(400, {"error": "asin required"})
             return
+        # ① 先查**持久化缓存**（24 小时）：看过一次的商品，再点就是秒开，不再抓 Amazon。
+        #    加 ?refresh=1 才强制重抓。
+        if not refresh:
+            hit = state.get_asin_detail(asin, mk)
+            if hit and _detail_fresh(hit.get("fetched_at")):
+                self._send_json(200, dict(hit["data"], cached=True,
+                                          cachedAt=hit.get("fetched_at")))
+                return
+
+        # ② 抓（内部还有 10 分钟内存缓存 + 并发闸门）
         try:
             data = catmon_fetcher.fetch_detail(asin, mk, refresh=refresh)
         except Exception as e:
@@ -522,6 +548,15 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         if data.get("error") and not data.get("title"):
             self._send_json(502, data)
             return
+
+        # ③ 抓到就落库（cached/cachedAt 是内存缓存的运行时标记，不进库）
+        if data.get("title"):
+            try:
+                payload = {k: v for k, v in data.items() if k not in ("cached", "cachedAt")}
+                state.save_asin_detail(asin, mk, payload)
+            except Exception as e:
+                _log(f"[catmon] 详情缓存写入失败 {asin}: {type(e).__name__}: {e}")
+
         _log(f"[catmon] 详情 {asin} {'刷新' if refresh else ''} "
              f"{'命中缓存' if data.get('cached') else '已采集'}")
         self._send_json(200, data)
