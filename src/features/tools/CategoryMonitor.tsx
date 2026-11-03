@@ -472,12 +472,18 @@ export function CategoryMonitor() {
         { targetId: current.id, listType, date: snapDate || undefined });
       await loadSnapshot(current.id, listType, snapDate || undefined);
       const ch = Object.values(j.sources || {})[0] || 'sprite';
+      const rest = Math.max(0, j.asked - j.covered);
       if (ch === 'need_login') {
         setErr('需要先在专用浏览器窗口登录卖家精灵（登录后重试即可）');
+      } else if (ch === 'error') {
+        setErr('卖家精灵取数失败，稍后重试（详见上方状态条）');
       } else if (j.fetched > 0) {
-        setErr(`已补齐 ${j.fetched} 个（覆盖 ${j.covered}/${j.asked}）`);
+        setErr(`已补齐 ${j.fetched} 个，当前覆盖 ${j.covered}/${j.asked}` +
+               (rest ? `（另 ${rest} 个卖家精灵没有上架日期）` : ''));
+      } else if (rest > 0) {
+        setErr(`没有新增：已有 ${j.covered}/${j.asked}，另 ${rest} 个卖家精灵没有该 ASIN 的上架日期`);
       } else {
-        setErr(`没有新增（覆盖 ${j.covered}/${j.asked}）`);
+        setErr(`已是最新：覆盖 ${j.covered}/${j.asked}`);
       }
     } catch (e: any) {
       setErr(e.message);
@@ -1083,7 +1089,8 @@ function TrendChart({ data, imageByAsin }: {
   data: TrendData; imageByAsin?: Record<string, string | null>;
 }) {
   const [hover, setHover] = useState<number | null>(null);
-  const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
+  // rect 记录 SVG 元素框 + **实际绘图区**（viewBox 等比缩放后居中，左右可能留白）
+  const [rect, setRect] = useState<{ left: number; top: number; width: number; drawOff: number; drawW: number } | null>(null);
   const closeTimer = useRef<number | undefined>(undefined);
   const W = 660, H = 250, P = { l: 36, r: 14, t: 12, b: 24 };
   const dates = data.dates;
@@ -1102,11 +1109,21 @@ function TrendChart({ data, imageByAsin }: {
 
   const onMove = (e: React.MouseEvent<HTMLDivElement>) => {
     cancelClose();
-    const r = e.currentTarget.getBoundingClientRect();
-    if (!rect || Math.abs(rect.left - r.left) > 1 || Math.abs(rect.top - r.top) > 1 || Math.abs(rect.width - r.width) > 1) {
-      setRect({ left: r.left, top: r.top, width: r.width });
+    const svgEl = e.currentTarget.querySelector('svg');
+    if (!svgEl) return;
+    const r = svgEl.getBoundingClientRect();
+    // ⚠️ SVG 是 `width:100%; height:250` + viewBox 等比缩放（默认 xMidYMid meet），
+    // 容器比 660 宽时左右会**留白**。用容器宽度换算会让指示线比鼠标偏最多半个留白，
+    // 中间看不出来、越靠两侧越明显（用户反馈"最左/最右数据悬浮不上"就是这个）。
+    // 所以这里按「实际绘图区」算：drawW = W*scale，drawOff = 元素左 + 居中偏移。
+    const scale = Math.min(r.width / W, r.height / H);
+    const drawW = Math.max(1, W * scale);
+    const drawOff = r.left + (r.width - drawW) / 2;
+    if (!rect || Math.abs(rect.left - r.left) > 0.5 || Math.abs(rect.top - r.top) > 0.5
+        || Math.abs(rect.width - r.width) > 0.5) {
+      setRect({ left: r.left, top: r.top, width: r.width, drawOff, drawW });
     }
-    const px = ((e.clientX - r.left) / r.width) * W;
+    const px = ((e.clientX - drawOff) / drawW) * W;
     let best = 0, bd = Infinity;
     dates.forEach((_, i) => { const d = Math.abs(x(i) - px); if (d < bd) { bd = d; best = i; } });
     setHover(best);
@@ -1117,7 +1134,7 @@ function TrendChart({ data, imageByAsin }: {
   const tipStyle = (() => {
     if (hover == null || !rect) return undefined;
     const TW = 300, TH = 30 + data.series.length * 42;
-    const pxScreen = rect.left + (x(hover) / W) * rect.width;
+    const pxScreen = rect.drawOff + (x(hover) / W) * rect.drawW;
     let left = pxScreen + 14;
     if (left + TW > window.innerWidth - 8) left = pxScreen - TW - 14;
     if (left < 8) left = 8;
@@ -1313,8 +1330,12 @@ function MatrixPanel({ targetId, listType, onOpen }: {
       const j = await apiSend<{ fetched: number; covered: number; asked: number; sources: Record<string, string> }>(
         '/api/catmon/asin-dates/fill', 'POST', { targetId, listType, asins: miss });
       const ch = Object.values(j.sources || {})[0];
+      const rest = Math.max(0, j.asked - j.covered);
       if (ch === 'need_login') setFillMsg('需要在专用浏览器窗口登录卖家精灵，登录后再点一次');
-      else setFillMsg(`新补 ${j.fetched} 个（本区间已有 ${j.covered}/${j.asked}）`);
+      else if (ch === 'error') setFillMsg('卖家精灵取数失败，稍后重试');
+      else if (j.fetched > 0) setFillMsg(`新补 ${j.fetched} 个，本区间已有 ${j.covered}/${j.asked}`);
+      else if (rest > 0) setFillMsg(`本区间已有 ${j.covered}/${j.asked}，另 ${rest} 个卖家精灵没有上架日期`);
+      else setFillMsg(`本区间已全部有上架时间（${j.covered}/${j.asked}）`);
       await load();
     } catch (e: any) { setFillMsg(e.message); }
     finally { setFillBusy(false); }
@@ -1604,7 +1625,9 @@ const CSS = `
 .cm-progress{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--blue);background:var(--blue-soft);border:1px solid rgba(37,99,235,.3);border-radius:8px;padding:7px 10px;margin:-4px 0 10px;}
 .cm-progress.paused{color:var(--orange);background:rgba(234,88,12,.08);border-color:rgba(234,88,12,.3);}
 .cm-chart-wrap{position:relative;}
-.cm-chart-tip{position:fixed;transform:none;background:var(--card-bg);border:1px solid var(--border-strong);border-radius:8px;box-shadow:var(--shadow-md);padding:8px 10px;font-size:11px;pointer-events:auto;z-index:200;width:300px;}
+/* pointer-events:none —— 提示框只做展示。它比图表还高（5 条线≈240px），
+   一旦能接收鼠标，就会挡住图表、让 mousemove 中断，表现成「某些位置悬浮不动」。 */
+.cm-chart-tip{position:fixed;transform:none;background:var(--card-bg);border:1px solid var(--border-strong);border-radius:8px;box-shadow:var(--shadow-md);padding:8px 10px;font-size:11px;pointer-events:none;z-index:200;width:300px;}
 .cm-chart-tip .d{font-weight:600;margin-bottom:6px;color:var(--ink-2);}
 .cm-chart-tip .row{display:flex;align-items:center;gap:8px;padding:4px 0 4px 7px;border-left:3px solid transparent;line-height:1.3;}
 .cm-chart-tip .row + .row{border-top:1px solid color-mix(in srgb,var(--border) 55%,transparent);}

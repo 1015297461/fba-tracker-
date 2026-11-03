@@ -5,7 +5,7 @@
  * 这里读 `/api/asin-meta/status` 里后端记的「最近一次结果」：
  *   · status = need_login → 橙色提示 + 「重新登录」按钮（点开可见窗口，登录成功自动关）
  *   · status = error      → 红色提示
- *   · status = ok         → **不显示**（下次取到了提示自动消失）
+ *   · status = ok / empty → **不显示**（empty = 查成功但这些 ASIN 上游没有日期）
  */
 import { useCallback, useEffect, useState } from 'react';
 import { authHeaders } from './AiAnalyze';
@@ -33,7 +33,9 @@ export function SpriteStatusBar({ refreshKey = 0 }: { refreshKey?: number }) {
   useEffect(() => { load(); }, [load, refreshKey]);
 
   const last = st?.last?.status ? st.last : null;
-  const bad = !!last && last.status !== 'ok';
+  // `empty` = 查询成功、但卖家精灵没有这些 ASIN 的日期（冷门/下架品）。
+  // 这不是故障，不该报警 —— 否则每次补完都挂一条红条，看着像一直出错。
+  const bad = !!last && !['ok', 'empty'].includes(last.status);
 
   // 出问题时 4 秒自检（登录完提示自动消失）；正常时 20 秒低频看一眼，
   // 这样「采集完后台自动补失败」也能被发现

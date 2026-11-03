@@ -46,9 +46,13 @@ def get_meta(state, asins):
 def missing_dates(meta, asins, retry_days=0, prefer_src=None):
     """返回还需要去问的 ASIN（保持入参顺序、去重）。
 
-    ⚠️ 负缓存语义：库里**有记录但日期为空** = 之前问过、上游确实没有。
-    这类默认**不再重问**（否则每天定时任务都会把同一批老品再问一遍，
-    白白启动浏览器）——只有 `retry_days>0` 且距上次超过该天数时才重试。
+    ⚠️ 负缓存语义：库里**有记录但日期为空**分两种，必须分开对待：
+      · `src` 为空 = **真问过**、上游确实没有 → 默认不再重问（否则每天定时任务
+        都会把同一批老品再问一遍，白白启动浏览器）；只有 `retry_days>0` 且
+        距上次超过该天数才重试。
+      · `src == 'error'` = **上次根本没查成**（登录失效 / 浏览器起不来 / 网络错误）
+        → 这不算负缓存，**每次都重试**。曾经不区分，把一次登录失效的失败写成负缓存，
+        导致 105 个 ASIN 被"冻结" 15 天（踩过）。
 
     prefer_src：口径统一用。库里虽然有日期，但 `src` 不在这个集合里（例如早期由
     SIF 天数倒算写入的 `age`），也算「待取」——重取一次后 src 变成当前来源，之后就跳过。
@@ -66,6 +70,9 @@ def missing_dates(meta, asins, retry_days=0, prefer_src=None):
         if rec.get("first_available_day"):   # 已有日期
             if prefer_src and (rec.get("src") or "") not in prefer_src:
                 out.append(k)                # 来源不是当前首选 → 重取，统一口径
+            continue
+        if (rec.get("src") or "") == "error":
+            out.append(k)                    # 上次没查成，不算负缓存，继续试
             continue
         if retry_days > 0 and _older_than(rec.get("fetched_at"), retry_days):
             out.append(k)
@@ -107,12 +114,14 @@ def ensure(state, asins, country="US", max_new=100, retry_days=0, prefer_src=Non
 
     info = {"asked": len(keys), "to_fetch": len(todo), "fetched": 0, "sources": {}}
     if todo:
+        last_status = None
         for src in enabled_sources():
             if not todo:
                 break
             if src == "sprite":
                 dates, sinfo = sprite_fetch.fetch_dates(todo, country)
-                info["sources"]["sprite"] = sinfo.get("status")
+                last_status = sinfo.get("status")
+                info["sources"]["sprite"] = last_status
                 if dates:
                     _persist(state, dates, "sprite")
                     got = set(dates)
@@ -120,18 +129,34 @@ def ensure(state, asins, country="US", max_new=100, retry_days=0, prefer_src=Non
                     info["fetched"] += len(dates)
             elif src == "sif":
                 dates, sinfo = _fill_sif(todo, country)
-                info["sources"]["sif"] = sinfo.get("status")
+                last_status = sinfo.get("status")
+                info["sources"]["sif"] = last_status
                 if dates:
                     _persist(state, dates, "sif")
                     got = set(dates)
                     todo = [a for a in todo if a not in got]
                     info["fetched"] += len(dates)
-        # 负缓存：这一轮问过但确实没有的，写空串，避免下次反复问
         if todo:
-            state.upsert_rmon_asin_meta([
-                {"asin": a, "first_available_day": "", "brand": "", "src": None}
-                for a in todo
-            ])
+            # "empty" = 查询成功、但上游没有这些 ASIN 的日期，同样算"问过了"。
+            # 只有真的报错（need_login / error / no_tab…）才算失败。
+            if last_status in ("ok", "empty"):
+                # ✅ 真的问过、上游确实没有 → 负缓存（以后默认不再问）。
+                # ⚠️ src 必须写空串而不是 None：upsert 的 SQL 是
+                # `src=COALESCE(excluded.src, 旧值)`，传 None 会**保留**旧的 'error'，
+                # 导致这批永远被当成待取（踩过）。
+                state.upsert_rmon_asin_meta([
+                    {"asin": a, "first_available_day": "", "brand": "", "src": ""}
+                    for a in todo
+                ])
+            else:
+                # ❌ 这次根本没查成（登录失效/浏览器/网络）→ 绝不能写负缓存，
+                #    否则这批 ASIN 会被冻结到下次手动重试（踩过：105 个冻了 15 天）。
+                #    记 src='error'，missing_dates 会把它当成"待取"每次都重试。
+                state.upsert_rmon_asin_meta([
+                    {"asin": a, "first_available_day": "", "brand": "", "src": "error"}
+                    for a in todo
+                ])
+                info["failed"] = len(todo)
 
     meta = get_meta(state, keys)
     dates = {a: (meta.get(a) or {}).get("first_available_day")

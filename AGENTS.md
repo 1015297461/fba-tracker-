@@ -941,15 +941,33 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
 - **上架时间自动化（2026-11-02 晚）**：
   · **采集完自动补**：`_run_target` 收尾调 `_kick_asin_dates()` 起后台线程补本次采到的全部 ASIN，
     **不阻塞**状态落库（主线程 0.00s 返回）。定时任务、立即采集、取消（已采部分）三条路径都覆盖。
-  · **负缓存语义**：`rmon_asin_meta` 里**有记录但日期为空** = 查过且上游确实没有 →
-    `missing_dates(retry_days=0)` 默认**不再重问**（否则每天把同一批老品重问一遍、白启浏览器）；
-    手动补齐传 `retry_days=15` 让 15 天前的负缓存重试一次。
+  · **负缓存语义（2026-11-03 修正，务必分清）**：`rmon_asin_meta` 里「有日期为空」的两种来源
+    必须分开，否则一次登录失效会把整批 ASIN 冻结 15 天（**实际踩过：105 个冻住，用户点补齐显示
+    "没有新增 0/100"**）：
+    - `src` 为空（`""`）= **真问过**、上游确实没有 → `missing_dates(retry_days=0)` 默认不再重问；
+      手动补齐传 `retry_days=15` 让 15 天前的重试一次。
+    - `src == 'error'` = **上次根本没查成**（登录失效 / 浏览器起不来 / 网络）→ 不算负缓存，
+      `missing_dates` **无视 `retry_days` 每次都重试**，直到拿到日期或变成"真的没有"。
+    ⚠️ 写负缓存时 `src` 必须写 `""` 而不是 `None`：`upsert` 的 SQL 是
+    `src=COALESCE(excluded.src, 旧值)`，传 `None` 会**保留**旧的 `'error'`，导致永远重试。
+  · **`empty` ≠ `error`**（`sprite_fetch.fetch_dates` 的 status）：接口正常返回但一条都没有
+    （冷门/下架 ASIN，实测单查 1 个也返回空）判 `empty`，只有真的报错（need_login / http_xxx /
+    not_json / node_failed）才判 `error`。`ensure` 把 `ok` 和 `empty` 都算"问过了"→ 写负缓存。
+    状态条（`SpriteStatusBar`）也只对 `need_login` / `error` 报警，`empty` 不提示。
   · **矩阵「上架」列**：`GET /matrix` 只读合并 `firstAvailable`（不在 GET 里抓取，避免接口变慢）；
     工具条右侧「补齐上架时间」按钮把区间内缺失的 ASIN 一次发给 `POST /asin-dates/fill {asins:[...]}`。
     实测该 target 137 行：102 → 补齐 35 个（10 秒）→ 137/137；再点一次 `toFetch=0`、0.01 秒、不启浏览器。
-  · **两个模块取数来源不同**（易混淆）：类目榜单 = 卖家精灵（`asin_meta.SOURCES=["sprite"]`）；
-    排名监测 = **SIF**（`rank_monitor.enrich_asin_meta`：竞品榜 `listed_age_days` 天数倒算为主，
-    `market_get_asin_profile` 兜底），且排名监测**没有定时任务**、前端也还没显示上架列。
+  · **两个模块取数来源相同（2026-11-02 起）**：都是卖家精灵（`asin_meta.SOURCES=["sprite"]`），
+    共用 `rmon_asin_meta` 与 `asin_meta.ensure`；SIF 通道代码保留但默认不启用
+    （把 `SOURCES` 改成 `["sprite","sif"]` 即恢复兜底）。
+  · **趋势折线图的悬浮要按「绘图区」换算，不能按容器宽度**：SVG 是 `width:100%;height:250`
+    + `viewBox="0 0 660 250"`，容器比 660 宽时按 `xMidYMid meet` **等比缩放并居中留白**
+    （实测容器 906px、绘图区 660px，左右各 123px）。旧代码用容器宽度算 `px`，导致指示线
+    比鼠标偏最多半个留白，**中间看不出来、越靠两侧越明显**。
+    正确写法：`scale = min(r.w/W, r.h/H)`；`drawW = W*scale`；`drawOff = r.left + (r.width-drawW)/2`；
+    `px = (clientX - drawOff)/drawW*W`。tooltip 的屏幕 x 也要用 `drawOff/drawW`。
+  · **图表 tooltip 必须 `pointer-events:none`**：它比图表还高（5 条线 ≈ 240px），能接收鼠标时
+    会挡住图表、让 `mousemove` 中断，表现成"某些位置悬浮不动"。
     （2026-11-02 晚排名监测已改为也走卖家精灵，见下方「凭据与自动登录」。）
 - **凭据与自动登录（2026-11-03）**：卖家精灵**多端登录互踢**，固定 cookie 会失效，
   表现为「接口 200 但返回 HTML」——

@@ -772,9 +772,17 @@ def fetch_dates(asins, country="US", close_browser=True):
                 _save_cookies(tab)          # 服务端可能轮换 token，成功时顺手刷新
                 _record("ok", f"已取到 {len(result)} 条上架时间", got=len(result), asked=len(uniq))
             else:
-                info["status"] = "error"
                 errs = [e for e in (info.get("errors") or []) if e != "probe_ok"]
-                _record("error", "取数失败：" + (",".join(errs) or "未知原因"), asked=len(uniq))
+                if errs:
+                    info["status"] = "error"
+                    _record("error", "取数失败：" + ",".join(errs), asked=len(uniq))
+                else:
+                    # ⚠️ 关键区分：接口**正常返回但一条都没有** ≠ 取数失败。
+                    # 卖家精灵对冷门/下架 ASIN 会返回空 items（实测 1 个也返回空），
+                    # 这时必须判 empty，否则会被当成失败反复重试（每天白启浏览器）。
+                    info["status"] = "empty"
+                    _record("empty", "查询成功，但这些 ASIN 卖家精灵没有上架日期",
+                            asked=len(uniq))
         except Exception as e:
             info["status"] = "error"
             _record("error", f"取数异常：{type(e).__name__}: {e}")
