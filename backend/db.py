@@ -659,7 +659,7 @@ class DbState:
     def list_catmon_matrix(self, target_id, list_type, start=None, end=None):
         """区间内「出现过的全部 ASIN」的每日位次矩阵（类目榜单 · 全部 ASIN 位次）。
 
-        返回 {dates:[...], rows:[{asin,title,image,ranks:[rank|null],present,best,last}]}
+        返回 {dates:[...], rows:[{asin,title,image,price,rating,ranks:[...],present,best,last}]}
         空白（None）= 当天该 ASIN 不在抓取范围内。
         """
         with self._conn() as conn:
@@ -673,7 +673,7 @@ class DbState:
             if not dates:
                 return {"dates": [], "rows": []}
             rows = conn.execute(
-                "SELECT asin, run_date, rank, title, image_url, price FROM catmon_items "
+                "SELECT asin, run_date, rank, title, image_url, price, rating FROM catmon_items "
                 "WHERE target_id=? AND list_type=? AND run_date>=? AND run_date<=? "
                 "ORDER BY run_date",
                 [target_id, list_type, dates[0], dates[-1]]).fetchall()
@@ -683,13 +683,16 @@ class DbState:
             a = r["asin"]
             if not a:
                 continue
-            m = meta.setdefault(a, {"title": None, "image": None, "price": None})
+            m = meta.setdefault(a, {"title": None, "image": None, "price": None, "rating": None})
             if r["title"] and not m["title"]:
                 m["title"] = r["title"]
             if r["image_url"] and not m["image"]:
                 m["image"] = r["image_url"]
-            if r["price"] is not None:               # 取最近一天的价格（rows 未排序，取到即覆盖）
+            # rows 按 run_date 升序，后写覆盖先写 = 取最近一天的价格/评分
+            if r["price"] is not None:
                 m["price"] = r["price"]
+            if r["rating"] is not None:
+                m["rating"] = r["rating"]
             if r["rank"] is not None:
                 rank_map.setdefault(a, {})[r["run_date"]] = r["rank"]
 
@@ -701,6 +704,7 @@ class DbState:
             last = next((ranks[i] for i in range(len(ranks) - 1, -1, -1) if ranks[i] is not None), None)
             out.append({
                 "asin": a, "title": m["title"], "image": m["image"], "price": m.get("price"),
+                "rating": m.get("rating"),
                 "ranks": ranks, "present": len(vals),
                 "best": min(vals) if vals else None, "last": last,
             })

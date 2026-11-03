@@ -1211,6 +1211,8 @@ function TrendChart({ data, imageByAsin }: {
 // ---------------------------------------------------------------------------
 interface CatMatrixRow {
   asin: string; title: string | null; image: string | null; price: number | null;
+  /** 评分（取区间内最近一天的值，没抓到就是 null） */
+  rating?: number | null;
   ranks: (number | null)[]; present: number; best: number | null; last: number | null;
   /** 上架时间 'YYYY-MM-DD'（全局 ASIN 属性表，按 ASIN 取） */
   firstAvailable?: string | null;
@@ -1230,7 +1232,7 @@ function MatrixPanel({ targetId, listType, onOpen }: {
   const [fillBusy, setFillBusy] = useState(false);
   const [fillMsg, setFillMsg] = useState('');
   const stripIdx = useRef<number | null>(null);
-  const cols = useColResize('catmon-matrix', undefined, 10);
+  const cols = useColResize('catmon-matrix', undefined, 11);
 
   const load = useCallback(async () => {
     setLoading(true); setErr('');
@@ -1271,6 +1273,7 @@ function MatrixPanel({ targetId, listType, onOpen }: {
       case 'asin': return String(r.asin || '');
       case 'title': return String(r.title || '').toLowerCase();
       case 'price': return r.price != null ? Number(r.price) : null;
+      case 'rating': return r.rating != null ? Number(r.rating) : null;
       case 'listed': return r.firstAvailable || null;
       case 'days': return r.present;
       case 'best': return r.bestW;
@@ -1370,6 +1373,7 @@ function MatrixPanel({ targetId, listType, onOpen }: {
                 {th('asin', 'ASIN', 'c-asin')}
                 {th('title', '标题', 'c-title')}
                 {th('price', '价格', 'c-price')}
+                {th('rating', '评分', 'c-rate')}
                 {th('listed', '上架', 'c-date', '上架时间（来源：卖家精灵）')}
                 {th('days', '出现天数', 'c-days', '区间内有数据的天数中该 ASIN 出现的天数')}
                 {th('best', '最好', 'c-num', '区间内最好自然位')}
@@ -1390,6 +1394,7 @@ function MatrixPanel({ targetId, listType, onOpen }: {
                     </td>
                     <td className="c-title">{r.title ? <span className="rk-el" title={r.title}>{r.title}</span> : '—'}</td>
                     <td className="c-price mono">{r.price != null ? `$${Number(r.price).toFixed(2)}` : '—'}</td>
+                    <td className="c-rate mono">{r.rating != null ? Number(r.rating).toFixed(1) : '—'}</td>
                     <td className="c-date mono" title={r.firstAvailable ? `上架 ${r.firstAvailable}` : '未知（点上方「补齐上架时间」）'}>
                       {r.firstAvailable || '—'}
                     </td>

@@ -911,8 +911,12 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
 - **「全部 ASIN 位次」矩阵（2026-10-30 起替代「变动事件」，两模块展示完全一致）**：
   · 排名监测：`build_srp_trend(all_in_range=1)`（去掉"出现≥2天"过滤）→ 区间内出现过的**全部** ASIN；
     列＝主图 / ASIN / 标题 / 价格 / **上架** / 出现天数 / 最好 / 最新 / 变化 / 趋势条。时间筛选用 `DateCalendar`。
-  · 类目榜单：`GET /api/catmon/matrix?targetId&listType=&start=&end=` → `db.list_catmon_matrix`（`{dates, rows}`，行含 price）；
-    前端 `MatrixPanel` 用同一套 `.rk-mtx` 类渲染，**列完全一致但去掉「上架」**。
+  · 类目榜单：`GET /api/catmon/matrix?targetId&listType=&start=&end=` → `db.list_catmon_matrix`
+    （`{dates, rows}`，行含 `price` / `rating` / `firstAvailable`）；
+    前端 `MatrixPanel` 用同一套 `.rk-mtx` 类渲染，列＝主图 / ASIN / 标题 / 价格 / **评分** /
+    **上架** / 出现天数 / 最好 / 最新 / 变化 / 趋势条（11 列，比排名监测多这两列）。
+  · **「评分」列取区间内最近一天的值**（`ORDER BY run_date` 升序、后写覆盖先写），
+    没抓到就显示 `—`、排序恒排最后；数据来自 `catmon_items.rating`（抓榜单时就带，无额外请求）。
   · 两模块共用的日期选择器在 `src/features/tools/DateCalendar.tsx`（类名 `rkd-*`，与既有 `SnapPicker` 的 `rk-cal-*` 隔离）。
   · 出现天数＝区间内有数据的天里该 ASIN 出现天数（`present/总数`）。
   · **「变化」列排序按方向分组**（2026-11-02）：用**带符号**的 `delta`（尾 − 首），而不是绝对值。
