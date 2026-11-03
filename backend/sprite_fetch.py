@@ -56,6 +56,8 @@ BATCH_SIZE = 100          # 单次请求 ASIN 数（页面支持 1000，这里�
 # 注意：这个 URL 对**已登录**会话有登出副作用，所以只在「探针已失败」的路径里用。
 LOGIN_URL = f"{BASE}/w/user/logout"
 LOGIN_MAX_FAILS = 3                 # 自动登录连续失败几次就熔断（避免把账号试锁）
+COOKIE_FILE = "sprite-cookies.json"  # 登录态（加密存 data/ 下）
+COOKIE_TTL = 3 * 86400               # 注入时把 session cookie 的过期时间推到 3 天后
 LOGIN_COOLDOWN = 1800               # 熔断时长（秒）
 START_TIMEOUT = 25        # 等 Chrome 起来的上限（秒）
 EVAL_TIMEOUT = 90
@@ -455,13 +457,19 @@ _FILL_JS = r"""
   document.querySelectorAll("input[type=checkbox]").forEach(c => { if (!c.checked) c.click(); });
   await sleep(250);
 
-  // ④ 提交：找「立即登录」，排除「账号登录/密码登录/验证码登录/扫码登录/注册」这些切换项
-  const SKIP = /账号登录|密码登录|验证码登录|扫码登录|注册|子账号无法登录|忘记密码/;
-  const cands = [...document.querySelectorAll("button, [type=submit], a, span, div")]
+  // ④ 提交：只认「立即登录」。
+  // ⚠️ 页面上还有个「自动登录」勾选项，也是 4 个字 —— 按长度排序会误点到它（踩过），
+  // 所以这里排除「自动登录」，并且**只从 button/[type=submit]/a 里找**，优先精确匹配。
+  const SKIP = /账号登录|密码登录|验证码登录|扫码登录|注册|子账号无法登录|忘记密码|自动登录/;
+  let pool = [...document.querySelectorAll("button, [type=submit], a")]
     .filter(e => vis(e) && txt(e) && txt(e).length <= 8 && /登录/.test(txt(e)) && !SKIP.test(txt(e)));
-  cands.sort((a, b) => txt(a).length - txt(b).length);
-  const btn = cands[0];
-  if (btn) { btn.click(); return JSON.stringify({ clicked: txt(btn) }); }
+  if (!pool.length) {
+    pool = [...document.querySelectorAll("span, div")]
+      .filter(e => vis(e) && txt(e) && txt(e).length <= 8 && /登录/.test(txt(e)) && !SKIP.test(txt(e)));
+  }
+  const btn = pool.find(e => txt(e) === "立即登录")
+           || pool.sort((a, b) => txt(a).length - txt(b).length)[0];
+  if (btn) { btn.click(); return JSON.stringify({ clicked: txt(btn), tag: btn.tagName }); }
   const form = pw.closest("form");
   if (form) { form.submit(); return JSON.stringify({ submitted: "form" }); }
   return JSON.stringify({ error: "no_submit" });
@@ -484,7 +492,8 @@ def _cdp(tab_id, method, params=None, timeout=20):
     script = (
         "const ws=new WebSocket(process.argv[1]);let id=0;const p=new Map();"
         "const send=(m,pa={})=>new Promise(r=>{const i=++id;p.set(i,r);ws.send(JSON.stringify({id:i,method:m,params:pa}))});"
-        "ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id&&p.has(m.id)){p.get(m.id)(m.result);p.delete(m.id)}};"
+        "ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id&&p.has(m.id)){"
+        "p.get(m.id)(m.error?{__error:m.error}:(m.result||{__ok:1}));p.delete(m.id)}};"
         "ws.onopen=async()=>{const r=await send(process.argv[2],JSON.parse(process.argv[3]));"
         "process.stdout.write(JSON.stringify(r||{}));process.exit(0)};"
         "setTimeout(()=>{process.stdout.write('{\"timeout\":1}');process.exit(0)},%d);"
@@ -504,7 +513,80 @@ def _cdp(tab_id, method, params=None, timeout=20):
         return None, "node_bad_json"
     if body.get("timeout"):
         return None, "cdp_timeout"
+    if body.get("__error"):
+        return None, "cdp_error:" + json.dumps(body["__error"], ensure_ascii=False)[:140]
     return body, None
+
+
+_SAME_SITE = {0: "None", 1: "Lax", 2: "Strict"}
+
+
+def _same_site(v):
+    """CDP 两个方向的类型不一致：读出来可能是 0/1/2，写回去必须是字符串。"""
+    if isinstance(v, str) and v:
+        return v.capitalize()
+    if isinstance(v, (int, float)):
+        return _SAME_SITE.get(int(v), "Lax")
+    return "Lax"
+
+
+def _save_cookies(tab=None):
+    """把 sellersprite 的 cookie 加密存下来。
+
+    为什么要自己存：`JSESSIONID` 和 `Sprite-X-Token` 都是**会话 cookie**（persistent=0），
+    Chrome 一关就没了 —— 不存的话每次取数都得重新登录一遍。
+    """
+    tab = tab or _page()
+    if not tab:
+        return 0
+    body, err = _cdp(tab["id"], "Network.getAllCookies", {}, timeout=20)
+    if err:
+        _log(f"[sprite] 读 cookie 失败：{err}")
+        return 0
+    cookies = (body or {}).get("cookies") or []
+    keep = []
+    for c in cookies:
+        if "sellersprite" not in (c.get("domain") or ""):
+            continue
+        keep.append({
+            "name": c.get("name"), "value": c.get("value"),
+            "domain": c.get("domain"), "path": c.get("path"),
+            "expires": c.get("expires"),
+            "httpOnly": bool(c.get("httpOnly")), "secure": bool(c.get("secure")),
+            "sameSite": _same_site(c.get("sameSite")),
+        })
+    if not keep:
+        return 0
+    sprite_cred.save_json(COOKIE_FILE, keep)
+    return len(keep)
+
+
+def _apply_cookies(tab=None):
+    """启动浏览器后把上次存的 cookie 注入回去。
+
+    会话 cookie 的 expires 会被推到 3 天后 —— 浏览器收到「有明确过期时间」的 cookie
+    就会自己写盘，下次连注入都省了。
+    """
+    tab = tab or _page()
+    if not tab:
+        return 0
+    data = sprite_cred.load_json(COOKIE_FILE)
+    if not data:
+        return 0
+    now = time.time()
+    fixed = []
+    for c in data:
+        c = dict(c)
+        if not c.get("expires") or float(c["expires"]) < 0:
+            c["expires"] = now + COOKIE_TTL
+        # CDP 的 getAllCookies 返回数字，setCookies 只认字符串（踩过：Invalid parameters）
+        c["sameSite"] = _same_site(c.get("sameSite"))
+        fixed.append(c)
+    body, err = _cdp(tab["id"], "Network.setCookies", {"cookies": fixed}, timeout=20)
+    if err:
+        _log(f"[sprite] cookie 注入失败：{err}")
+        return 0
+    return len(fixed)
 
 
 def _probe(tab=None):
@@ -575,7 +657,8 @@ def _auto_login():
         if t and _probe(t):
             with _login_lock:
                 _login_fails.clear()
-            _log("[sprite] 自动登录成功")
+            n = _save_cookies(t)
+            _log(f"[sprite] 自动登录成功（已保存 {n} 条 cookie，下次免登）")
             return True, "ok"
 
     _note_login_fail()
@@ -647,7 +730,13 @@ def fetch_dates(asins, country="US", close_browser=True):
                 _record("error", "没有可用的页面")
                 return {}, info
 
+            # 先把上次存下来的登录态注入（会话 cookie 关浏览器就没了，只能自己存）
+            n_ck = _apply_cookies(tab)
+            if n_ck:
+                time.sleep(0.6)
+
             result, info = _run_batches(tab, uniq, country)
+            info["asked"] = len(uniq)          # _run_batches 只返回批次信息，asked 要补回
 
             # 登录态失效 + 有凭据 → 自动登录一次再重跑。
             # ⚠️ 先探针二次确认：登录页是 /w/user/logout（带登出副作用），
@@ -665,7 +754,8 @@ def fetch_dates(asins, country="US", close_browser=True):
                             r2, i2 = _run_batches(tab, uniq, country)
                             result = r2
                             info["batches"] += i2.get("batches", 0)
-                            info["errors"] += [e for e in i2.get("errors", []) if e != "probe_ok"]
+                            # 重跑就是「重来一次」，错误列表以这一次为准，别把登录前的失败留着
+                            info["errors"] = [e for e in i2.get("errors", []) if e != "probe_ok"]
                             info["auth_failed"] = i2.get("auth_failed", False)
 
             if info.get("auth_failed") and not result:
@@ -679,6 +769,7 @@ def fetch_dates(asins, country="US", close_browser=True):
                 _record("need_login", f"卖家精灵：{reason}", asked=len(uniq))
             elif result:
                 info["status"] = "ok"
+                _save_cookies(tab)          # 服务端可能轮换 token，成功时顺手刷新
                 _record("ok", f"已取到 {len(result)} 条上架时间", got=len(result), asked=len(uniq))
             else:
                 info["status"] = "error"
@@ -709,6 +800,7 @@ def _watch_login(timeout=300):
             continue
         tab = _page()
         if tab and _probe(tab):
+            _save_cookies(tab)
             _record("ok", "登录成功，可以继续取数")
             with _login_lock:
                 _login_fails.clear()

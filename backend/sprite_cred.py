@@ -17,7 +17,7 @@
 ----
     python3 -m backend.sprite_cred set      # 交互输入账号+密码（密码不回显），写入
     python3 -m backend.sprite_cred show     # 只看是否已配置、账号名（不显示密码）
-    python3 -m backend.sprite_cred clear    # 删除
+    python3 -m backend.sprite_cred clear    # 删除（连同登录态 cookie）
 """
 
 import base64
@@ -115,6 +115,60 @@ def load():
         return None
 
 
+def save_json(name: str, obj):
+    """把任意 JSON 对象加密写入 data/<name>（cookie 之类也用这套）。"""
+    path = os.path.join(PROJECT_ROOT, "data", name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    salt, nonce = os.urandom(16), os.urandom(16)
+    enc_key, mac_key = _derive(salt)
+    plain = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    ct = _keystream_xor(enc_key, nonce, plain)
+    mac = hmac.new(mac_key, MAGIC + nonce + ct, hashlib.sha256).digest()
+    box = {"v": 1, "note": "本地加密文件，密钥由本机标识派生",
+           "salt": base64.b64encode(salt).decode(),
+           "nonce": base64.b64encode(nonce).decode(),
+           "ct": base64.b64encode(ct).decode(),
+           "mac": base64.b64encode(mac).decode()}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(box, f, ensure_ascii=False)
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+
+def load_json(name: str):
+    """读回 save_json 写的内容；文件不存在/解不开返回 None。"""
+    path = os.path.join(PROJECT_ROOT, "data", name)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            box = json.load(f)
+        salt = base64.b64decode(box["salt"])
+        nonce = base64.b64decode(box["nonce"])
+        ct = base64.b64decode(box["ct"])
+        mac = base64.b64decode(box["mac"])
+        enc_key, mac_key = _derive(salt)
+        want = hmac.new(mac_key, MAGIC + nonce + ct, hashlib.sha256).digest()
+        if not hmac.compare_digest(want, mac):
+            return None
+        return json.loads(_keystream_xor(enc_key, nonce, ct).decode("utf-8"))
+    except Exception:
+        return None
+
+
+def drop_json(name: str):
+    try:
+        path = os.path.join(PROJECT_ROOT, "data", name)
+        if os.path.exists(path):
+            os.remove(path)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def save(user: str, password: str):
     os.makedirs(os.path.dirname(CRED_PATH), exist_ok=True)
     salt = os.urandom(16)
@@ -176,7 +230,10 @@ def _main(argv):
         print(f"已保存。校验：{status()}")
         return 0
     if cmd == "clear":
-        print("已删除" if clear() else "本来就没有")
+        a = clear()
+        b = drop_json("sprite-cookies.json")     # 顺带清掉登录态
+        print("凭据" + ("已删除" if a else "本来就没有") + "，" +
+              "登录态" + ("已删除" if b else "本来就没有"))
         return 0
     if cmd == "show":
         st = status()

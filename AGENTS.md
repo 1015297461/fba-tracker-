@@ -957,6 +957,15 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
     旧逻辑 `if close_browser and result` 导致「取不到数据 + 没判成需登录」时窗口常驻（用户报过）。
     唯一保留窗口的是用户主动点「重新登录」（`open_login_window` → `_watch_login` 登录成功后自动关、超时 5 分钟也关）。
   · 护栏：自动登录连续失败 3 次熔断 30 分钟（`_login_blocked`），避免把账号试锁。
+  · **登录态持久化（关键）**：`JSESSIONID` 和 `Sprite-X-Token` 都是**会话 cookie**（`persistent=0`），
+    Chrome 一关就没了 —— 不存的话**每次取数都要重登**（13 秒/次）。
+    所以登录成功（或取数成功）时用 CDP `Network.getAllCookies` 导出 → `sprite_cred.save_json`
+    加密存 `data/sprite-cookies.json`；每次启动浏览器后 `_apply_cookies()` 用 `Network.setCookies`
+    注入回去，并把会话 cookie 的 `expires` 推到 3 天后（浏览器收到有明确过期时间的 cookie 会自己写盘）。
+    实测：首次 13s（含登录）→ 之后 **4.3s 且不再登录**。
+    ⚠️ 两个坑：① `getAllCookies` 的 `sameSite` 是数字、`setCookies` 只认字符串
+    （"Strict"/"Lax"/"None"），不转会报 `Invalid parameters` 且**整个注入静默失败**；
+    ② `_cdp()` 原来把 CDP 的 `error` 吞掉了（只取 `m.result`），排查时看不到原因，已改为带出 `__error`。
   · 前端：`src/features/tools/SpriteStatusBar.tsx`，读 `GET /api/asin-meta/status` 的 `last`
     （need_login 橙色 + 「重新登录」按钮 / error 红色 / **ok 时不显示**，所以下次取到就自动消失）；
     异常时 4 秒轮询、正常时 20 秒低频轮询（采集完的后台自动补失败也能被发现）。
