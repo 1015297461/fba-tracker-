@@ -8,6 +8,7 @@ import { DateCalendar } from './DateCalendar';
 import { groupsApi, groupItems, moveBefore } from './recordGroups';
 import type { RecGroup, RecMember, RecGroupsPayload } from './recordGroups';
 import { NameDialog, MoveDialog } from './RecordGroupDialogs';
+import { SpriteStatusBar } from './SpriteStatusBar';
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -174,6 +175,7 @@ export function CategoryMonitor() {
   const [q, setQ] = useState('');
   const [runBusy, setRunBusy] = useState(false);
   const [fillBusy, setFillBusy] = useState(false);
+  const [spriteTick, setSpriteTick] = useState(0);   // 触发状态条刷新
   const [detail, setDetail] = useState<CatDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [tab, setTab] = useState<'trend' | 'events' | 'runs'>('trend');
@@ -481,6 +483,7 @@ export function CategoryMonitor() {
       setErr(e.message);
     } finally {
       setFillBusy(false);
+      setSpriteTick(t => t + 1);          // 让状态条读到最新结果（成功会自动消失）
     }
   };
 
@@ -693,6 +696,7 @@ export function CategoryMonitor() {
       {/* ===== 右栏 ===== */}
       <section className="cm-detail">
         {err && <div className="cm-err">{err}</div>}
+        <SpriteStatusBar refreshKey={spriteTick} />
         {current ? (
           <>
             <div className="cm-target">

@@ -8,6 +8,7 @@ import { useColResize } from './colResize';
 import { groupsApi, groupItems } from './recordGroups';
 import type { RecGroup, RecMember, RecGroupsPayload } from './recordGroups';
 import { NameDialog, MoveDialog } from './RecordGroupDialogs';
+import { SpriteStatusBar } from './SpriteStatusBar';
 import { DateCalendar } from './DateCalendar';
 import type { CatDetail } from './CategoryMonitor';
 import {
@@ -1935,11 +1936,13 @@ function MyAsinsEditor({ value, onSave }: { value: string[]; onSave: (v: string[
 }
 
 /** 前台实测榜单主体 */
-function ScrapeResult({ snap, ownAsin, myAsins, history, trend, events, onPick, onDel }: {
+function ScrapeResult({ snap, ownAsin, myAsins, history, trend, events, onPick, onDel, onSpriteTick }: {
   snap: any;
   ownAsin?: string;
   /** 「我的 ASIN」列表（最多 5 个，来自全局设置） */
   myAsins?: string[];
+  /** 手动补完上架时间后通知外层刷新状态条 */
+  onSpriteTick?: () => void;
   history: any[];
   trend: any;
   events: any;
@@ -1980,7 +1983,7 @@ function ScrapeResult({ snap, ownAsin, myAsins, history, trend, events, onPick, 
       const d = await apiScrapeMeta(asins, snap?.keyword || data.keyword, true);
       setMeta(d.meta || {});
     } catch { /* 失败就保持原样，不打断浏览 */ }
-    finally { setDateBusy(false); }
+    finally { setDateBusy(false); onSpriteTick?.(); }
   };
 
   const myAsin = (ownAsin || '').trim().toUpperCase();
@@ -2351,6 +2354,7 @@ export function RankMonitor() {
   const [runOpen, setRunOpen] = useState(false);
   // 当前正在看的是哪一条记录（列表高亮用）。之前没有这个，点哪条都看不出选中了谁
   const [activeRecId, setActiveRecId] = useState<string | null>(null);
+  const [spriteTick, setSpriteTick] = useState(0);   // 上架时间状态条刷新信号
   // 右侧「当前展示的记录」关键词。只有打开记录 / 真正跑完一次查询才更新；
   // 左侧输入框随便打字不能改它 —— 否则还没查询，右侧标题就先变了。
   const [activeKeyword, setActiveKeyword] = useState('');
@@ -3212,6 +3216,8 @@ export function RankMonitor() {
           </div>
         ) : (
         <>
+            {/* 上架时间取数状态（失败/需登录时出现，取到后自动消失） */}
+            <SpriteStatusBar refreshKey={spriteTick} />
             {/* 顶部只回显当前配置；改配置统一走弹窗，避免两处都能改、互相覆盖 */}
             <div className="rk-setup">
               <div className="rk-setup-bar">
@@ -3294,7 +3300,8 @@ export function RankMonitor() {
               </div>
               {scrapeSnap ? (
                 <ScrapeResult snap={scrapeSnap} ownAsin={own} myAsins={myAsins} history={scrapeHist} trend={scrapeTrend}
-                  events={scrapeEvents} onPick={pickScrapeDate} onDel={deleteCurrentScrape} />
+                  events={scrapeEvents} onPick={pickScrapeDate} onDel={deleteCurrentScrape}
+                  onSpriteTick={() => setSpriteTick(t => t + 1)} />
               ) : (
                 <div className="ai-empty">
                   还没有抓取过这个词。点上面的「获取最新数据」。

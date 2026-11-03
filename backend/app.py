@@ -37,7 +37,7 @@ from .workers.export_worker import ExportWorker
 from .workers.ai_analysis_worker import AiAnalysisWorker
 from . import pdf_splitter
 from .routes import (auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis,
-                     sif_keywords, shipment, rank_monitor_routes, catmon)
+                     sif_keywords, shipment, rank_monitor_routes, catmon, asin_meta_routes)
 from .rank_monitor import RankMonitorWorker
 
 
@@ -93,7 +93,7 @@ def get_lan_ip():
 
 ROUTE_MODULES = (
     auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis, sif_keywords,
-    shipment, rank_monitor_routes, catmon,
+    shipment, rank_monitor_routes, catmon, asin_meta_routes,
 )
 
 

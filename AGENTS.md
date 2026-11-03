@@ -155,6 +155,8 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   `local` 实现要点：新标签先开 about:blank 再 /navigate（`/new` 会等整页加载），
                               #   /navigate 客户端只等 8s，就绪靠轮询 `readyState + productTitle`；标签复用、闲置 240s 关。
   sprite_fetch.py              # 卖家精灵「查竞品」批量取上架时间（2026-11-02 新增）。
+  sprite_cred.py               # 卖家精灵账号凭据（密文存 data/sprite-cred.json，密钥由本机标识派生）。
+                               #   设置：python3 -m backend.sprite_cred set
                               #   接口 `POST https://www.sellersprite.com/v3/api/competing-lookup`：同域、cookie
                               #   认证、**无签名**。在**已登录页面的上下文里 fetch()** 调用（不逆向、不解析 DOM）。
                               #   ⚠️ **`symbolFlag: true` 才是「精确查询」**（只返回传入的 ASIN；5 个 ASIN → total=5）。
@@ -935,6 +937,31 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
   · **两个模块取数来源不同**（易混淆）：类目榜单 = 卖家精灵（`asin_meta.SOURCES=["sprite"]`）；
     排名监测 = **SIF**（`rank_monitor.enrich_asin_meta`：竞品榜 `listed_age_days` 天数倒算为主，
     `market_get_asin_profile` 兜底），且排名监测**没有定时任务**、前端也还没显示上架列。
+    （2026-11-02 晚排名监测已改为也走卖家精灵，见下方「凭据与自动登录」。）
+- **凭据与自动登录（2026-11-03）**：卖家精灵**多端登录互踢**，固定 cookie 会失效，
+  表现为「接口 200 但返回 HTML」——
+  · 判定：`_JS_TMPL` 先看 `content-type`，非 JSON 直接返回 `not_json`（旧代码 `JSON.parse` 失败只报
+    `bad_json`，被当成普通失败 → 既不提示也不重登）。`_is_auth_error()` 把 `not_json`/401/403 都算认证失败。
+  · 凭据：`backend/sprite_cred.py`，密文存 `data/sprite-cred.json`（`/data/` 已 gitignore），
+    密钥由**本机 IOPlatformUUID + 随机 salt** 经 scrypt 派生（不落盘、换机解不开），HMAC-SHA256-CTR 流加密 + HMAC 校验。
+    设置：`python3 -m backend.sprite_cred set`（密码不回显）；`show` / `clear` 同名子命令。
+  · **必须先判断再重登**（用户明确要求）：`_auto_login()` 第一步就是 `_probe()`，**能取到数据就返回
+    `already_ok`、什么都不做**；`fetch_dates` 判定 `auth_failed` 后还会再 `_probe()` 二次确认，
+    探针正常就只标 `error` 不登录。原因：登录页地址是 **`/w/user/logout`**（访问会先登出），
+    误走一次就把**有效会话**踢掉了。
+  · 登录页实测：`https://www.sellersprite.com/w/user/logout` → 标题「卖家精灵登录」，
+    表单是「手机号/邮箱/子账号」+「密码」，页面上有 2 套表单（隐藏那套也在 DOM 里，取可见的）。
+    `/v3/login`、`/login` 都是 404。填表用原生 setter + `input/change/blur` 事件（Vue 受控组件才认），
+    提交按「立即登录」，排除「账号密码登录/验证码登录/扫码登录/注册」等切换项。
+  · **浏览器必关**：`fetch_dates` 的 `finally` 无条件 `close_browser_gracefully()`。
+    旧逻辑 `if close_browser and result` 导致「取不到数据 + 没判成需登录」时窗口常驻（用户报过）。
+    唯一保留窗口的是用户主动点「重新登录」（`open_login_window` → `_watch_login` 登录成功后自动关、超时 5 分钟也关）。
+  · 护栏：自动登录连续失败 3 次熔断 30 分钟（`_login_blocked`），避免把账号试锁。
+  · 前端：`src/features/tools/SpriteStatusBar.tsx`，读 `GET /api/asin-meta/status` 的 `last`
+    （need_login 橙色 + 「重新登录」按钮 / error 红色 / **ok 时不显示**，所以下次取到就自动消失）；
+    异常时 4 秒轮询、正常时 20 秒低频轮询（采集完的后台自动补失败也能被发现）。
+    接口在 `backend/routes/asin_meta_routes.py`（`/api/asin-meta/status`、`/api/asin-meta/login`），
+    两个模块共用。
 - **查询记录分类（2026-11-02 晚）**：两个模块共用一套实现，靠 `scope` 区分
   （`catmon` / `rank`），代码在 `backend/routes/record_groups.py` + `src/features/tools/recordGroups.ts`。
   · 表：`record_groups(id, scope, name, sort_order, collapsed)`（分类本体，含**折叠状态**）、
