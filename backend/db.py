@@ -2908,6 +2908,41 @@ class DbState:
                 conn.commit()
         return {"changed": True, "id": sid, "checked_at": now}
 
+    def update_rmon_srp_meta(self, sid: str, meta: dict) -> bool:
+        """把上架时间**快照**写回某条抓取记录（只补缺，不覆盖已有日期）。
+
+        为什么放在记录里：上架时间一辈子不变，但前端每打开一条记录都要问一次接口，
+        列会"空 → 有值"闪一下，看起来像每次都在重查。抓取时先把当时已有的日期
+        存进 `data.meta`，之后打开就是秒开；后台补到新 ASIN 时再回写一次。
+        """
+        if not sid or not meta:
+            return False
+        with self.lock:
+            with self._conn() as conn:
+                row = conn.execute("SELECT data FROM rmon_srps WHERE id=?", [sid]).fetchone()
+                if not row:
+                    return False
+                try:
+                    d = json.loads(row["data"] or "{}")
+                except Exception:
+                    return False
+                cur = d.get("meta") or {}
+                added = 0
+                for a, v in (meta or {}).items():
+                    if not (v or {}).get("first_available_day"):
+                        continue
+                    if (cur.get(a) or {}).get("first_available_day"):
+                        continue          # 先到先得：上架时间不变，不互相覆盖
+                    cur[a] = v
+                    added += 1
+                if not added:
+                    return False
+                d["meta"] = cur
+                conn.execute("UPDATE rmon_srps SET data=? WHERE id=?",
+                             [json.dumps(d, ensure_ascii=False), sid])
+                conn.commit()
+        return True
+
     def add_rmon_check(self, source: str, keyword: str, country: str = "US",
                        note: str = "", username: str = None) -> str:
         """记一条「检查过、内容没变」的留痕（不存快照，只记时间与说明）。"""

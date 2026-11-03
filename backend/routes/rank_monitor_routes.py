@@ -51,6 +51,44 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             return None
         return user
 
+    def _with_dates(snap):
+        """给抓取记录补上上架时间快照（老记录没有、或后来才补到的）。
+
+        新记录在保存时就把当时的日期写进 `data.meta`，打开即显；
+        2026-11-03 之前的老记录没有这个字段，这里用全局属性表补一次并落库，
+        之后同样是秒开 —— 前端不用再为「列是空的」额外发一次请求。
+        """
+        if not snap or not isinstance(snap, dict):
+            return snap
+        data = snap.get("data")
+        if not isinstance(data, dict):
+            return snap
+        asins = list(dict.fromkeys(
+            str(i.get("asin") or "").upper()
+            for i in (data.get("items") or []) if i.get("asin")))
+        if not asins:
+            return snap
+        cur = data.get("meta") or {}
+        if cur and all((cur.get(a) or {}).get("first_available_day") for a in asins):
+            return snap                       # 快照齐全，直接用
+        try:
+            m = state.get_rmon_asin_meta(asins) or {}
+        except Exception:
+            return snap
+        fresh = {a: v for a, v in m.items() if (v or {}).get("first_available_day")}
+        if not fresh:
+            return snap
+        merged = dict(cur)
+        for a, v in fresh.items():
+            if not (merged.get(a) or {}).get("first_available_day"):
+                merged[a] = v                 # 记录里的快照优先，只补缺
+        data["meta"] = merged
+        try:
+            state.update_rmon_srp_meta(snap.get("id"), fresh)   # 只落库一次
+        except Exception:
+            pass
+        return snap
+
     # 查询记录分类（与类目榜单监控共用同一套实现，scope 区分）
     from .record_groups import register_groups as _register_groups
     _register_groups("rank", "/api/rank", GET, POST, PUT, DELETE, state, _user)
@@ -917,7 +955,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         if not keyword:
             self._send_json(400, {"error": "keyword required"})
             return
-        snap = state.get_rmon_srp_latest(keyword, country)
+        snap = _with_dates(state.get_rmon_srp_latest(keyword, country))
         self._send_json(200, {"snapshot": snap})
     GET["/api/rank/scrape/latest"] = get_scrape_latest
 
@@ -942,7 +980,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         if not sid:
             self._send_json(400, {"error": "id required"})
             return
-        snap = state.get_rmon_srp(sid)
+        snap = _with_dates(state.get_rmon_srp(sid))
         if not snap:
             self._send_json(404, {"error": "记录不存在"})
             return

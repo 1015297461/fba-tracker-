@@ -1959,18 +1959,12 @@ function ScrapeResult({ snap, ownAsin, myAsins, history, trend, events, onPick, 
   // 上架日期：搜索页没有这个字段，向 SIF 批量档案要（后端按 ASIN 永久缓存，
   // 命中缓存不再调用；所以打开多少次都只付一次成本）
   const [meta, setMeta] = useState<Record<string, any>>({});
-  const [metaBusy, setMetaBusy] = useState(false);
   const [dateBusy, setDateBusy] = useState(false);
   useEffect(() => {
-    const asins = Array.from(new Set(items.map((i: any) => String(i.asin || '').toUpperCase())))
-      .filter(Boolean);
-    setMeta({});
-    if (!asins.length) return;
-    setMetaBusy(true);
-    apiScrapeMeta(asins, snap?.keyword || data.keyword)
-      .then((d: any) => setMeta(d.meta || {}))
-      .catch(() => setMeta({}))
-      .finally(() => setMetaBusy(false));
+    // 上架时间直接取**记录自带的快照**（`data.meta`）——打开即显，**一次请求都不发**。
+    //   快照在抓取时写入；后台补到新 ASIN 会回写；老记录由后端读取时补齐并落库。
+    //   所以这里不需要再问接口：真想补缺失的，点工具栏「补齐上架时间」。
+    setMeta(((data.meta as Record<string, any>) || {}));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snap?.id]);
 
@@ -1981,7 +1975,7 @@ function ScrapeResult({ snap, ownAsin, myAsins, history, trend, events, onPick, 
     setDateBusy(true);
     try {
       const d = await apiScrapeMeta(asins, snap?.keyword || data.keyword, true);
-      setMeta(d.meta || {});
+      if (d && d.meta) setMeta(prev => ({ ...prev, ...d.meta }));
     } catch { /* 失败就保持原样，不打断浏览 */ }
     finally { setDateBusy(false); onSpriteTick?.(); }
   };
@@ -2202,7 +2196,7 @@ function ScrapeResult({ snap, ownAsin, myAsins, history, trend, events, onPick, 
                       <span>
                         {(() => {
                           const m = meta[String(it.asin || '').toUpperCase()];
-                          if (m === undefined) return metaBusy ? '…' : '—';
+                          if (m === undefined) return '—';
                           return m?.first_available_day || '—';
                         })()}
                       </span>

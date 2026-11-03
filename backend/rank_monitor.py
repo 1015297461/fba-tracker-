@@ -64,6 +64,31 @@ def _now_date() -> str:
     return datetime.date.today().isoformat()
 
 
+def seed_srp_meta(state, res: dict) -> int:
+    """把**当前已有**的上架时间塞进抓取结果，随记录一起存成快照（`data.meta`）。
+
+    为什么要快照：抓取记录里原本不带这个字段，前端每打开一条就要 POST 一次接口，
+    上架列会"空 → 有值"闪一下，看起来像每次都在重查（实际后端 0 请求）。
+    有了快照，打开即显；当时还没有的（新 ASIN），后台补完再 `update_rmon_srp_meta` 回写。
+
+    只放"有日期"的条目 —— 负缓存（查过但没有）不写进去，免得把"没取到"也冻成快照。
+    返回写入条数。
+    """
+    asins = [str(i.get("asin") or "").upper()
+             for i in (res or {}).get("items") or [] if i.get("asin")]
+    asins = list(dict.fromkeys(asins))
+    if not asins:
+        return 0
+    try:
+        meta = state.get_rmon_asin_meta(asins) or {}
+    except Exception:
+        return 0
+    snap = {a: v for a, v in meta.items() if (v or {}).get("first_available_day")}
+    if snap:
+        res["meta"] = snap
+    return len(snap)
+
+
 def parse_extra_asins(v) -> list:
     """把「额外指定的 ASIN」统一成大写去重列表。
 
@@ -609,7 +634,7 @@ class RankMonitorWorker(threading.Thread):
         except Exception as e:
             _log(f"[rank-monitor] 趋势刷新失败「{kw}」: {str(e)[:120]}")
 
-    def _kick_asin_dates(self, res: dict):
+    def _kick_asin_dates(self, res: dict, sid: str = None):
         """抓完后**在后台**补这批 ASIN 的上架时间（卖家精灵通道），不阻塞定时任务。
 
         上架时间不会变、按 ASIN 永久缓存，所以日常只有几个新面孔要取；
@@ -627,6 +652,11 @@ class RankMonitorWorker(threading.Thread):
                 r = asin_meta.ensure(self.state, asins, max_new=len(asins))
                 _log(f"[srp] 自动补上架时间：覆盖 {r.get('covered')}/{r.get('asked')}"
                      f"，本次新取 {r.get('fetched')}，来源 {r.get('sources') or '缓存'}")
+                # 回写记录快照：下次打开这条记录就是秒开，不用再问接口
+                if sid and r.get("dates"):
+                    fresh = self.state.get_rmon_asin_meta(list(r["dates"]))
+                    if self.state.update_rmon_srp_meta(sid, fresh):
+                        _log(f"[srp] 上架时间快照已回写 {sid}（新增 {r.get('fetched')} 条）")
             except Exception as e:
                 _log(f"[srp] 自动补上架时间失败：{type(e).__name__}: {e}")
 
@@ -648,6 +678,7 @@ class RankMonitorWorker(threading.Thread):
             _log(f"[srp] 定时抓取「{kw}」{country} {pages} 页")
             res = srp.fetch_srp(kw, country, pages)
             if res.get("ok"):
+                seed_srp_meta(self.state, res)      # 上架时间随记录一起存成快照
                 info = self.state.save_rmon_srp(kw, country, res, t.get("username"),
                                                 srp_fingerprint(res))
                 if info.get("changed") is False:
@@ -662,8 +693,8 @@ class RankMonitorWorker(threading.Thread):
             if res.get("ok"):
                 # 定时抓完顺手刷趋势，避免「定时跑了但趋势还是旧的」
                 self._refresh_trend(kw, country)
-                # 抓完在后台补上架时间（卖家精灵），不阻塞定时任务
-                self._kick_asin_dates(res)
+                # 抓完在后台补上架时间（卖家精灵），不阻塞定时任务；补完回写记录快照
+                self._kick_asin_dates(res, (info or {}).get("id"))
         except Exception as e:
             _log(f"[srp] 定时抓取异常「{kw}」: {str(e)[:120]}")
             self.state.mark_srp_target_run(t["id"], "failed", f"{type(e).__name__}: {e}")
@@ -1042,6 +1073,7 @@ def _run_scrape_task(state, tid, keyword, country, pages, username):
         if res.get("ok"):
             _scrape_set(tid, stage="保存榜单快照")
             try:
+                seed_srp_meta(state, res)           # 上架时间随记录一起存成快照
                 info = state.save_rmon_srp(keyword, country, res, username,
                                            srp_fingerprint(res))
                 sid = info.get("id")
