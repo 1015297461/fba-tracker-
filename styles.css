@@ -4135,6 +4135,17 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .rk-toast-hint { margin-top: 4px; font-size: 11.5px; color: var(--ink-3); line-height: 1.55; }
 @keyframes rk-toast-in { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
+/* 采集队列提示：所有采集（定时 + 手动）串行，这里显示「正在跑谁 / 还排几个」 */
+.kr-queue-bar {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  margin-top: 8px; padding: 6px 10px; border-radius: 7px;
+  font-size: 11.5px; color: var(--ink-3);
+  background: var(--bg-2, rgba(127,127,127,.08));
+  border: 1px solid var(--border);
+}
+.kr-queue-wait { color: var(--ink-4); }
+.kr-queue-msg { color: var(--blue); font-weight: 500; }
+
 /* ===== 详情抓取完成提示（后台任务跑完时右上角弹出） ===== */
 .dt-toasts {
   position: fixed; right: 20px; top: 60px; z-index: 1300;

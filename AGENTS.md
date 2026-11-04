@@ -94,6 +94,16 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                 #     去重 key = (task_id, 任务时区的 YYYY-MM-DD-HH:MM)；
                                 #     `_due_slot()` 抽出来便于单测。
                                 #   · /run 支持 `keyword`：只采那一个词（表格每行的「采集」按钮）。
+                                #   **采集队列（2026-11-04）**：定时与手动采集全部走
+                                #   `submit(state, task, keyword, source)` 入同一个 `queue.Queue`，
+                                #   由唯一的 RankWorker 线程串行消费。
+                                #   为什么：9 个任务同定 12:00 时，原来调度线程同步跑要占 6 分钟
+                                #   （期间不再检查档位），而手动采集在 HTTP 线程里跑，会和定时任务
+                                #   **同时抓 Amazon** → 撞反爬。现在同一任务同一词已在队列就不重复入队。
+                                #   `/run` 只返回 {queued, waiting, running, items}（不等待结果），
+                                #   `GET /api/rank/queue` 查队列；前端轮询它显示「正在采集谁/还排几个」。
+                                #   ⚠️ worker 是 daemon 线程，进程重启会丢弃队列中未跑的任务
+                                #   （下次定时会重新入队，手动的不补）。
     scrape.py                   # /api/scrape/*：start_scrape_task()/_run_scrape() 服务端后台
                                 #   执行器（POST /start 立即返回 taskId，前端轮询 /progress，
                                 #   刷新不丢任务）+ 运行时暂停/取消/继续（/pause /resume /cancel，

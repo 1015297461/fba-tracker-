@@ -94,15 +94,31 @@ async function apiDeleteKeyword(taskId: string, keyword: string): Promise<void> 
   await fetch(`/api/rank/keyword?taskId=${encodeURIComponent(taskId)}&keyword=${encodeURIComponent(keyword)}`,
     { method: 'DELETE', headers: authHeaders() });
 }
-async function apiRunTask(taskId: string, keyword?: string): Promise<void> {
+interface QueueItem {
+  taskId: string; name: string; keyword: string | null; words: number;
+  source: string; submittedAt: string;
+}
+interface QueueInfo {
+  queued?: boolean; duplicate?: boolean;
+  waiting: number;
+  running: QueueItem | null;
+  items: QueueItem[];
+}
+
+/** 立即采集 = 入队（后端全局只有一个 worker，串行抓，不会并发撞 Amazon） */
+async function apiRunTask(taskId: string, keyword?: string): Promise<QueueInfo> {
   const r = await fetch('/api/rank/run', {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(keyword ? { taskId, keyword } : { taskId }),
   });
-  if (!r.ok) {
-    const j = await r.json().catch(() => ({}));
-    throw new Error(j.error || '采集失败');
-  }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || '提交采集失败');
+  return j as QueueInfo;
+}
+async function apiGetQueue(): Promise<QueueInfo> {
+  const r = await fetch('/api/rank/queue', { headers: authHeaders() });
+  if (!r.ok) return { waiting: 0, running: null, items: [] };
+  return await r.json();
 }
 async function apiGetHistory(taskId: string): Promise<Snapshot[]> {
   const r = await fetch('/api/rank/history?taskId=' + encodeURIComponent(taskId), { headers: authHeaders() });
@@ -646,16 +662,28 @@ export function KeywordRank() {
   const [snaps, setSnaps]   = React.useState<Snapshot[]>([]);
   const [modal, setModal]   = React.useState<{ open: boolean; task: RankTask | null }>({ open: false, task: null });
   const [detail, setDetail] = React.useState<{ kw: string } | null>(null);
-  const [running, setRun]   = React.useState(false);
   const [loadErr, setErr]   = React.useState('');
 
   const [timezones, setTimezones] = React.useState<TzOption[]>([]);
-  const [runningKw, setRunningKw] = React.useState<string | null>(null);
+  // 采集队列（后端全局串行）：用来显示「排队中 / 正在采集」和自动刷新
+  const [queue, setQueue] = React.useState<QueueInfo>({ waiting: 0, running: null, items: [] });
+  const [runMsg, setRunMsg] = React.useState('');
+  const activeRef = React.useRef<string | null>(null);
 
   const active = tasks.find(t => t.id === activeId) || null;
   const rows   = active ? buildRows(active.keywords, snaps) : [];
   const tzShort = (id?: string) =>
     (timezones.find(t => t.id === (id || 'Asia/Shanghai'))?.short || '中国');
+
+  /** 这个任务（或它的某个词）是否已在队列/正在跑 */
+  const inQueue = (taskId: string, kw?: string) => {
+    const match = (j: QueueItem | null) => !!j && j.taskId === taskId
+      && (!kw || !j.keyword || j.keyword === kw);   // keyword=null 表示整任务，包含所有词
+    if (match(queue.running)) return true;
+    return queue.items.some(j => match(j));
+  };
+  const taskBusy = (taskId: string) => inQueue(taskId);
+  const queueLen = queue.waiting + (queue.running ? 1 : 0);
 
   async function reloadTasks(sel?: string) {
     try {
@@ -667,27 +695,48 @@ export function KeywordRank() {
   async function reloadSnaps(id: string) {
     try { setSnaps(await apiGetHistory(id)); } catch { setSnaps([]); }
   }
+  async function refreshQueue() {
+    try { setQueue(await apiGetQueue()); } catch { /* 忽略瞬时失败 */ }
+  }
 
   React.useEffect(() => { reloadTasks(); }, []);
   React.useEffect(() => { if (activeId) reloadSnaps(activeId); else setSnaps([]); }, [activeId]);
+  React.useEffect(() => { activeRef.current = activeId; }, [activeId]);
 
+  // 队列轮询：有任务在跑时 3 秒一次，空闲时 12 秒一次
+  React.useEffect(() => {
+    refreshQueue();
+    const id = window.setInterval(refreshQueue, queueLen > 0 ? 3000 : 12000);
+    return () => window.clearInterval(id);
+  }, [queueLen > 0]);
+
+  // 队列从「有」变成「空」→ 说明刚跑完，刷新当前任务的数据
+  const prevLen = React.useRef(0);
+  React.useEffect(() => {
+    if (prevLen.current > 0 && queueLen === 0) {
+      const id = activeRef.current;
+      if (id) { reloadSnaps(id); reloadTasks(id); }
+      setRunMsg(m => (m ? '采集完成' : m));
+      window.setTimeout(() => setRunMsg(''), 4000);
+    }
+    prevLen.current = queueLen;
+  }, [queueLen]);
+
+  const queueTip = (r: QueueInfo) =>
+    r.duplicate ? '这个已经在队列里了'
+      : `已排队${r.waiting > 0 ? `（前面还有 ${r.waiting} 个）` : ''}，跑完自动刷新`;
+
+  /** 立即采集整个任务：入队即可，不用等（后端串行执行） */
   async function runNow() {
     if (!active) return;
-    setRun(true);
-    try { await apiRunTask(active.id); await reloadSnaps(active.id); await reloadTasks(active.id); }
-    finally { setRun(false); }
+    try { setRunMsg(queueTip(await apiRunTask(active.id))); await refreshQueue(); }
+    catch (e: any) { setRunMsg(e.message || '提交失败'); }
   }
   /** 只采一个词（表格每行的「采集」按钮） */
   async function runOne(kw: string) {
-    if (!active || runningKw) return;
-    setRunningKw(kw);
-    try {
-      await apiRunTask(active.id, kw);
-      await reloadSnaps(active.id);
-      await reloadTasks(active.id);
-    } catch (e: any) {
-      alert(e.message || '采集失败');
-    } finally { setRunningKw(null); }
+    if (!active) return;
+    try { setRunMsg(queueTip(await apiRunTask(active.id, kw))); await refreshQueue(); }
+    catch (e: any) { setRunMsg(e.message || '提交失败'); }
   }
   async function removeTask(t: RankTask) {
     if (!confirm(`删除任务「${t.name || t.asin}」及所有历史数据？`)) return;
@@ -747,12 +796,27 @@ export function KeywordRank() {
                   · 定时 <b>{tzShort(active.timezone)}</b> {active.schedule.join(' / ') || '无'}
                   {active.lastRunAt && <> · 上次采集 {fmtDateTime(active.lastRunAt)}</>}
                 </div>
+                {/* 采集队列：所有采集（定时 + 手动）串行，这里显示进度 */}
+                {(queueLen > 0 || runMsg) && (
+                  <div className="kr-queue-bar">
+                    {queue.running && (
+                      <span>正在采集「{queue.running.name}」
+                        {queue.running.keyword ? ` · ${queue.running.keyword}` : ` · ${queue.running.words} 词`}
+                      </span>
+                    )}
+                    {queue.waiting > 0 && (
+                      <span className="kr-queue-wait">还有 {queue.waiting} 个在排队</span>
+                    )}
+                    {runMsg && <span className="kr-queue-msg">{runMsg}</span>}
+                  </div>
+                )}
               </div>
               <div className="kr-detail-actions">
                 <button className="btn btn-sm" onClick={() => setModal({ open: true, task: active })}>编辑</button>
                 <button className="btn btn-sm kr-del" onClick={() => removeTask(active)}>删除任务</button>
-                <button className="btn btn-primary btn-sm" onClick={runNow} disabled={running}>
-                  {running ? '采集中…' : '⟳ 立即采集'}
+                <button className="btn btn-primary btn-sm" onClick={runNow}
+                  disabled={taskBusy(active.id)}>
+                  {taskBusy(active.id) ? '排队中…' : '⟳ 立即采集'}
                 </button>
               </div>
             </div>
@@ -812,10 +876,10 @@ export function KeywordRank() {
                           />
                         </td>
                         <td className="kr-col-ops">
-                          <button className="btn btn-sm" disabled={!!runningKw}
-                            title="只采集这一个关键词"
+                          <button className="btn btn-sm" disabled={inQueue(active.id, row.keyword)}
+                            title="只采集这一个关键词（后端串行执行，不会和别的采集撞车）"
                             onClick={() => runOne(row.keyword)}>
-                            {runningKw === row.keyword ? '采集中…' : '采集'}
+                            {inQueue(active.id, row.keyword) ? '排队中…' : '采集'}
                           </button>
                           <button className="btn btn-sm"
                             onClick={() => setDetail({ kw: row.keyword })}>详情</button>

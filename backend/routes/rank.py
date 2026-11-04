@@ -1,4 +1,5 @@
 import datetime
+import queue
 import random
 import re
 import threading
@@ -81,10 +82,111 @@ def run_rank_task(state, task, delay_between_kw=(3.0, 7.0)):
     return results
 
 
+# ---------------------------------------------------------------------------
+# 采集队列：定时与手动采集都走这里，**全局串行**
+#
+# 为什么需要：9 个任务都定在 12:00 时，原来的调度线程同步跑一个接一个，
+# 一个任务 5 个词约 40 秒 → 调度线程被占 6 分钟，期间不再检查新档位；
+# 而「手动立即采集」在 HTTP 线程里执行，会和定时任务**同时抓 Amazon**，
+# 既容易撞反爬、又互相拖慢。现在统一入队，由唯一的 worker 顺序消费。
+# ---------------------------------------------------------------------------
+_RQ = queue.Queue()
+_RQ_LOCK = threading.Lock()
+_RQ_PENDING = {}                 # job_key -> job（含正在执行的那个）
+_RQ_RUNNING = {"job": None}
+_RQ_WORKER = {"started": False}
+
+
+def _job_brief(j):
+    if not j:
+        return None
+    return {"taskId": j["taskId"], "name": j["name"], "keyword": j["keyword"],
+            "words": j["words"], "source": j["source"], "submittedAt": j["submittedAt"]}
+
+
+def _queue_snapshot():
+    """调用方必须持有 _RQ_LOCK。"""
+    running = _RQ_RUNNING["job"]
+    waiting = [j for j in _RQ_PENDING.values() if j is not running]
+    return {
+        "running": _job_brief(running),
+        "waiting": len(waiting),
+        "items": [_job_brief(j) for j in waiting][:20],
+    }
+
+
+def queue_status():
+    with _RQ_LOCK:
+        return _queue_snapshot()
+
+
+def ensure_worker(state):
+    """启动唯一的采集 worker（重复调用安全）。"""
+    with _RQ_LOCK:
+        if _RQ_WORKER["started"]:
+            return
+        _RQ_WORKER["started"] = True
+    threading.Thread(target=_worker_loop, args=(state,), daemon=True,
+                     name="RankWorker").start()
+    _log("[rank] 采集队列 worker 已启动（定时与手动采集串行执行）")
+
+
+def submit(state, task, keyword=None, source="manual"):
+    """把一次采集排进队列；同一任务同一词已在队列里就不重复排。
+
+    返回 {queued, duplicate, waiting, running, items}。
+    """
+    if keyword:
+        if keyword not in (task.get("keywords") or []):
+            raise ValueError(f"任务里没有这个词：{keyword}")
+        task = dict(task, keywords=[keyword])
+    key = f"{task['id']}:{(keyword or '*').lower()}"
+    with _RQ_LOCK:
+        if key in _RQ_PENDING:
+            return {"queued": False, "duplicate": True, **_queue_snapshot()}
+        job = {
+            "key": key, "task": task, "taskId": task["id"],
+            "name": task.get("name") or task.get("asin"),
+            "keyword": keyword, "words": len(task.get("keywords") or []),
+            "source": source, "submittedAt": _now_iso(),
+        }
+        _RQ_PENDING[key] = job
+    _RQ.put(job)
+    ensure_worker(state)
+    with _RQ_LOCK:
+        snap = _queue_snapshot()
+    return {"queued": True, "duplicate": False, **snap}
+
+
+def _worker_loop(state):
+    while True:
+        job = _RQ.get()
+        with _RQ_LOCK:
+            _RQ_RUNNING["job"] = job
+        t0 = time.time()
+        _log(f"[rank] 开始采集「{job['name']}」（{job['words']} 词 · {job['source']}）")
+        try:
+            run_rank_task(state, job["task"])
+        except Exception as e:
+            _log(f"[rank] 采集异常「{job['name']}」: {type(e).__name__}: {e}")
+        finally:
+            with _RQ_LOCK:
+                _RQ_RUNNING["job"] = None
+                _RQ_PENDING.pop(job["key"], None)
+                left = len(_RQ_PENDING)
+            _log(f"[rank] 完成「{job['name']}」（{time.time() - t0:.0f}s，队列剩 {left}）")
+            _RQ.task_done()
+
+
 def start_scheduler(state):
-    """后台守护线程：每分钟检查定时档位，命中即采集（同一小时不重复）。"""
+    """后台守护线程：每分钟检查定时档位，命中就**入队**（不在这里直接跑）。
+    为什么改入队：9 个任务都定在 12:00 时，原来调度线程按顺序同步跑，
+    一个任务 5 个词要 40 秒，9 个任务就把调度线程卡 6 分钟（期间新一轮检查被推迟）；
+    更麻烦的是「手动立即采集」跑在 HTTP 线程里，会和定时任务**同时抓 Amazon**，
+    撞反爬、还互相拖慢。现在所有采集都进同一个队列，由唯一的 worker 串行执行。
+    """
     def loop():
-        done = set()  # (task_id, 'YYYY-MM-DD-HH')，避免同一小时重复触发
+        done = set()  # (task_id, 'YYYY-MM-DD-HH:MM')，同一档位只排一次
         while True:
             try:
                 today = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -101,18 +203,17 @@ def start_scheduler(state):
                         continue
                     done.add(key)
                     tz_short = TIMEZONES.get(task.get("timezone") or DEFAULT_TZ, {}).get("short", "")
-                    _log(f"[rank] 定时执行 {task['asin']}/{task['marketplace']} "
-                         f"({len(task['keywords'])} 词) @ {tz_short} {target.strftime('%m-%d %H:%M')}")
-                    try:
-                        run_rank_task(state, task)
-                    except Exception as e:
-                        _log(f"[rank] 任务异常: {e}")
+                    st = submit(state, task, source="schedule")
+                    _log(f"[rank] 定时入队 {task['name'] or task['asin']}/{task['marketplace']} "
+                         f"({len(task['keywords'])} 词) @ {tz_short} {target.strftime('%m-%d %H:%M')}"
+                         + (f"（队列中还有 {st['waiting']} 个）" if st.get("queued") else "（已在队列，跳过）"))
                 if len(done) > 800:
                     done = {k for k in done if k[1][:10] >= today}
             except Exception as e:
                 _log(f"[rank] 调度异常: {e}")
             time.sleep(60)
 
+    ensure_worker(state)      # 队列消费者：定时任务入队后要有人跑
     th = threading.Thread(target=loop, daemon=True)
     th.start()
     _log("[rank] 排名调度线程已启动（每分钟按任务时区检查自定义档位）")
@@ -161,7 +262,12 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
     POST["/api/rank/tasks"] = post_tasks
 
     def post_run(self):
-        """立即采集。传 keyword 就只采那一个词（表格每行的「采集」按钮）。"""
+        """立即采集：入队（不在这里同步抓），返回排队情况。
+
+        前端拿到 `queued` 后轮询 /api/rank/queue 与任务历史即可；
+        这样点 3 个任务的采集也不会同时抓 Amazon（全局只有一个 worker）。
+        传 keyword 就只采那一个词（表格每行的「采集」按钮）。
+        """
         if not auth.verify(_extract_token(self)):
             self._send_json(401, {"error": "请先登录"})
             return
@@ -176,16 +282,24 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             return
         if not task.get("id"):
             task = state.upsert_rank_task(task)
-        if keyword:
-            if keyword not in (task.get("keywords") or []):
-                self._send_json(404, {"error": f"任务里没有这个词：{keyword}"})
-                return
-            task = dict(task, keywords=[keyword])
-        _log(f"[rank] 手动执行 {task['asin']}/{task['marketplace']}"
-             + (f" · 单词 {keyword}" if keyword else f"（{len(task.get('keywords') or [])} 词）"))
-        results = run_rank_task(state, task)
-        self._send_json(200, {"taskId": task["id"], "results": results})
+        try:
+            res = submit(state, task, keyword=keyword or None, source="manual")
+        except ValueError as e:
+            self._send_json(404, {"error": str(e)})
+            return
+        _log(f"[rank] 手动入队 {task['asin']}/{task['marketplace']}"
+             + (f" · 单词 {keyword}" if keyword else f"（{len(task.get('keywords') or [])} 词）")
+             + ("" if res.get("queued") else "（已在队列，跳过）"))
+        self._send_json(200, {"taskId": task["id"], **res})
     POST["/api/rank/run"] = post_run
+
+    def get_queue(self):
+        """当前采集队列：正在跑什么、还排了几个。"""
+        if not auth.verify(_extract_token(self)):
+            self._send_json(401, {"error": "请先登录"})
+            return
+        self._send_json(200, queue_status())
+    GET["/api/rank/queue"] = get_queue
 
     def delete_task(self):
         if not auth.verify(_extract_token(self)):
