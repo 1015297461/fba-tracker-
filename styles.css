@@ -2182,6 +2182,27 @@ select.meta-edit { cursor: pointer; }
 .kr-slots { display: flex; gap: 6px; flex-wrap: wrap; }
 .kr-slot { font: inherit; font-size: 12px; padding: 5px 10px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--card-bg); color: var(--ink-3); cursor: pointer; }
 .kr-slot[data-on="true"] { background: var(--blue); border-color: var(--blue); color: #fff; }
+/* 自定义时间点：每个时间一个 time 输入 + 删除；下面一行是整点快捷 */
+.kr-schedule { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.kr-time-item { display: inline-flex; align-items: center; gap: 2px; }
+.kr-time-item input[type="time"] {
+  font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--border-strong);
+  border-radius: 6px; background: var(--card-bg); color: var(--ink);
+}
+.kr-time-del {
+  font: inherit; font-size: 11px; line-height: 1; padding: 3px 5px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--ink-4); cursor: pointer;
+}
+.kr-time-del:hover { background: var(--bg-2, rgba(127,127,127,.12)); color: var(--red); }
+.kr-slots-quick { margin-top: 8px; align-items: center; }
+.kr-muted { font-size: 11.5px; color: var(--ink-4); }
+.kr-hint { font-size: 11.5px; color: var(--ink-4); line-height: 1.6; margin-top: -4px; }
+/* 「更新时间」列里的失败角标：最近一次采集失败，但表格显示的是上次成功的时间 */
+.kr-fail {
+  display: inline-block; margin-left: 6px; padding: 0 5px; font-size: 10px; line-height: 15px;
+  border-radius: 4px; color: var(--red); background: rgba(220,38,38,.1);
+  border: 1px solid rgba(220,38,38,.3); cursor: help; vertical-align: 1px;
+}
 .kr-check { flex-direction: row !important; align-items: center; gap: 8px !important; }
 .kr-check input { width: auto; }
 .kr-modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); }

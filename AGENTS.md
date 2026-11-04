@@ -82,6 +82,18 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
     auth_routes.py             # /api/login /api/logout /api/me
     products.py                 # /api/products (GET/PUT) + /api/trash/*（回收站）
     rank.py                     # /api/rank/*，含 run_rank_task()/start_scheduler()
+                                #   关键词排名任务：任务 CRUD + 快照历史 + 立即采集（/run）
+                                #   定时（2026-11-04 改）：
+                                #   · 档位 `keyword_tasks.schedule` 统一存 "HH:MM" 字符串数组
+                                #     （db._norm_schedule 把老的 [0,6,12,18] 自动转成 ["00:00",…]），
+                                #     支持任意分钟；
+                                #   · `keyword_tasks.timezone` 决定按哪个时区解释（默认 Asia/Shanghai，
+                                #     可切 America/New_York / America/Los_Angeles），
+                                #     调度用 zoneinfo 换算，**不要**用服务器本地时间直接比小时；
+                                #   · 命中后 `SLOT_GRACE_SEC=600` 秒内都算数（重启/卡顿也能补跑），
+                                #     去重 key = (task_id, 任务时区的 YYYY-MM-DD-HH:MM)；
+                                #     `_due_slot()` 抽出来便于单测。
+                                #   · /run 支持 `keyword`：只采那一个词（表格每行的「采集」按钮）。
     scrape.py                   # /api/scrape/*：start_scrape_task()/_run_scrape() 服务端后台
                                 #   执行器（POST /start 立即返回 taskId，前端轮询 /progress，
                                 #   刷新不丢任务）+ 运行时暂停/取消/继续（/pause /resume /cancel，

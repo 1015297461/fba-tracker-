@@ -13,7 +13,6 @@ const MARKETPLACES = [
   { code: 'CA', label: '🇨🇦 加拿大' }, { code: 'JP', label: '🇯🇵 日本' },
   { code: 'MX', label: '🇲🇽 墨西哥' }, { code: 'AU', label: '🇦🇺 澳大利亚' },
 ];
-const SCHEDULE_SLOTS = [0, 6, 12, 18];
 
 // 趋势图两条线的颜色：复用全局 --blue/--orange token（而非各写各的十六进制），
 // 已用 dataviz 色板校验器在浅色/深色两个 surface 下验证过对比度和色盲安全性。
@@ -59,9 +58,13 @@ function monotonePath(pts: { x: number; y: number }[]): string {
 interface RankTask {
   id: string; asin: string; marketplace: string; name: string;
   keywords: string[]; keywordNotes: Record<string, string>;
-  schedule: number[]; enabled: boolean;
+  /** 定时档位 "HH:MM"（后端已归一化，老的整数小时也会转成 "06:00"） */
+  schedule: string[]; enabled: boolean;
+  /** 定时按哪个时区解释：Asia/Shanghai（默认）/ America/New_York / America/Los_Angeles */
+  timezone: string;
   createdAt?: string; lastRunAt?: string | null;
 }
+interface TzOption { id: string; label: string; short: string }
 interface Snapshot {
   id: number; keyword: string; capturedAt: string;
   organicRank: number | null; organicPage: number | null;
@@ -70,10 +73,11 @@ interface Snapshot {
 }
 
 // ---- API ----
-async function apiGetTasks(): Promise<RankTask[]> {
+async function apiGetTasks(): Promise<{ tasks: RankTask[]; timezones: TzOption[] }> {
   const r = await fetch('/api/rank/tasks', { headers: authHeaders() });
   if (!r.ok) throw new Error('加载任务失败');
-  return (await r.json()).tasks || [];
+  const j = await r.json();
+  return { tasks: j.tasks || [], timezones: j.timezones || [] };
 }
 async function apiSaveTask(t: Partial<RankTask>): Promise<RankTask> {
   const r = await fetch('/api/rank/tasks', {
@@ -90,12 +94,15 @@ async function apiDeleteKeyword(taskId: string, keyword: string): Promise<void> 
   await fetch(`/api/rank/keyword?taskId=${encodeURIComponent(taskId)}&keyword=${encodeURIComponent(keyword)}`,
     { method: 'DELETE', headers: authHeaders() });
 }
-async function apiRunTask(taskId: string): Promise<void> {
+async function apiRunTask(taskId: string, keyword?: string): Promise<void> {
   const r = await fetch('/api/rank/run', {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ taskId }),
+    body: JSON.stringify(keyword ? { taskId, keyword } : { taskId }),
   });
-  if (!r.ok) throw new Error('采集失败');
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error(j.error || '采集失败');
+  }
 }
 async function apiGetHistory(taskId: string): Promise<Snapshot[]> {
   const r = await fetch('/api/rank/history?taskId=' + encodeURIComponent(taskId), { headers: authHeaders() });
@@ -127,7 +134,13 @@ function mkLabel(code: string) {
 }
 
 // Per-keyword computed row
-interface KwRow { keyword: string; latest: Snapshot | null; prev: Snapshot | null; last5: Snapshot[]; }
+interface KwRow {
+  keyword: string;
+  latest: Snapshot | null;      // 最近一次**成功**抓到排名
+  prev: Snapshot | null;
+  last5: Snapshot[];
+  lastAttempt: Snapshot | null; // 最近一次尝试（不管成败）——用来显示「采集失败」
+}
 
 function buildRows(keywords: string[], snapshots: Snapshot[]): KwRow[] {
   const byKw: Record<string, Snapshot[]> = {};
@@ -141,8 +154,21 @@ function buildRows(keywords: string[], snapshots: Snapshot[]): KwRow[] {
       latest: ok[ok.length - 1] || null,
       prev:   ok[ok.length - 2] || null,
       last5:  snaps.filter(s => s.capturedAt >= cut5),
+      lastAttempt: snaps[snaps.length - 1] || null,
     };
   });
+}
+
+/** 把采集失败的原因翻成人话（后端存的是 err 代码） */
+function failReason(s: Snapshot | null): string {
+  if (!s) return '';
+  const e = String(s.error || '');
+  if (s.status === 'blocked' || e === 'blocked') return '被 Amazon 拦截（验证码）';
+  if (e === 'no_results') return '搜索页返回空结果（多半是被反爬拦了，稍后再采一次）';
+  if (e.startsWith('http_')) return `HTTP ${e.slice(5)}`;
+  if (e.startsWith('neterr')) return '网络错误';
+  if (e) return e;
+  return s.status === 'ok' ? '' : `状态 ${s.status}`;
 }
 
 // ---- Sparkline (80×28 SVG) ----
@@ -470,30 +496,59 @@ function TrendModal({ task, initialKw, snapshots, onClose }: {
 }
 
 // ---- TaskModal (create / edit) ----
-function TaskModal({ task, onClose, onSaved }: {
-  task: RankTask | null; onClose: () => void; onSaved: (t: RankTask) => void;
+const FALLBACK_TZ: TzOption[] = [
+  { id: 'Asia/Shanghai', label: '中国时间（北京）', short: '中国' },
+  { id: 'America/New_York', label: '美国东部时间（纽约）', short: '美东' },
+  { id: 'America/Los_Angeles', label: '美国西部时间（洛杉矶）', short: '美西' },
+];
+
+function TaskModal({ task, timezones, onClose, onSaved }: {
+  task: RankTask | null; timezones: TzOption[];
+  onClose: () => void; onSaved: (t: RankTask) => void;
 }) {
+  const tzList = timezones.length ? timezones : FALLBACK_TZ;
   const [name, setName]           = React.useState(task?.name || '');
   const [asin, setAsin]           = React.useState(task?.asin || '');
   const [marketplace, setMkt]     = React.useState(task?.marketplace || 'US');
   const [kwText, setKwText]       = React.useState((task?.keywords || []).join('\n'));
-  const [schedule, setSchedule]   = React.useState<number[]>(task?.schedule || [...SCHEDULE_SLOTS]);
+  const [schedule, setSchedule]   = React.useState<string[]>(
+    task?.schedule?.length ? task.schedule : ['00:00', '06:00', '12:00', '18:00']);
+  const [timezone, setTimezone]   = React.useState(task?.timezone || 'Asia/Shanghai');
   const [enabled, setEnabled]     = React.useState(task?.enabled ?? true);
   const [saving, setSaving]       = React.useState(false);
   const [err, setErr]             = React.useState('');
 
-  function toggleSlot(h: number) {
-    setSchedule(s => s.includes(h) ? s.filter(x => x !== h) : [...s, h].sort((a, b) => a - b));
+  const sortSlots = (arr: string[]) => [...new Set(arr)].sort();
+  function setSlotAt(i: number, v: string) {
+    setSchedule(s => sortSlots(s.map((x, idx) => (idx === i ? v : x))));
+  }
+  function removeSlot(i: number) { setSchedule(s => s.filter((_, idx) => idx !== i)); }
+  function addSlot() {
+    // 默认加一个「下一个整点」，没有就 08:00，用户再改
+    const used = new Set(schedule);
+    let next = '08:00';
+    for (let h = 0; h < 24; h++) {
+      const s = `${String(h).padStart(2, '0')}:00`;
+      if (!used.has(s)) { next = s; break; }
+    }
+    setSchedule(s => sortSlots([...s, next]));
+  }
+  /** 快捷档：点一下加入/移除「HH:00」 */
+  function toggleHour(h: number) {
+    const s = `${String(h).padStart(2, '0')}:00`;
+    setSchedule(cur => (cur.includes(s) ? cur.filter(x => x !== s) : sortSlots([...cur, s])));
   }
   async function save() {
     const keywords = kwText.split('\n').map(s => s.trim()).filter(Boolean);
     if (!asin.trim()) { setErr('请填写 ASIN'); return; }
     if (!keywords.length) { setErr('请至少填写一个关键词'); return; }
+    if (enabled && !schedule.length) { setErr('启用定时采集时至少要有一个时间点'); return; }
     setSaving(true); setErr('');
     try {
       const saved = await apiSaveTask({
         id: task?.id, name: name.trim(), asin: asin.trim().toUpperCase(),
-        marketplace, keywords, keywordNotes: task?.keywordNotes || {}, schedule, enabled,
+        marketplace, keywords, keywordNotes: task?.keywordNotes || {}, schedule,
+        timezone, enabled,
       });
       onSaved(saved);
     } catch (e: any) { setErr(e.message || '保存失败'); setSaving(false); }
@@ -520,17 +575,43 @@ function TaskModal({ task, onClose, onSaved }: {
             <textarea value={kwText} onChange={e => setKwText(e.target.value)} rows={5}
               placeholder={'yoga mat\nexercise mat\nnon slip yoga mat'} />
           </label>
+
           <div className="kr-field">
-            <span className="kr-field-label">定时档位（每天）</span>
-            <div className="kr-slots">
-              {SCHEDULE_SLOTS.map(h => (
-                <button key={h} type="button" className="kr-slot"
-                  data-on={schedule.includes(h)} onClick={() => toggleSlot(h)}>
-                  {String(h).padStart(2, '0')}:00
-                </button>
+            <span className="kr-field-label">定时采集（每天，按下面的时区）</span>
+            <div className="kr-schedule">
+              {schedule.length === 0 && <span className="kr-muted">还没有时间点</span>}
+              {schedule.map((t, i) => (
+                <span className="kr-time-item" key={t + i}>
+                  <input type="time" value={t} onChange={e => setSlotAt(i, e.target.value)} />
+                  <button type="button" className="kr-time-del" title="删除这个时间点"
+                    onClick={() => removeSlot(i)}>✕</button>
+                </span>
               ))}
+              <button type="button" className="btn btn-sm" onClick={addSlot}>+ 添加时间</button>
+            </div>
+            <div className="kr-slots kr-slots-quick">
+              <span className="kr-muted">快捷：</span>
+              {[0, 6, 12, 18].map(h => {
+                const s = `${String(h).padStart(2, '0')}:00`;
+                return (
+                  <button key={h} type="button" className="kr-slot"
+                    data-on={schedule.includes(s)} onClick={() => toggleHour(h)}>
+                    {s}
+                  </button>
+                );
+              })}
             </div>
           </div>
+
+          <label>时区
+            <select value={timezone} onChange={e => setTimezone(e.target.value)}>
+              {tzList.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+          </label>
+          <div className="kr-hint">
+            例：选「美东」+ 09:00，就是纽约时间每天 9 点采集（＝北京时间 21:00 或 22:00，随夏令时变化）。
+          </div>
+
           <label className="kr-check">
             <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
             <span>启用定时采集</span>
@@ -558,12 +639,18 @@ export function KeywordRank() {
   const [running, setRun]   = React.useState(false);
   const [loadErr, setErr]   = React.useState('');
 
+  const [timezones, setTimezones] = React.useState<TzOption[]>([]);
+  const [runningKw, setRunningKw] = React.useState<string | null>(null);
+
   const active = tasks.find(t => t.id === activeId) || null;
   const rows   = active ? buildRows(active.keywords, snaps) : [];
+  const tzShort = (id?: string) =>
+    (timezones.find(t => t.id === (id || 'Asia/Shanghai'))?.short || '中国');
 
   async function reloadTasks(sel?: string) {
     try {
-      const list = await apiGetTasks(); setTasks(list); setErr('');
+      const { tasks: list, timezones: tzs } = await apiGetTasks();
+      setTasks(list); setTimezones(tzs); setErr('');
       setAId(sel || activeId || (list[0]?.id ?? null));
     } catch (e: any) { setErr(e.message || '加载失败'); }
   }
@@ -579,6 +666,18 @@ export function KeywordRank() {
     setRun(true);
     try { await apiRunTask(active.id); await reloadSnaps(active.id); await reloadTasks(active.id); }
     finally { setRun(false); }
+  }
+  /** 只采一个词（表格每行的「采集」按钮） */
+  async function runOne(kw: string) {
+    if (!active || runningKw) return;
+    setRunningKw(kw);
+    try {
+      await apiRunTask(active.id, kw);
+      await reloadSnaps(active.id);
+      await reloadTasks(active.id);
+    } catch (e: any) {
+      alert(e.message || '采集失败');
+    } finally { setRunningKw(null); }
   }
   async function removeTask(t: RankTask) {
     if (!confirm(`删除任务「${t.name || t.asin}」及所有历史数据？`)) return;
@@ -635,7 +734,7 @@ export function KeywordRank() {
                 <div className="kr-detail-title">{active.name || active.asin}</div>
                 <div className="kr-detail-meta">
                   {mkLabel(active.marketplace)} · ASIN {active.asin}
-                  · 定时 {active.schedule.map(h => String(h).padStart(2, '0') + ':00').join(' / ') || '无'}
+                  · 定时 <b>{tzShort(active.timezone)}</b> {active.schedule.join(' / ') || '无'}
                   {active.lastRunAt && <> · 上次采集 {fmtDateTime(active.lastRunAt)}</>}
                 </div>
               </div>
@@ -685,6 +784,13 @@ export function KeywordRank() {
                         </td>
                         <td className="kr-col-time">
                           {row.latest ? fmtDateTime(row.latest.capturedAt) : '—'}
+                          {row.lastAttempt && row.lastAttempt.status !== 'ok'
+                            && (!row.latest || row.lastAttempt.capturedAt > row.latest.capturedAt) && (
+                            <span className="kr-fail"
+                              title={`最近一次采集（${fmtDateTime(row.lastAttempt.capturedAt)}）失败：${failReason(row.lastAttempt)}`}>
+                              最近一次失败
+                            </span>
+                          )}
                         </td>
                         <td className="kr-col-time">
                           {active.createdAt ? fmtDateTime(active.createdAt) : '—'}
@@ -696,6 +802,11 @@ export function KeywordRank() {
                           />
                         </td>
                         <td className="kr-col-ops">
+                          <button className="btn btn-sm" disabled={!!runningKw}
+                            title="只采集这一个关键词"
+                            onClick={() => runOne(row.keyword)}>
+                            {runningKw === row.keyword ? '采集中…' : '采集'}
+                          </button>
                           <button className="btn btn-sm"
                             onClick={() => setDetail({ kw: row.keyword })}>详情</button>
                           <button className="btn btn-sm kr-del"
@@ -713,7 +824,8 @@ export function KeywordRank() {
 
       {/* Task modal */}
       {modal.open && (
-        <TaskModal task={modal.task} onClose={() => setModal({ open: false, task: null })}
+        <TaskModal task={modal.task} timezones={timezones}
+          onClose={() => setModal({ open: false, task: null })}
           onSaved={t => { setModal({ open: false, task: null }); reloadTasks(t.id); }} />
       )}
 

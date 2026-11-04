@@ -27,6 +27,37 @@ ASIN_DETAIL_KEEP = 30
 ASIN_DETAIL_REUSE_DAYS = 30
 
 
+def _norm_schedule(v):
+    """定时档位统一成 "HH:MM" 字符串数组（按时间排序、去重）。
+
+    老数据是整数小时数组 `[0, 6, 12, 18]`，新数据支持任意分钟 `["06:30", "18:15"]`。
+    统一在这里转，调度器和前端就只用处理一种格式。
+    """
+    out = []
+    for x in v or []:
+        if isinstance(x, bool):
+            continue
+        if isinstance(x, (int, float)):
+            s = f"{int(x) % 24:02d}:00"
+        else:
+            raw = str(x or "").strip()
+            if not raw:
+                continue
+            if raw.isdigit():
+                s = f"{int(raw) % 24:02d}:00"
+            else:
+                m = re.match(r"^(\d{1,2}):(\d{2})$", raw)
+                if not m:
+                    continue
+                hh, mm = int(m.group(1)) % 24, int(m.group(2))
+                if mm > 59:
+                    continue
+                s = f"{hh:02d}:{mm:02d}"
+        if s not in out:
+            out.append(s)
+    return sorted(out)
+
+
 # ---------------------------------------------------------------------------
 # 货件跟踪：camelCase(接口/原项目) <-> snake_case(SQLite) 机械互转
 #
@@ -992,7 +1023,8 @@ class DbState:
                     schedule       TEXT DEFAULT '[0,6,12,18]',
                     enabled        INTEGER DEFAULT 1,
                     created_at     TEXT,
-                    last_run_at    TEXT
+                    last_run_at    TEXT,
+                    timezone       TEXT DEFAULT 'Asia/Shanghai'
                 );
 
                 CREATE TABLE IF NOT EXISTS rank_snapshots (
@@ -1591,8 +1623,7 @@ class DbState:
                 if col not in _scrape_prod_cols:
                     conn.execute(f"ALTER TABLE scrape_products ADD COLUMN {col} TEXT")
 
-            # 采集任务改为服务端后台执行后，任务需要自己记住「原始 ASIN 列表」才能断点续跑，
-            # 并记录运行窗口与失败原因。新表已含这四列，这里只为老库补列。
+            # 采集任务改为服务端后台执行后，任务需要自己记住「原始 ASIN 列表」才能断点续跑，            # 并记录运行窗口与失败原因。新表已含这四列，这里只为老库补列。
             _scrape_cols = {r[1] for r in conn.execute("PRAGMA table_info(scrape_tasks)")}
             for col, ddl in (("asins", "TEXT DEFAULT '[]'"),
                              ("started_at", "TEXT"),
@@ -1603,6 +1634,13 @@ class DbState:
                              ("use_pool", "INTEGER DEFAULT 1")):
                 if col not in _scrape_cols:
                     conn.execute(f"ALTER TABLE scrape_tasks ADD COLUMN {col} {ddl}")
+
+            # 关键词排名任务：定时档位按哪个时区解释（2026-11-04）。
+            # 默认中国时间；老任务升级后行为不变，用户可切美国东部/西部。
+            _kt_cols = {r[1] for r in conn.execute("PRAGMA table_info(keyword_tasks)")}
+            if _kt_cols and "timezone" not in _kt_cols:
+                conn.execute("ALTER TABLE keyword_tasks ADD COLUMN timezone TEXT "
+                             "DEFAULT 'Asia/Shanghai'")
 
             # 「获取最新数据」去重：同一词同一天允许多条，但内容没变就不新增。
             # fingerprint 存榜单/份额的结构摘要，比对时不用解析 1~2MB 的 JSON；
@@ -1924,10 +1962,14 @@ class DbState:
             "name":         row["name"],
             "keywords":     json.loads(row["keywords"]      or "[]"),
             "keywordNotes": json.loads(row["keyword_notes"] or "{}"),
-            "schedule":     json.loads(row["schedule"]      or "[]"),
+            # 定时档位统一成 "HH:MM" 字符串数组（老数据是整数小时，这里自动转换）
+            "schedule":     _norm_schedule(json.loads(row["schedule"] or "[]")),
             "enabled":      bool(row["enabled"]),
             "createdAt":    row["created_at"],
             "lastRunAt":    row["last_run_at"],
+            # 定时按哪个时区解释（默认中国时间；可切美国东部/西部）
+            "timezone":     (row["timezone"] if "timezone" in row.keys() and row["timezone"]
+                             else "Asia/Shanghai"),
         }
 
     def list_rank_tasks(self):
@@ -1957,8 +1999,8 @@ class DbState:
                 conn.execute(
                     """INSERT OR REPLACE INTO keyword_tasks
                        (id, asin, marketplace, name, keywords, keyword_notes,
-                        schedule, enabled, created_at, last_run_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                        schedule, enabled, created_at, last_run_at, timezone)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     [
                         tid,
                         (t.get("asin") or "").upper().strip(),
@@ -1966,10 +2008,12 @@ class DbState:
                         t.get("name", ""),
                         json.dumps(t.get("keywords", []), ensure_ascii=False),
                         json.dumps(t.get("keywordNotes", {}), ensure_ascii=False),
-                        json.dumps(t.get("schedule", [0, 6, 12, 18])),
+                        json.dumps(_norm_schedule(t.get("schedule") or ["00:00", "06:00",
+                                                                        "12:00", "18:00"])),
                         1 if t.get("enabled", True) else 0,
                         created,
                         last_run,
+                        (t.get("timezone") or "Asia/Shanghai"),
                     ],
                 )
                 conn.commit()
