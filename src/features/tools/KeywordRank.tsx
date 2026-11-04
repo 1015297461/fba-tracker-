@@ -159,12 +159,16 @@ function buildRows(keywords: string[], snapshots: Snapshot[]): KwRow[] {
   });
 }
 
-/** 把采集失败的原因翻成人话（后端存的是 err 代码） */
+/** 把采集失败的原因翻成人话（后端存的是 err 代码，_x3 表示换指纹重试 3 次仍失败） */
 function failReason(s: Snapshot | null): string {
   if (!s) return '';
   const e = String(s.error || '');
-  if (s.status === 'blocked' || e === 'blocked') return '被 Amazon 拦截（验证码）';
-  if (e === 'no_results') return '搜索页返回空结果（多半是被反爬拦了，稍后再采一次）';
+  if (s.status === 'blocked' || e.startsWith('blocked')) {
+    return '被 Amazon 拦截（已换指纹重试 3 次），过一会儿再采';
+  }
+  if (e.startsWith('no_results')) {
+    return '搜索页返回空结果（已换指纹重试 3 次仍空，多为反爬临时拦截），过一会儿点「采集」重试';
+  }
   if (e.startsWith('http_')) return `HTTP ${e.slice(5)}`;
   if (e.startsWith('neterr')) return '网络错误';
   if (e) return e;

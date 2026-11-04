@@ -127,6 +127,13 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
     catmon.py                    # /api/catmon/*，类目榜单监控：监控对象 CRUD + 立即采集（后台线程）
                                  #   + 快照/趋势/事件/运行日志 + 按需详情（落库缓存，?refresh=1 强制刷新）
   rank_fetcher.py              # 关键词排名抓取器（正则解析，无 bs4 依赖）
+                              #   ⚠️ 搜「搜索结果页」时会偶发拿到**空结果页**（不是 CAPTCHA，
+                              #   页面里没有 `s-search-result`）→ 记 `no_results`。
+                              #   实测 2026-11-04 12:00 一批 24 条全空，3 小时后同样的词全部正常，
+                              #   是临时风控，不是结构变化。**不要遇到 no_results 就 break**：
+                              #   `fetch_page_resilient()` 会换指纹 + 退避 4~8s 重试 3 次，
+                              #   仍失败才标 `no_results_x3`（前端据此提示「已重试 3 次」）。
+                              #   它返回 (html, err, fingerprint)，重试换过指纹时调用方后续翻页要用同一个。
   catmon_fetcher.py            # 类目榜单采集器（Best Sellers / New Releases）：
                               #   URL 解析 → 抓第 1 页 + 跟随 a-last Next 抓第 2 页；
                               #   每页内嵌 data-client-recs-list JSON 含 50 条(rank+asin)、网格 30 条全字段，

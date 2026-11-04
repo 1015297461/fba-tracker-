@@ -142,6 +142,37 @@ def fetch_page(marketplace, keyword, page=1, timeout=20, fingerprint=None):
     return html_text, None
 
 
+# 这两个错误多半是「这一下被拦了」，不是真的没结果：换一个指纹、等几秒再来
+# 通常就好了（实测 12:00 整批 24 条 no_results，几小时后同一批词全部正常拿到 50 条）。
+# 原实现遇到 no_results 直接 break，于是整批被记成 not_found、当天数据全空。
+_SOFT_FAILS = ("blocked", "no_results")
+
+
+def fetch_page_resilient(marketplace, keyword, page=1, timeout=20, fingerprint=None,
+                         tries=3):
+    """带「换指纹 + 退避」重试的 fetch_page，返回 (html, err, fingerprint)。
+
+    返回值多带一个 fingerprint：重试时换过指纹的话，调用方后续翻页要用同一个，
+    否则同一关键词的几页来自不同身份，容易又被拦。
+    """
+    fp = fingerprint or random.choice(_FINGERPRINTS)
+    last = None
+    for i in range(max(1, int(tries))):
+        if i:
+            fp = random.choice(_FINGERPRINTS)
+            time.sleep(random.uniform(4.0, 8.0))
+        html, err = fetch_page(marketplace, keyword, page, timeout=timeout, fingerprint=fp)
+        if not err:
+            return html, None, fp
+        last = err
+        if err not in _SOFT_FAILS:
+            break                      # 网络/HTTP 硬错误，重试没意义
+    # 重试过还不行 → 标记一下，方便前端区分「试了一次就空」与「试了三次都空」
+    if last in _SOFT_FAILS:
+        last = f"{last}_x{max(1, int(tries))}"
+    return None, last, fp
+
+
 def parse_cards(html_text, sp_words):
     """解析一页，按视觉顺序返回 [{asin, sponsored, slot}]，slot 为页内 1 基坑位。"""
     matches = list(_CARD_RE.finditer(html_text))
@@ -177,15 +208,12 @@ def locate_rank(asin, marketplace, keyword, max_pages=3,
     last_error = None
 
     for page in range(1, max_pages + 1):
-        html_text, err = fetch_page(marketplace, keyword, page, fingerprint=fp)
+        html_text, err, fp = fetch_page_resilient(
+            marketplace, keyword, page, fingerprint=fp)
         if err:
             last_error = err
-            # 被封或网络错误直接中断
-            if err in ("blocked",) or err.startswith("neterr") or err.startswith("http_"):
-                break
-            if err == "no_results":
-                break
-            continue
+            # 被封 / 网络错误 / 重试后仍空 → 这个关键词到此为止
+            break
 
         cards = parse_cards(html_text, sp_words)
         if debug:
@@ -213,10 +241,12 @@ def locate_rank(asin, marketplace, keyword, max_pages=3,
         status = "ok"          # 仅探测模式（无目标 ASIN）
     elif organic_rank is not None or sponsored_hits:
         status = "ok"
-    elif last_error in ("blocked",) or (last_error and last_error.startswith(("neterr", "http_"))):
-        status = "blocked" if last_error == "blocked" else "error"
+    elif last_error and last_error.startswith("blocked"):
+        status = "blocked"
+    elif last_error and last_error.startswith(("neterr", "http_")):
+        status = "error"
     else:
-        status = "not_found"
+        status = "not_found"   # 含 no_results / no_results_x3：页面能打开但没结果
 
     return {
         "asin": asin,
