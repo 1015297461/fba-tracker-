@@ -215,7 +215,9 @@ const ws = new WebSocket(process.argv[1]);
 const URL_ = process.argv[2];
 const READY = process.argv[3];
 const COOKIES = JSON.parse(process.argv[4] || "[]");
-const MAX_MS = parseInt(process.argv[5] || "60000", 10);
+// 页面级等待上限：超过就不再等（按当前 DOM 取），避免个别重页面把用户卡在 90s。
+// 实测正常页 6~13s 就稳定；25s 是「肯定已经渲染完」的天花板。
+const MAX_MS = Math.min(parseInt(process.argv[5] || "60000", 10), 25000);
 const OUT = process.argv[6];
 let id = 0; const pend = new Map();
 const send = (method, params = {}) => new Promise(r => {
@@ -237,17 +239,28 @@ ws.onopen = async () => {
     await send("Page.enable", {});
     await send("Page.navigate", { url: URL_ });
     const t0 = Date.now();
-    // 就绪 = 页面 load 完成 + 业务锚点出现。只看 productTitle 会拿到"半渲染"的 DOM
-    // （实测只有 440KB，图片/A+/Customers say 都还没注入，字段会大面积缺失）。
+    // 就绪判定：业务锚点出现 + **DOM 元素数连续两次不变**。
+    //   · 只看 productTitle → 拿到半渲染页（440KB，图片/A+/Customers say 全缺）
+    //   · 等 readyState==='complete' → 要等广告/追踪像素等长尾资源，实测多花 5~20s
+    //   · 元素数稳定 == 原来的「dump 文件大小稳定」，既有完整内容又快
+    let lastCount = -1, stable = 0;
     while (Date.now() - t0 < MAX_MS) {
-      await new Promise(r => setTimeout(r, 500));
-      const r = await send("Runtime.evaluate",
-        { expression: "(document.readyState === 'complete') + '|' + (" + READY + ")",
-          returnByValue: true });
-      if (r && r.result && String(r.result.value || "") === "true|true") break;
+      await new Promise(r => setTimeout(r, 400));
+      const r = await send("Runtime.evaluate", {
+        expression: "(" + READY + ") + '|' + document.getElementsByTagName('*').length",
+        returnByValue: true
+      });
+      const s = String((r && r.result && r.result.value) || "");
+      if (!s.startsWith("true|")) { lastCount = -1; stable = 0; continue; }
+      const cnt = parseInt(s.slice(5), 10) || 0;
+      if (cnt > 0 && cnt === lastCount) {
+        stable++;
+        if (stable >= 2) break;          // ≈800ms 内元素数没再变 → 认为渲染完
+      } else {
+        stable = 0;
+      }
+      lastCount = cnt;
     }
-    // 再给懒加载区块一点时间（A+ 图库 / Customers say 是 load 之后才注入的）
-    await new Promise(r => setTimeout(r, 1500));
     const h = await send("Runtime.evaluate",
       { expression: "document.documentElement.outerHTML", returnByValue: true });
     const html = (h && h.result && h.result.value) || "";
@@ -297,7 +310,7 @@ def _fetch_headless_cdp(url, cookies=None, ready_expr="!!document.getElementById
                 pgid = None
 
             ws_url = None
-            deadline = time.time() + 20
+            deadline = time.time() + 10      # Chrome 实测 0.9s 就绪，10s 是宽裕上限
             while time.time() < deadline:
                 status, text = _http(f"http://127.0.0.1:{CDP_HEADLESS_PORT}/json/list", timeout=2)
                 if status == 200:

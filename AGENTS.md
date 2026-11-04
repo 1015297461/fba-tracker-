@@ -194,8 +194,10 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   CDP 通道：拉起带 `--remote-debugging-port`（默认 9335，`FBA_CDP_PORT`）的
                               #   同一个 profile → node 的 WebSocket 调 `Network.setCookie` → `Page.navigate`
                               #   → 轮询就绪 → 取 `outerHTML`。实测 **7~9s**（比 dump 的 20~40s 还快）。
-                              #   ⚠️ 就绪判定必须是 `readyState==='complete' && productTitle`：只看 productTitle
-                              #   会拿到半渲染 DOM（440KB，图片/A+/Customers say 全缺），完整页约 1.4~2MB。
+                              #   ⚠️ 就绪判定 = `productTitle` 出现 + **DOM 元素数连续两次不变**
+                              #   （≈800ms 稳定即取，等价于 dump 通道的「文件大小稳定」）。
+                              #   只看 productTitle 会拿到半渲染 DOM（440KB，图片/A+/Customers say 全缺）；
+                              #   等 `readyState==='complete'` 则要等广告/追踪像素，实测多花 5~20s。
                               #   ⚠️ **HTML 必须写临时文件再回传路径**：2MB 字符串直接 `process.stdout.write`
                               #   配合 `process.exit()` 会被截断（stdout 没 flush 就退出），Python 侧只拿到半截 JSON。
   sprite_fetch.py              # 卖家精灵「查竞品」批量取上架时间（2026-11-02 新增）。
