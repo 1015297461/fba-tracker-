@@ -673,6 +673,9 @@ export interface ScrapedProduct {
   // 非空 = 这条结果没有重新抓，而是沿用了「详情结果池」里那次抓取的快照；
   // 值是那次真实抓取时间（与 scrapedAt 相同），界面上标「复用」用。
   reusedFrom?: string | null;
+  // 上架时间兜底值（YYYY-MM-DD）：页面没有 Date First Available 时，
+  // 由「ASIN 属性池」（卖家精灵通道）补，取到一次永久缓存。
+  firstAvailable?: string | null;
   // 同一 (任务, ASIN) 可能因「重采 · 新增一条记录」存在多行；seq=0 是被覆盖的那条
   seq?: number;
 }
@@ -711,6 +714,25 @@ async function apiStartScrape(asins: string[], marketplace: string, withReviews:
     throw new Error(e.error || '提交采集失败');
   }
   return (await r.json()).taskId;
+}
+/**
+ * 补齐上架时间（卖家精灵通道，与类目榜单/排名监测共用同一个 ASIN 属性池）。
+ * 传 asins 只补这批；不传补整个任务。已经有日期的不再请求。
+ */
+async function apiFillDates(taskId: string, asins?: string[], marketplace?: string): Promise<{
+  asked: number; fetched: number; covered: number; toFetch: number;
+  sources: Record<string, string>; dates: Record<string, string>;
+}> {
+  const r = await fetch('/api/scrape/fill-dates', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ taskId, ...(asins && asins.length ? { asins } : {}),
+                           ...(marketplace ? { marketplace } : {}) }),
+  });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || '补齐上架时间失败');
+  }
+  return await r.json();
 }
 async function apiGetProgress(taskId: string): Promise<{ task: ScrapeTask; stopping: boolean; run: { done: number; total: number } | null }> {
   const r = await fetch('/api/scrape/progress?taskId=' + encodeURIComponent(taskId), { headers: authHeaders() });
@@ -855,9 +877,18 @@ function findDateFirstAvailable(p: ScrapedProduct): string {
   };
   return pick(p.productDetails) || pick(p.specifications);
 }
+/**
+ * 上架时间的最终口径：页面解析出来的优先，没有则用「ASIN 属性池」里补的值。
+ * 为什么需要池子：Amazon 新版 listing 的页面**根本不显示** Date First Available
+ * （实测 2026-11，detailBullets 整块换成 prodDetSectionEntry 表，且没有该行），
+ * 纯靠页面解析必然整列空白 —— 只能走卖家精灵补（与类目榜单/排名监测同一通道）。
+ */
+function launchDate(p: ScrapedProduct): string {
+  return findDateFirstAvailable(p) || String(p.firstAvailable || '');
+}
 // 上架时间排序用时间戳；解析不了给 Infinity（排序逻辑里按「缺值恒沉底」处理）。
 function dateFirstAvailableTs(p: ScrapedProduct): number {
-  const s = findDateFirstAvailable(p);
+  const s = launchDate(p);
   const t = s ? Date.parse(s) : NaN;
   return isNaN(t) ? Infinity : t;
 }
@@ -892,6 +923,7 @@ function exportCSV(products: ScrapedProduct[], marketplace: string) {
     'ASIN', '站点', '标题', '品牌', '价格', '评分', '评论数', '可用性',
     '五点描述', '产品描述', '主图链接', '所有图片链接',
     '产品规格', '产品详情', '分类路径', '大类', '大类排名', '小类', '小类排名',
+    '上架时间',
     '卖家', 'Customers say', 'Customers say 关注点', 'CustomersReview', '状态', '链接',
   ];
   const rows = products.map(p => {
@@ -905,6 +937,7 @@ function exportCSV(products: ScrapedProduct[], marketplace: string) {
       Object.entries(p.productDetails || {}).map(([k, v]) => `${k}: ${v}`).join(' | '),
       p.categories || '', bsr.mainCategory || '', bsr.mainRank != null ? String(bsr.mainRank) : '',
       bsr.subCategory || '', bsr.subRank != null ? String(bsr.subRank) : '',
+      launchDate(p),
       p.seller || '', cr.customersSay || '',
       aspectTagsText(cr.customersSayAspects),
       aspectReviewText(cr.customersSayAspects),
@@ -968,6 +1001,9 @@ export function ProductScrape() {
   // 复用「详情结果池」：最近 30 天抓过的 ASIN 直接沿用快照，不再请求 Amazon。
   // 开关只对 root 显示（其他人看不到，永远走默认的「复用」）。
   const [usePool, setUsePool] = React.useState(true);
+  // 补齐上架时间（卖家精灵）：进度状态 + 结果提示
+  const [fillBusy, setFillBusy] = React.useState(false);
+  const [fillMsg, setFillMsg] = React.useState('');
   const [products, setProducts]       = React.useState<ScrapedProduct[]>([]);
   const [running, setRunning]         = React.useState(false);
   // 「本轮」进度：进度条用它。分母=本轮工作集（首次=全部 ASIN；重试/续跑=未成功的那些），
@@ -1276,7 +1312,34 @@ export function ProductScrape() {
 
   const successCount = products.filter(p => p.status === 'success').length;
   const failedCount  = products.filter(p => p.status === 'failed').length;
+  // 还缺上架时间的条数：Amazon 新版 listing 页面不显示该字段，只能靠卖家精灵补
+  const missingLaunch = products.filter(p => !launchDate(p)).length;
   const progressPct  = progress.total > 0 ? Math.round((progress.completed / progress.total) * 100) : 0;
+
+  /** 补齐上架时间：已有日期的不再请求，只把缺的交给卖家精灵（取到一次永久缓存） */
+  async function fillLaunchDates() {
+    if (!activeTaskId || fillBusy) return;
+    const scope = selectedAsins.size > 0 ? [...selectedAsins] : undefined;
+    const mk = products[0]?.marketplace || marketplace;
+    setFillBusy(true); setFillMsg('');
+    try {
+      const j = await apiFillDates(activeTaskId, scope, mk);
+      const ch = Object.values(j.sources || {})[0];
+      const rest = Math.max(0, (j.asked || 0) - (j.covered || 0));
+      if (ch === 'need_login') setFillMsg('需要在专用浏览器窗口登录卖家精灵，登录后再点一次');
+      else if (ch === 'error') setFillMsg('卖家精灵取数失败，稍后重试');
+      else if (ch === 'busy') setFillMsg('卖家精灵正在取数，稍后再试');
+      else if ((j.fetched || 0) > 0) setFillMsg(`新补 ${j.fetched} 个，现有 ${j.covered}/${j.asked}`);
+      else if (rest > 0) setFillMsg(`${j.covered}/${j.asked} 有上架时间，另 ${rest} 个卖家精灵也查不到`);
+      else setFillMsg(`已全部有上架时间（${j.covered}/${j.asked}）`);
+      // 重新拉一次结果，把补到的日期填进表格
+      try { setProducts(await apiGetProducts(activeTaskId)); } catch { /* 忽略瞬时失败 */ }
+    } catch (e: any) {
+      setFillMsg(e.message || '补齐上架时间失败');
+    } finally {
+      setFillBusy(false);
+    }
+  }
 
   const filteredProducts = React.useMemo(() => {
     const q = searchQuery.trim().toUpperCase();
@@ -1549,6 +1612,15 @@ export function ProductScrape() {
                   重试失败 ({failedCount})
                 </button>
               )}
+              <button
+                className="btn btn-sm"
+                onClick={fillLaunchDates}
+                disabled={fillBusy || running || missingLaunch === 0}
+                title="Amazon 新版 listing 的页面不显示上架时间（Date First Available），这里用卖家精灵通道补齐，取到一次永久缓存。勾选行则只补已选。"
+              >
+                {fillBusy ? '补齐中…' : `补齐上架时间${missingLaunch ? ` (${missingLaunch})` : ''}`}
+              </button>
+              {fillMsg && <span className="ps-fill-msg">{fillMsg}</span>}
               <button className="btn btn-sm" onClick={() => exportCSV(
                 selectedAsins.size > 0 ? products.filter(p => selectedAsins.has(p.asin)) : products,
                 marketplace
@@ -1691,7 +1763,7 @@ export function ProductScrape() {
                     <td>{p.price || '—'}</td>
                     <td>{p.rating ? p.rating.replace(/ out of.*/i, '') : '—'}</td>
                     <td className="ps-col-rc">{p.reviewCount || '—'}</td>
-                    <td className="ps-col-launch" title={findDateFirstAvailable(p)}>{findDateFirstAvailable(p) || '—'}</td>
+                    <td className="ps-col-launch" title={launchDate(p)}>{launchDate(p) || '—'}</td>
                     <td>
                       {p.bestSellerRank.mainRank != null
                         ? <>#{p.bestSellerRank.mainRank.toLocaleString()} <span className="ps-muted">{p.bestSellerRank.mainCategory}</span></>

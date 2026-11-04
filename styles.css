@@ -2373,6 +2373,9 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 
 .ps-muted { color: var(--ink-4); font-size: 11px; }
 
+/* 「补齐上架时间」的结果提示（卖家精灵通道）：一行小字，不挤按钮 */
+.ps-fill-msg { font-size: 11.5px; color: var(--ink-3); align-self: center; max-width: 340px; line-height: 1.35; }
+
 .ps-status { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
 .ps-status-ok { color: var(--green); background: rgba(22,163,74,0.1); }
 .ps-status-fail { color: var(--red); background: rgba(220,38,38,0.1); cursor: help; }

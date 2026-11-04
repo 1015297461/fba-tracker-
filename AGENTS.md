@@ -96,6 +96,11 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                 #   重采进度与任务计数脱钩，走 ctl.force_done/force_total
                                 #   详情池复用：/start 支持 usePool（默认 true；仅 root 的界面
                                 #   有此开关，非 root 后端强制 true）。重采忽略该值、始终绕过池。
+                                #   上架时间：/products 返回时顺带合并「ASIN 属性池」里的
+                                #   first_available_day（只读库、不触发抓取）；缺的由
+                                #   POST /api/scrape/fill-dates {taskId, asins?, marketplace?} 补
+                                #   （走 asin_meta.ensure → 卖家精灵，retry_days=15，
+                                #   与类目榜单 /api/catmon/asin-dates/fill 同一套通道与缓存）。
     review.py                   # /api/review/*，含 run_review_task()
     sif_keywords.py              # /api/sif/*，SIF 爆品关键词监控：任务 CRUD + 三档频率调度器（daily/every_n/weekly）
                               #   + 分层抓取编排 execute_task() + 看板/趋势/信号/入池/设置/点查路由
@@ -140,6 +145,20 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   会让 `re.split(r'\s*[:：]\s*')` 切不开 → 整条 li 被丢弃 → productDetails 全空
                               #   （曾因此让「上架时间」整列消失）。注意 parse_product_page 返回的是
                               #   **下划线**键名 product_details，别和接口层的驼峰 productDetails 搞混。
+                              #   ⚠️ Amazon 现在有**两套详情页模板**，两条路都要走（2026-11 实测）：
+                              #   · 老模板：`#detailBullets_feature_div li`（带 Date First Available）
+                              #   · 新模板：`th.prodDetSectionEntry / td.prodDetAttrValue` 表格
+                              #     （Manufacturer/UPC/Model/BSR/ASIN…），此时 detailBullets **整个不存在**。
+                              #     只认老模板 → productDetails 全空 → 详情弹窗「产品信息」空、上架时间整列消失。
+                              #   · 新模板的 Features & Specs 是 `tr[class*='po-']` + 两个 td（左 key/右 value），
+                              #     既不是 th 表也不在 `table.a-keyvalue` 里，必须单独解析（否则规格参数也空）。
+                              #   · prodDet 表里会重复出现 Features & Specs 的字段 → 最终 productDetails 剔除
+                              #     与 specifications 同名的键，避免详情弹窗两个区块重复展示。
+                              #   · ⚠️ BSR 正则要容忍括号里的空格：值用 `get_text(" ")` 后是
+                              #     "( See Top 100 in … )"，老写法 `\(See Top 100 in ` 匹配不上 → 只解析出
+                              #     小类、大类丢失（现改为 `\(\s*See Top 100 in[^)]*\)`）。
+                              #   · **很多新 listing 页面上根本没有 Date First Available**（实测 2026-11），
+                              #     解析器无能为力 —— 只能走卖家精灵补（见 asin_meta / 下面 scrape 路由）。
   browser_fetch.py             # 用「浏览器」取页面 HTML —— HTTP 被判机器人时的通道。**三档模式**（`FBA_DETAIL_BROWSER`）：
                               #   · `headless`（默认，推荐）：后端自己拉起**专用无头 Chrome**，profile 独立在
                               #     `data/chrome-profile/`。**与任何人日常用的浏览器完全隔离** —— 多人共用后端时，

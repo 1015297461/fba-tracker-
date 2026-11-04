@@ -827,11 +827,27 @@ def parse_product_page(html_text, asin, marketplace, with_customers_say=True):
         if key and value:
             raw_specs[key] = value
     for el in soup.select("table.a-keyvalue tr, #prodDetails table tr"):
+        # #prodDetails 的「产品信息」行（th.prodDetSectionEntry）归 product_details，
+        # 别再重复塞进规格参数（否则同一条同时出现在两个区块）
+        if el.find("th", attrs={"class": "prodDetSectionEntry"}):
+            continue
         key_el = el.select_one("th, td:first-child")
         tds = el.find_all("td")
         key = key_el.get_text().strip() if key_el else ""
         value = tds[-1].get_text().strip() if tds else ""
         if key and value and key != value:
+            raw_specs[key] = value
+    # Features & Specs「新模板」（2026-11 实测）：这些行是 <tr class="a-spacing-small po-xxx">
+    #   + 两个 td（左 key / 右 value），既不是 th 表、也不在 table.a-keyvalue 里，
+    #   上面两个选择器都抓不到 → 新模板页面的规格参数会整块丢失。
+    for el in soup.select("tr[class*='po-']"):
+        cells = el.find_all("td")
+        if len(cells) < 2:
+            continue
+        key = cells[0].get_text().strip()
+        value = cells[1].get_text().strip()
+        key = re.sub(r'[：:\s]+$', '', key).strip()
+        if key and value and key != value and value not in ("Add", "Learn more"):
             raw_specs[key] = value
     specifications = clean_record(raw_specs)
 
@@ -859,7 +875,30 @@ def parse_product_page(html_text, asin, marketplace, with_customers_say=True):
             value = _RTL.sub('', spans[1].get_text()).strip()
             if key and value:
                 raw_pd[key] = value
+
+    # 产品信息「新模板」（2026-11 实测）：Amazon 把 Key/Value 换成了
+    #   <tr><th class="prodDetSectionEntry">Key</th><td class="prodDetAttrValue">Value</td></tr>
+    # 这时 #detailBullets_feature_div 整个不存在，旧解析路径全部落空 →
+    # 详情弹窗「产品信息」空、上架时间（Date First Available）整列消失。
+    # 注意：很多新 listing 的页面上**根本没有** Date First Available，
+    # 那种情况只能靠卖家精灵补（见 asin_meta），解析器无能为力。
+    for th in soup.select("th.prodDetSectionEntry"):
+        tr = th.find_parent("tr")
+        td = tr.find("td") if tr else None
+        if not td:
+            continue
+        key = _RTL.sub('', th.get_text()).strip()
+        value = _RTL.sub('', td.get_text(" ", strip=True)).strip()
+        key = re.sub(r'[：:\s]+$', '', key).strip()
+        if key and value and key not in raw_pd:
+            raw_pd[key] = value
+
     product_details = clean_record(raw_pd)
+    # Features & Specs 已单独进 specifications（下面两个区块在详情弹窗里是并列展示的），
+    # 新模板的 prodDet 表会把同一批字段再列一遍 → 这里去掉同名键，避免两个区块重复。
+    if specifications and product_details:
+        product_details = {k: v for k, v in product_details.items()
+                           if k not in specifications}
 
     # 类目面包屑
     cats = [a.get_text().strip() for a in soup.select("#wayfinding-breadcrumbs_container a")]
@@ -910,7 +949,9 @@ def parse_product_page(html_text, asin, marketplace, with_customers_say=True):
 
     if bsr_text:
         bsr_raw_text = bsr_text
-        bsr_regex = re.compile(r'#(\d[\d,]*)\s+in\s+([^#(\n]+?)(?:\s*\(See Top 100 in [^)]+\)|\s*#|$)')
+        # ⚠️ 括号在拿 `get_text(" ")` 时会带空格（"( See Top 100 in ... )"），
+        # 老正则 `\(See Top 100` 匹配不上 → 只解析出第二个（小类）排名。
+        bsr_regex = re.compile(r'#(\d[\d,]*)\s+in\s+([^#(\n]+?)(?:\s*\(\s*See Top 100 in[^)]*\)|\s*#|$)')
         entries = []
         for m in bsr_regex.finditer(bsr_text):
             try:

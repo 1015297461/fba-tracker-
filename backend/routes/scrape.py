@@ -14,7 +14,7 @@ import threading
 import time
 from urllib.parse import urlparse, parse_qs
 
-from .. import asin_detail_pool, product_fetcher, review_media
+from .. import asin_detail_pool, asin_meta, product_fetcher, review_media
 from ..utils import _extract_token, _now_iso, _log
 
 # 正在执行的采集任务：task_id -> _TaskCtl。
@@ -445,11 +445,69 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         if not task_id:
             self._send_json(400, {"error": "taskId required"})
             return
-        self._send_json(200, {
-            "taskId": task_id,
-            "products": state.get_scrape_products(task_id),
-        })
+        products = state.get_scrape_products(task_id)
+        # 上架时间兜底：页面上有 Date First Available 就已经解析进 productDetails 了；
+        # 新版 listing 的页面压根不显示这个字段（实测 2026-11），只能靠「ASIN 属性池」
+        # （与类目榜单/排名监测同一个卖家精灵通道，取到一次永久缓存）补。
+        # 这里只读库，不触发抓取——点「补齐上架时间」才请求卖家精灵。
+        try:
+            meta = asin_meta.get_meta(state, [p.get("asin") for p in products])
+            for p in products:
+                m = meta.get(str(p.get("asin") or "").upper()) or {}
+                p["firstAvailable"] = m.get("first_available_day") or None
+        except Exception as e:
+            _log(f"[scrape] 合并上架时间失败：{type(e).__name__}: {e}")
+        self._send_json(200, {"taskId": task_id, "products": products})
     GET["/api/scrape/products"] = get_products
+
+    def post_fill_dates(self):
+        """给某个任务里缺上架时间的 ASIN 补数据（卖家精灵通道，与类目榜单同一套）。
+
+        传 asins 时只补这批（「已勾选」场景），否则补整个任务。
+        已经有日期的不再请求；「15 天前查过但没取到」的允许再问一次。
+        """
+        if not _authed(self):
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        task_id = (payload.get("taskId") or "").strip()
+        market = (payload.get("marketplace") or "").strip().upper()
+        raw = payload.get("asins")
+        asins = []
+        if isinstance(raw, list) and raw:
+            asins = [str(a or "").strip().upper() for a in raw if str(a or "").strip()]
+        else:
+            if not task_id:
+                self._send_json(400, {"error": "taskId required"})
+                return
+            task = state.get_scrape_task(task_id) or {}
+            market = market or (task.get("marketplace") or "US")
+            asins = [p.get("asin") for p in state.get_scrape_products(task_id)
+                     if p.get("asin")]
+        if not asins:
+            self._send_json(200, {"ok": True, "asked": 0, "fetched": 0, "covered": 0,
+                                  "sources": {}, "dates": {}, "note": "没有可补的 ASIN"})
+            return
+        if not market:
+            market = "US"
+        try:
+            res = asin_meta.ensure(state, asins, country=market,
+                                   max_new=len(asins) or 1, retry_days=15)
+        except Exception as e:
+            _log(f"[scrape] 补齐上架时间失败：{type(e).__name__}: {e}")
+            self._send_json(500, {"error": f"{type(e).__name__}: {e}"[:200]})
+            return
+        self._send_json(200, {
+            "ok": True,
+            "asked": res.get("asked", 0),
+            "toFetch": res.get("to_fetch", 0),
+            "fetched": res.get("fetched", 0),
+            "covered": res.get("covered", 0),
+            "sources": res.get("sources", {}),
+            "dates": res.get("dates", {}),
+        })
+    POST["/api/scrape/fill-dates"] = post_fill_dates
 
     def get_progress(self):
         if not _authed(self):
