@@ -97,8 +97,29 @@ ROUTE_MODULES = (
 )
 
 
+class _RouteDict(dict):
+    """带「重复注册」告警的路由表。
+
+    多个路由模块共用一批前缀（如 /api/rank/*），后注册的会**静默覆盖**前者，
+    表现是「点了按钮报的却是另一个模块的错」。踩过：rank.py 与
+    rank_monitor_routes.py 都注册了 POST /api/rank/run，关键词排名的「立即采集」
+    一直打到排名监测的 handler，报「id 或 value 至少填一个」。
+    """
+    def __init__(self, label):
+        super().__init__()
+        self.label = label
+
+    def __setitem__(self, key, value):
+        if key in self:
+            _log(f"[route] ⚠️ {self.label} {key} 被重复注册："
+                 f"{getattr(self[key], '__module__', '?')} 被 "
+                 f"{getattr(value, '__module__', '?')} 覆盖（后注册的生效）")
+        super().__setitem__(key, value)
+
+
 def make_handler(state, auth, ai_worker):
-    GET, POST, PUT, DELETE = {}, {}, {}, {}
+    GET, POST, PUT, DELETE = (_RouteDict("GET"), _RouteDict("POST"),
+                              _RouteDict("PUT"), _RouteDict("DELETE"))
     for mod in ROUTE_MODULES:
         mod.register(GET, POST, PUT, DELETE, state, auth, ai_worker)
 
@@ -115,6 +136,14 @@ def make_handler(state, auth, ai_worker):
             if "/api/" in raw:
                 return
             _log(f"{self.address_string()} — {_sanitize_log(raw)}")
+
+        def handle_one_request(self):
+            try:
+                super().handle_one_request()
+            except (BrokenPipeError, ConnectionResetError):
+                # 客户端提前断开（刷新页面 / 关标签 / 前端 abort 请求），
+                # 静态文件与大响应都可能撞上。静默关连接，别打一堆 traceback。
+                self.close_connection = True
 
         # ---- GET ----
 
@@ -165,11 +194,17 @@ def make_handler(state, auth, ai_worker):
 
         def _send_json(self, code, obj):
             body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                # 客户端在响应写完之前就断开（刷新页面、关标签页、请求被取消、
+                # 前端超时 abort…）—— 这属于正常现象，不是服务端错误。
+                # 不捕获的话 socketserver 会打一整段 traceback，看着像崩了。
+                pass
 
         def _send_file(self, path, download_name=None, inline=False):
             import mimetypes

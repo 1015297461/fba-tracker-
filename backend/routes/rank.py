@@ -291,7 +291,10 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
              + (f" · 单词 {keyword}" if keyword else f"（{len(task.get('keywords') or [])} 词）")
              + ("" if res.get("queued") else "（已在队列，跳过）"))
         self._send_json(200, {"taskId": task["id"], **res})
-    POST["/api/rank/run"] = post_run
+    # ⚠️ 路径不能用 /api/rank/run：那个已被 rank_monitor_routes（排名监测）
+    # 注册过，且它在本模块之后注册 → 会静默覆盖这里的 handler，
+    # 表现就是点「采集」报「id 或 value 至少填一个」。
+    POST["/api/rank/task-run"] = post_run
 
     def get_queue(self):
         """当前采集队列：正在跑什么、还排了几个。"""

@@ -65,6 +65,16 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
   app.py                      # 入口：main()/CLI 参数解析、make_handler()把各 routes/*.py 的路由
                               #   汇总成 GET/POST/PUT/DELETE 四张 dict[path->handler] 分发表、
                               #   ThreadingServer、get_lan_ip()
+                              #   ⚠️ **路径冲突会静默覆盖**：按 ROUTE_MODULES 顺序注册，
+                              #   后注册的同名路径直接替换前者（不报错）。踩过：rank.py 与
+                              #   rank_monitor_routes.py 都注册 POST /api/rank/run，关键词排名的
+                              #   「立即采集」一直打到排名监测的 handler，报「id 或 value 至少填一个」。
+                              #   现在用 `_RouteDict` 包装，重复注册会在日志打 `[route] ⚠️ … 被重复注册`；
+                              #   新增路由前先搜一遍同名路径。关键词排名任务的采集用的是
+                              #   `/api/rank/task-run`（/api/rank/run 归排名监测）。
+                              #   `_send_json` 与 `handle_one_request` 都已吞掉 BrokenPipeError /
+                              #   ConnectionResetError —— 浏览器刷新、关标签、前端 abort 都会触发，
+                              #   属正常现象，不该打一整段 traceback。
   utils.py                    # 全局共用：PROJECT_ROOT（=backend/ 的上一级，data/、skills/ 等
                               #   资源路径都锚定在这里，不用各模块自己的 __file__）、
                               #   _now_iso()、_extract_token()、

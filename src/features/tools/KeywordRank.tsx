@@ -105,9 +105,11 @@ interface QueueInfo {
   items: QueueItem[];
 }
 
-/** 立即采集 = 入队（后端全局只有一个 worker，串行抓，不会并发撞 Amazon） */
+/** 立即采集 = 入队（后端全局只有一个 worker，串行抓，不会并发撞 Amazon）
+ *  ⚠️ 路径是 /api/rank/task-run：/api/rank/run 属于「排名监测」那个模块，
+ *  两边同名过、后注册的会覆盖前者（点了报「id 或 value 至少填一个」）。 */
 async function apiRunTask(taskId: string, keyword?: string): Promise<QueueInfo> {
-  const r = await fetch('/api/rank/run', {
+  const r = await fetch('/api/rank/task-run', {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(keyword ? { taskId, keyword } : { taskId }),
   });
