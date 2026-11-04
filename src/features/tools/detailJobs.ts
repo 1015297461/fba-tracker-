@@ -109,3 +109,22 @@ export function pruneJobs(maxAgeMs = 30 * 60 * 1000) {
     if (j.status !== 'running' && now - j.startedAt > maxAgeMs) jobs.delete(k);
   });
 }
+
+// ---------------------------------------------------------------------------
+// 「现在有没有弹窗正开着看这个 ASIN」
+//
+// 为什么不用订阅计数：关弹窗只是把 detailAsin 置空，**承载弹窗的页面组件并没有卸载**，
+// 订阅不会自动撤销 → 后台抓完会被误判成「还有人等着」→ 提示永远不弹（踩过）。
+// 直接由页面在打开/关闭时同步一个模块级变量，简单可靠。
+// ---------------------------------------------------------------------------
+let _modalAsin: string = '';
+
+export function setDetailModalAsin(asin: string | null | undefined) {
+  _modalAsin = String(asin || '').trim().toUpperCase();
+}
+
+export function isDetailModalOpenFor(asin: string): boolean {
+  const a = String(asin || '').trim().toUpperCase();
+  return !!a && _modalAsin === a;
+}
+

@@ -955,9 +955,12 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
     · 关掉弹窗照样跑，完成结果留内存 30 分钟（`pruneJobs` 清理）→ 再点开秒开；
     · `job.promise` **永不 reject**（成功/失败都记在 status 上），避免组件卸载后留下
       未处理的 rejection；
-    · 弹窗开着时 hook 用 `subscribeJob` 占位（`hasSubscribers` 为真）→ 完成时不弹提示，
-      内容直接刷进弹窗；组件卸载（关闭）后订阅自动撤销 → 完成时由 `DetailToasts`
-      （挂在 app 根部，右下角小卡片 4.5s 自动消失）提示「XXX 详情已获取」。
+    · 弹窗开着时（`setDetailModalAsin` 标记着当前 ASIN）完成不弹提示，内容直接刷进弹窗；
+      弹窗关闭（asin 置空）后完成，由 `DetailToasts`（挂在 app 根部，右上角小卡片 4.5s 消失，
+      失败停 7s）提示「XXX 详情已获取」。
+      ⚠️ 判断「弹窗是否还开着」**不能用组件卸载/订阅计数**：关弹窗只是把 `detailAsin` 置空，
+        承载它的页面组件并没有卸载，订阅不会撤销 → 后台完成被误判成「还有人等着」→
+        提示永远不弹（踩过）。改用模块级变量 `setDetailModalAsin()/isDetailModalOpenFor()`。
     · ⚠️ loading 弹窗必须可关闭（`modal-backdrop` 带 onClick），并写明「可以关掉，后台会继续」。
   · ⚠️ 迁移必须放在 `_init_catmon()` 里（新表在那里建）：曾放进 `_init_db()`，
     因「表还不存在」静默失败，旧表一直没被迁移（踩过）。

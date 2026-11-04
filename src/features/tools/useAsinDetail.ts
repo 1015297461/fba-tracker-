@@ -16,7 +16,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { authHeaders } from './AiAnalyze';
-import { ensureJob, getJob, jobKey, subscribeJob } from './detailJobs';
+import { ensureJob, getJob, jobKey, setDetailModalAsin } from './detailJobs';
 
 async function api(path: string) {
   const r = await fetch(path, { headers: authHeaders() });
@@ -51,10 +51,6 @@ export function useAsinDetail(asin: string | null, marketplace = 'US', enabled =
   const [dates, setDates] = useState<string[]>([]);
   // 快速连点不同 ASIN 时，只让最后一次请求的结果落地
   const seq = useRef(0);
-  // 当前任务订阅的撤销函数：组件卸载（关弹窗）时必须撤掉，
-  // 否则 detailJobs 会以为「还有人等着」，抓完不弹提示。
-  const activeOff = useRef<(() => void) | null>(null);
-  useEffect(() => () => { activeOff.current?.(); activeOff.current = null; }, []);
 
   const mk = (marketplace || 'US').toUpperCase();
 
@@ -80,22 +76,15 @@ export function useAsinDetail(asin: string | null, marketplace = 'US', enabled =
                (date ? `&date=${encodeURIComponent(date)}` : '') +
                (force ? '&refresh=1' : '');
     const key = jobKey(mk, asin, date, force);
-    // 先占位订阅：告诉 detailJobs「有人在等」，这样弹窗开着时完成不弹提示条；
-    // 组件卸载（关弹窗）时会自动取消，之后完成才算「后台完成」→ 弹提示。
-    const off = subscribeJob(key, () => {});
-    activeOff.current?.();          // 撤销上一次（切日期/重试）的订阅，只留最新的
-    activeOff.current = off;
-    // 任务挂在模块级：组件卸载（关弹窗）不会中断，抓完结果留在内存里
+    // 任务挂在模块级：关弹窗不会中断，抓完结果留在内存里
     const job = ensureJob(key, () => api(`/api/catmon/detail?${qs}`), !force);
 
     if (job.status === 'done') {          // 已抓过（含刚才后台跑完的）→ 秒开
-      off();
       apply(job.data);
       loadDates();
       return;
     }
     if (job.status === 'error') {
-      off();
       setError(job.error === 'no_snapshot_for_date' ? `这一天（${date}）没有快照` : (job.error || ''));
       return;
     }
@@ -103,7 +92,6 @@ export function useAsinDetail(asin: string | null, marketplace = 'US', enabled =
     if (force) setRefreshing(true); else setLoading(true);
     setError('');
     await job.promise;
-    off();
     if (my !== seq.current) return;        // 已经切到别的 ASIN，丢弃
     const fin = getJob(key);
     if (fin?.status === 'done') {
@@ -123,9 +111,15 @@ export function useAsinDetail(asin: string | null, marketplace = 'US', enabled =
   useEffect(() => {
     seq.current++;
     setData(null); setError(''); setSnapDate(''); setFetchedAt(''); setDates([]);
+    // 告诉 detailJobs「当前弹窗正开着看哪个商品」：关掉（asin 置空）后抓完就要弹提示。
+    // 不能用「组件卸载」来判断——关弹窗只是把 asin 置空，承载页面并没有卸载（踩过）。
+    setDetailModalAsin(asin && enabled ? asin : null);
     if (asin && enabled) load('', false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [asin, mk, enabled]);
+
+  // 页面卸载时清掉标记，避免残留「弹窗还开着」的假象
+  useEffect(() => () => setDetailModalAsin(null), []);
 
   return {
     data, loading, refreshing, error, snapDate, fetchedAt, dates,

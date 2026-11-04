@@ -7,7 +7,7 @@
  * 弹窗还开着（有人在等）就不弹 —— 那种情况内容会直接刷进弹窗。
  */
 import { useEffect, useState } from 'react';
-import { hasSubscribers, subscribeAllJobs } from './detailJobs';
+import { isDetailModalOpenFor, subscribeAllJobs } from './detailJobs';
 import type { DetailJob } from './detailJobs';
 
 interface Item { id: number; asin: string; title: string; sub: string; ok: boolean }
@@ -19,9 +19,9 @@ export function DetailToasts() {
 
   useEffect(() => subscribeAllJobs((j: DetailJob) => {
     if (j.status === 'running') return;
-    if (hasSubscribers(j.key)) return;          // 弹窗还开着，内容会自己刷进去
     const parts = j.key.split(':');
     const asin = parts[1] || '';
+    if (isDetailModalOpenFor(asin)) return;      // 弹窗正开着看这个商品 → 内容会自己刷进去
     const date = parts[2] || 'latest';
     const ok = j.status === 'done';
     const id = ++seed;
