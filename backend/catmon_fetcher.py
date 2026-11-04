@@ -520,8 +520,15 @@ def fetch_detail(asin, marketplace="US", refresh=False):
         #    实测：urllib 连续 7 次全是 CAPTCHA，同一 URL 交给浏览器一次就拿到 3.9MB 完整页
         #    —— 被拦的是 urllib 的客户端指纹，不是这台机器的 IP。
         if browser_fetch.available():
+            # ⚠️ 必须带货币 cookie：无头 Chrome 的 profile 里 i18n-prefs 是空的，
+            # Amazon 会按 IP 返回 CNY，于是 $24.29 被抓成 CNY162.07（差 6.7 倍），
+            # 又被当成美元存进快照 —— 详情弹窗就成了错价（2026-11 实测的 bug）。
+            _mp = product_fetcher.MARKETPLACES.get(marketplace) or {}
+            _ck = ([{"name": "i18n-prefs", "value": _mp["currency"],
+                     "domain": "." + mk["domain"], "path": "/", "secure": True}]
+                   if _mp.get("currency") else None)
             html_text, berr = browser_fetch.fetch_html(
-                f"https://{mk['domain']}/dp/{asin}?language=en_US")
+                f"https://{mk['domain']}/dp/{asin}?language=en_US", cookies=_ck)
             if html_text:
                 try:
                     bp = product_fetcher.parse_product_page(
@@ -529,6 +536,14 @@ def fetch_detail(asin, marketplace="US", refresh=False):
                 except Exception as e:
                     bp = None
                     _log(f"[catmon] 浏览器解析失败 {asin}: {e}")
+                # 兜底：万一 cookie 没生效（页面还是 CNY 价格），宁可回退 HTTP 通道，
+                # 也不能把人民币数字当美元写进快照。
+                if bp and not bp.get("price"):
+                    _cur = (product_fetcher.MARKETPLACES.get(marketplace) or {}).get("currency") or "USD"
+                    _head = html_text[:200000]
+                    if _cur != "CNY" and ("CNY" in _head or "¥" in _head):
+                        _log(f"[catmon] {asin} 浏览器页面是 CNY 价格（货币 cookie 未生效），回退 HTTP")
+                        bp = None
                 if bp:
                     now = time.time()
                     bdata = _build_detail_data(bp, asin, marketplace, mk, now)

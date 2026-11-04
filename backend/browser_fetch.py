@@ -196,6 +196,165 @@ def _fetch_headless(url, timeout=DUMP_TIMEOUT):
     return html, None
 
 
+# ---------------------------------------------------------------- 通道 1b：CDP（需要带 cookie 时）
+#
+# `--dump-dom` 是一次性进程，**没法逐次注入 cookie**；而 Amazon 的货币是靠
+# `i18n-prefs` cookie 决定的（没有它 → 按 IP 返回 CNY，价格直接错 6.7 倍）。
+# 所以「需要指定货币」时必须走这条：自己拉起带调试端口的 Chrome，用 CDP
+# `Network.setCookie` 设好 cookie，再导航、等就绪、取 DOM。
+CDP_HEADLESS_PORT = int(os.environ.get("FBA_CDP_PORT", "9335"))
+CDP_FETCH_TIMEOUT = 90       # 含启动 + 导航 + 等就绪
+
+# node 侧脚本：一次收齐「设 cookie → 导航 → 轮询就绪 → 取 outerHTML」
+#
+# ⚠️ HTML 必须**写文件**再回传路径，不能直接 stdout：2MB 的字符串配合
+# `process.exit()` 会被截断（stdout 未 flush 就退出），Python 侧只拿到半截 JSON。
+_JS_CDP_FETCH = r"""
+const fs = require("fs");
+const ws = new WebSocket(process.argv[1]);
+const URL_ = process.argv[2];
+const READY = process.argv[3];
+const COOKIES = JSON.parse(process.argv[4] || "[]");
+const MAX_MS = parseInt(process.argv[5] || "60000", 10);
+const OUT = process.argv[6];
+let id = 0; const pend = new Map();
+const send = (method, params = {}) => new Promise(r => {
+  const i = ++id; pend.set(i, r);
+  ws.send(JSON.stringify({ id: i, method, params }));
+});
+const done = obj => {
+  try { process.stdout.write(JSON.stringify(obj), () => { setTimeout(() => process.exit(0), 50); }); }
+  catch (e) { process.exit(1); }
+};
+ws.onmessage = e => {
+  const m = JSON.parse(e.data);
+  if (m.id && pend.has(m.id)) { pend.get(m.id)(m.result || m.error || {}); pend.delete(m.id); }
+};
+ws.onopen = async () => {
+  try {
+    await send("Network.enable", {});
+    for (const c of COOKIES) await send("Network.setCookie", c);
+    await send("Page.enable", {});
+    await send("Page.navigate", { url: URL_ });
+    const t0 = Date.now();
+    // 就绪 = 页面 load 完成 + 业务锚点出现。只看 productTitle 会拿到"半渲染"的 DOM
+    // （实测只有 440KB，图片/A+/Customers say 都还没注入，字段会大面积缺失）。
+    while (Date.now() - t0 < MAX_MS) {
+      await new Promise(r => setTimeout(r, 500));
+      const r = await send("Runtime.evaluate",
+        { expression: "(document.readyState === 'complete') + '|' + (" + READY + ")",
+          returnByValue: true });
+      if (r && r.result && String(r.result.value || "") === "true|true") break;
+    }
+    // 再给懒加载区块一点时间（A+ 图库 / Customers say 是 load 之后才注入的）
+    await new Promise(r => setTimeout(r, 1500));
+    const h = await send("Runtime.evaluate",
+      { expression: "document.documentElement.outerHTML", returnByValue: true });
+    const html = (h && h.result && h.result.value) || "";
+    fs.writeFileSync(OUT, html, "utf8");
+    done({ ok: 1, bytes: html.length });
+  } catch (e) {
+    done({ error: String(e) });
+  }
+};
+setTimeout(() => { done({ error: "timeout" }); }, MAX_MS + 20000);
+"""
+
+
+def _fetch_headless_cdp(url, cookies=None, ready_expr="!!document.getElementById('productTitle')",
+                        timeout=CDP_FETCH_TIMEOUT):
+    """无头 Chrome + CDP：注入 cookie 后取 DOM（需要指定货币/会话时用）。"""
+    chrome = _chrome_bin()
+    if not chrome:
+        return None, "chrome_not_found"
+    try:
+        os.makedirs(CHROME_PROFILE_DIR, exist_ok=True)
+    except Exception:
+        pass
+
+    cmd = [
+        chrome,
+        "--headless=new",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--window-size=1400,1000",
+        f"--user-data-dir={CHROME_PROFILE_DIR}",
+        f"--remote-debugging-port={CDP_HEADLESS_PORT}",
+        "about:blank",
+    ]
+    # 与 dump 通道共用一把锁：同一个 profile 不能同时开两个 Chrome（profile 会被锁住）
+    with _browser_lock:
+        proc, pgid = None, None
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    stdin=subprocess.DEVNULL, start_new_session=True)
+            try:
+                pgid = os.getpgid(proc.pid)
+            except Exception:
+                pgid = None
+
+            ws_url = None
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                status, text = _http(f"http://127.0.0.1:{CDP_HEADLESS_PORT}/json/list", timeout=2)
+                if status == 200:
+                    try:
+                        tabs = json.loads(text)
+                    except Exception:
+                        tabs = []
+                    if tabs:
+                        ws_url = tabs[0].get("webSocketDebuggerUrl")
+                        if ws_url:
+                            break
+                time.sleep(0.4)
+            if not ws_url:
+                return None, "cdp_not_ready"
+
+            try:
+                os.makedirs(DUMP_TMP_DIR, exist_ok=True)
+            except Exception:
+                pass
+            fd, out_path = tempfile.mkstemp(prefix="cdp-", suffix=".html", dir=DUMP_TMP_DIR)
+            os.close(fd)
+            try:
+                p = subprocess.run(
+                    ["node", "-e", _JS_CDP_FETCH, ws_url, url, ready_expr,
+                     json.dumps(cookies or [], ensure_ascii=False),
+                     str(int(timeout * 1000)), out_path],
+                    capture_output=True, text=True, timeout=timeout + 30)
+                out = (p.stdout or "").strip()
+                if not out:
+                    return None, f"node_empty:{(p.stderr or '')[:120]}"
+                try:
+                    body = json.loads(out)
+                except Exception:
+                    return None, "node_bad_json"
+                if body.get("error"):
+                    return None, f"cdp_{body['error']}"
+                try:
+                    with open(out_path, "r", encoding="utf-8", errors="replace") as f:
+                        html = f.read()
+                except Exception as e:
+                    return None, f"read_failed:{type(e).__name__}"
+            finally:
+                try:
+                    os.unlink(out_path)
+                except Exception:
+                    pass
+            if len(html) < DUMP_MIN_BYTES:
+                return None, "empty_dom"
+            return html, None
+        except subprocess.TimeoutExpired:
+            return None, "cdp_timeout"
+        except Exception as e:
+            return None, f"cdp_fail:{type(e).__name__}"
+        finally:
+            _kill_tree(proc, pgid)
+
+
 # ---------------------------------------------------------------- 通道 2：本机 CDP（默认不用）
 PROXY_BASE = "http://127.0.0.1:3456"
 POLL_INTERVAL = 0.5
@@ -323,10 +482,23 @@ def _fetch_local_cdp(url, ready_expr="!!document.getElementById('productTitle')"
 
 
 # ---------------------------------------------------------------- 统一入口
-def fetch_html(url, timeout=None, ready_expr="!!document.getElementById('productTitle')"):
-    """按 FBA_DETAIL_BROWSER 选择通道取页面 HTML。返回 (html, err)。"""
+def fetch_html(url, timeout=None, ready_expr="!!document.getElementById('productTitle')",
+               cookies=None):
+    """按 FBA_DETAIL_BROWSER 选择通道取页面 HTML。返回 (html, err)。
+
+    cookies：CDP 格式的 cookie 列表，如
+      [{"name": "i18n-prefs", "value": "USD", "domain": ".amazon.com",
+        "path": "/", "secure": True}]。
+    传了就**必须走 CDP 通道**（dump-dom 注入不了），没传则走更轻的 dump 通道。
+    """
     if MODE == "off":
         return None, "disabled"
+    if cookies:
+        if MODE == "local":
+            return _fetch_local_cdp(url, ready_expr=ready_expr,
+                                    timeout=timeout or DEFAULT_READY_TIMEOUT)
+        return _fetch_headless_cdp(url, cookies=cookies, ready_expr=ready_expr,
+                                   timeout=timeout or CDP_FETCH_TIMEOUT)
     if MODE == "local":
         return _fetch_local_cdp(url, ready_expr=ready_expr,
                                 timeout=timeout or DEFAULT_READY_TIMEOUT)

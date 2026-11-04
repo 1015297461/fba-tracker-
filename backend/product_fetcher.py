@@ -85,6 +85,37 @@ MARKETPLACES = {
     "TR": {"domain": "www.amazon.com.tr", "name": "土耳其", "flag": "🇹🇷", "lang": "tr-TR,tr;q=0.9,en;q=0.8",   "currency": "TRY"},
 }
 
+# 各站点货币符号 —— 用来判断「抓回来的价格到底是不是本站货币」。
+# 为什么需要：无头浏览器一开始没有货币 cookie，Amazon 会按 IP 返回人民币
+# （2026-11 实测：同一 /dp/ 页面，HTTP 通道（带 i18n-prefs=USD）拿到 $24.29，
+#  浏览器通道拿到 CNY162.07 —— 差了 6.67 倍，被当成美元存进库就成了错价）。
+_CURRENCY_MARKS = {
+    "USD": ("$",), "GBP": ("£",), "EUR": ("€",), "JPY": ("¥", "￥"),
+    "INR": ("₹",), "BRL": ("R$",), "CAD": ("$",), "AUD": ("$",), "MXN": ("$",),
+    "SGD": ("S$",), "AED": ("AED",), "SAR": ("SAR",), "SEK": ("SEK",),
+    "PLN": ("zł",), "TRY": ("TRY",),
+}
+
+
+def price_currency_ok(price, marketplace="US"):
+    """价格是否属于本站点货币。空值一律视为 OK（没有价格不算错）。
+
+    只判「明显不是本站货币」的情况（如 US 站出现 CNY / 非日本站的 ¥），
+    宁可放过也不误杀：Amazon 各站点的价格写法差异很大，严格匹配会误伤。
+    """
+    s = str(price or "").strip()
+    if not s:
+        return True
+    cur = (MARKETPLACES.get(str(marketplace or "US").upper()) or {}).get("currency") or "USD"
+    marks = _CURRENCY_MARKS.get(cur) or ("$",)
+    if any(m in s for m in marks):
+        return True
+    if "CNY" in s.upper() or "RMB" in s.upper():
+        return False
+    if ("¥" in s or "￥" in s) and cur != "JPY":
+        return False
+    return True
+
 
 # ============================================================
 # 浏览器指纹池：UA + platform + sec-ch-ua* （Firefox/Safari 不发 sec-ch-ua 组头）
@@ -726,18 +757,42 @@ def parse_product_page(html_text, asin, marketplace, with_customers_say=True):
     brand = clean_text(raw_brand)
 
     # 价格
+    #
+    # ⚠️ 只认「主价格容器」，**绝不兜底到页面第一个 `.a-price`**。
+    # 商品没有 Buy Box（不可售 / 限购 / 地区限制）时 Amazon 不渲染价格区，
+    # 而页面上剩下的 `.a-price` 全是推荐位、广告位、同店其它商品的价
+    # （实测抓到过 $8869 / $6741 这种与本商品毫无关系的数字，被当成价格存进库）。
+    # 找不到主价格就返回 None —— 显示"未知"远好于显示错价。
     price = (
-        _text1(soup, ".a-price .a-offscreen")
+        _text1(soup, "#corePriceDisplay_desktop_feature_div .a-price .a-offscreen")
+        or _text1(soup, "#corePrice_feature_div .a-price .a-offscreen")
+        or _text1(soup, "#corePrice_desktop .a-price .a-offscreen")
+        or _text1(soup, "#tp_price_block_total_price_ww .a-offscreen")
+        or _text1(soup, "#apex_desktop .a-price .a-offscreen")
+        or _text1(soup, "#price_inside_buybox")
         or _text1(soup, "#priceblock_ourprice")
         or _text1(soup, "#priceblock_dealprice")
-        or None
     )
     if not price:
-        whole = soup.select_one("span.a-price-whole")
+        # 受控兜底：只在商品主信息区 / 购物车里找，不碰全页
+        for sel in ("#ppd .a-price .a-offscreen", "#buybox .a-price .a-offscreen",
+                    "#centerCol .a-price .a-offscreen"):
+            el = soup.select_one(sel)
+            if el and el.get_text().strip():
+                price = el.get_text().strip()
+                break
+    if not price:
+        whole = soup.select_one("#corePrice_feature_div span.a-price-whole, "
+                               "#corePriceDisplay_desktop_feature_div span.a-price-whole")
         if whole and whole.parent:
             off = whole.parent.select_one(".a-offscreen")
             if off:
                 price = off.get_text().strip()
+    # 货币校验：宁可空着，也不要把 CNY 当 USD 存进库（浏览器通道缺货币 cookie 时会这样）
+    if price and not price_currency_ok(price, marketplace):
+        _log(f"[scrape] {asin} 价格货币不符（{price} @ {marketplace}），已丢弃"
+             f"——浏览器通道可能没带 i18n-prefs cookie")
+        price = None
 
     # 评分（提取数字部分，如 "4.7 out of 5 stars" -> "4.7"）
     raw_rating = (

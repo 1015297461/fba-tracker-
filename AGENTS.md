@@ -159,6 +159,13 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #     小类、大类丢失（现改为 `\(\s*See Top 100 in[^)]*\)`）。
                               #   · **很多新 listing 页面上根本没有 Date First Available**（实测 2026-11），
                               #     解析器无能为力 —— 只能走卖家精灵补（见 asin_meta / 下面 scrape 路由）。
+                              #   ⚠️ **价格只认「主价格容器」，绝不兜底到页面第一个 `.a-price`**：
+                              #     商品没有 Buy Box（不可售/限购/地区限制）时 Amazon 不渲染价格区，
+                              #     页面上其余 `.a-price` 全是推荐位/广告位商品的价格 —— 实测抓到过
+                              #     $8869 / $6741 / $16999 当成三五十刀小件的价格。找不到就返回空，
+                              #     显示"—"远好于显示错价。容器顺序见 `parse_product_page` 的 price 段。
+                              #   `price_currency_ok(price, marketplace)`：价格货币不是本站货币时（如 US 站
+                              #   出现 CNY）直接丢弃，配合 browser_fetch 的 i18n-prefs 一起防错价。
   browser_fetch.py             # 用「浏览器」取页面 HTML —— HTTP 被判机器人时的通道。**三档模式**（`FBA_DETAIL_BROWSER`）：
                               #   · `headless`（默认，推荐）：后端自己拉起**专用无头 Chrome**，profile 独立在
                               #     `data/chrome-profile/`。**与任何人日常用的浏览器完全隔离** —— 多人共用后端时，
@@ -180,6 +187,17 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   起）留在磁盘，可按需 `rm -rf data/chrome-profile` 清掉（下次自动重建）。
                               #   `local` 实现要点：新标签先开 about:blank 再 /navigate（`/new` 会等整页加载），
                               #   /navigate 客户端只等 8s，就绪靠轮询 `readyState + productTitle`；标签复用、闲置 240s 关。
+                              #   ⚠️ **需要带 cookie 时走 CDP 通道**（`fetch_html(..., cookies=[...])`）：
+                              #   `--dump-dom` 是一次性进程，注入不了 cookie。而 Amazon 的**货币由 `i18n-prefs`
+                              #   cookie 决定** —— 没有它时按 IP 返回人民币：同一 /dp/ 页面 HTTP 通道 $24.29、
+                              #   浏览器通道 CNY162.07（差 6.7 倍），被当成美元存进库就成了错价（2026-11 踩过）。
+                              #   CDP 通道：拉起带 `--remote-debugging-port`（默认 9335，`FBA_CDP_PORT`）的
+                              #   同一个 profile → node 的 WebSocket 调 `Network.setCookie` → `Page.navigate`
+                              #   → 轮询就绪 → 取 `outerHTML`。实测 **7~9s**（比 dump 的 20~40s 还快）。
+                              #   ⚠️ 就绪判定必须是 `readyState==='complete' && productTitle`：只看 productTitle
+                              #   会拿到半渲染 DOM（440KB，图片/A+/Customers say 全缺），完整页约 1.4~2MB。
+                              #   ⚠️ **HTML 必须写临时文件再回传路径**：2MB 字符串直接 `process.stdout.write`
+                              #   配合 `process.exit()` 会被截断（stdout 没 flush 就退出），Python 侧只拿到半截 JSON。
   sprite_fetch.py              # 卖家精灵「查竞品」批量取上架时间（2026-11-02 新增）。
   sprite_cred.py               # 卖家精灵账号凭据（密文存 data/sprite-cred.json，密钥由本机标识派生）。
                                #   设置：python3 -m backend.sprite_cred set
@@ -907,6 +925,9 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
 - **详情 `fetch_detail`**：**浏览器优先 + HTTP 兜底**（2026-10-30 改，见下方「为什么单条总失败」）：
   ① 本机真实浏览器（`browser_fetch.fetch_html`，5~8s）取 `/dp/`，用 `product_fetcher.parse_product_page` 解析
   （**两条通道共用同一解析器**，字段完全一致，只在结果里多一个 `fetchedBy: "browser"`）；
+  ⚠️ 调浏览器时**必须传 `cookies=[i18n-prefs=<站点货币>]`**，否则无头 Chrome 按 IP 返回 CNY
+  （$24.29 变成 162.07）。解析后若价格为空且页面里出现 CNY/¥ 而站点不是 CNY，判为「货币 cookie
+  未生效」→ 丢弃浏览器结果、回退 HTTP（宁慢勿错）。
   ② 浏览器不可用/没取到 → `product_fetcher.scrape_product_robust`（HTTP 完整重试预算 + 第二轮补采，与批量同款）；
   ③ `_DETAIL_FETCH_LOCK` **串行化**单条详情（连点不会打成突发并发），并做双检缓存；
   进程内存缓存 `_DETAIL_CACHE`（TTL 600s），`refresh=True` 覆盖；**默认不采集，前端点击缩略图/标题才请求**。
