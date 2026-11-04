@@ -948,6 +948,17 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
     返回 `data / snapDate / fetchedAt / dates / refresh() / pickDate()`；
     `ProductDetailDialog` 新增 `snapDate / fetchedAt / snapDates / onPickDate / onPickLatest / refreshing`
     等可选 props，头部显示「快照 2026-11-03 · 抓取于 11-03 12:31」+ 日历 + 最新 + 重新获取。
+  · **抓取后台化（2026-11-04）**：抓一次要 8~13s，原来请求绑在弹窗组件上——一关弹窗
+    组件卸载、结果被丢、下次点开又从头抓。现在请求挂到 `src/features/tools/detailJobs.ts`
+    的**模块级任务表**上（`ensureJob(key, run, reuseDone)`，key = 站点:ASIN:日期:是否强制）：
+    · 同一 key 同时只跑一个请求（连点不会重复撞 Amazon）；
+    · 关掉弹窗照样跑，完成结果留内存 30 分钟（`pruneJobs` 清理）→ 再点开秒开；
+    · `job.promise` **永不 reject**（成功/失败都记在 status 上），避免组件卸载后留下
+      未处理的 rejection；
+    · 弹窗开着时 hook 用 `subscribeJob` 占位（`hasSubscribers` 为真）→ 完成时不弹提示，
+      内容直接刷进弹窗；组件卸载（关闭）后订阅自动撤销 → 完成时由 `DetailToasts`
+      （挂在 app 根部，右下角小卡片 4.5s 自动消失）提示「XXX 详情已获取」。
+    · ⚠️ loading 弹窗必须可关闭（`modal-backdrop` 带 onClick），并写明「可以关掉，后台会继续」。
   · ⚠️ 迁移必须放在 `_init_catmon()` 里（新表在那里建）：曾放进 `_init_db()`，
     因「表还不存在」静默失败，旧表一直没被迁移（踩过）。
   · ⚠️ 刷新失败时**保留当前显示的快照**（不清空），只浮一条提示——否则用户反而看不到内容。

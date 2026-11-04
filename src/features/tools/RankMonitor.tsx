@@ -523,9 +523,17 @@ function AsinPeek({ asin, profile, keyword, isMine }: {
         </div>, document.body)}
 
       {modal && det.loading && (
-        <div className="modal-backdrop">
-          <div className="modal ps-detail-modal" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div className="modal-backdrop" onClick={() => setModal(false)}>
+          <div className="modal ps-detail-modal"
+               style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}
+               onClick={e => e.stopPropagation()}>
             <div style={{ fontSize: 13, color: 'var(--ink-3)' }}>正在读取详情…</div>
+            {/* 关掉窗口不影响抓取：请求挂在 detailJobs 上，抓完右下角提示 */}
+            <div style={{ fontSize: 11.5, color: 'var(--ink-4)', marginTop: 10,
+                          textAlign: 'center', lineHeight: 1.7, maxWidth: 340 }}>
+              首次抓取约 10 秒，可以直接关掉这个窗口<br />
+              抓取会在后台继续，完成后右下角会提示你，再点开就直接显示
+            </div>
           </div>
         </div>
       )}

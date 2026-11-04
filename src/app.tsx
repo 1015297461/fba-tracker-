@@ -15,6 +15,7 @@ import { ShipmentTracker } from './features/shipment';
 import { AiAnalyze, visibleAiSkills } from './features/tools/AiAnalyze';
 import { RankMonitor } from './features/tools/RankMonitor';
 import { CategoryMonitor } from './features/tools/CategoryMonitor';
+import { DetailToasts } from './features/tools/DetailToasts';
 import { MyExports } from './features/exports/MyExports';
 import { Trash } from './features/trash/Trash';
 import { PRODUCTS } from './data/products';
@@ -228,6 +229,8 @@ export default function App() {
       <AuthGate>
         <AppShell />
       </AuthGate>
+      {/* 详情抓取在后台跑完时的提示（弹窗已关闭才弹） */}
+      <DetailToasts />
     </ProductsProvider>
   );
 }
