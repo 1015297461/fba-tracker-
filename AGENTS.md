@@ -94,6 +94,8 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                 #   绕过「已成功就跳过」——否则重采已成功的项会什么都不发生）
                                 #   + append（落库写 seq=max+1 追加新版本，否则写 seq=0 覆盖）。
                                 #   重采进度与任务计数脱钩，走 ctl.force_done/force_total
+                                #   详情池复用：/start 支持 usePool（默认 true；仅 root 的界面
+                                #   有此开关，非 root 后端强制 true）。重采忽略该值、始终绕过池。
     review.py                   # /api/review/*，含 run_review_task()
     sif_keywords.py              # /api/sif/*，SIF 爆品关键词监控：任务 CRUD + 三档频率调度器（daily/every_n/weekly）
                               #   + 分层抓取编排 execute_task() + 看板/趋势/信号/入池/设置/点查路由
@@ -117,6 +119,11 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   验证码/Dog页/503 检测）。此前用裸 _http_get 单独抓 /dp/，Amazon 软性
                               #   限流下会稳定失败（批量却成功），故统一改为 scrape_product。
                               #   按天快照 asin_detail_snapshots（一天一条，同日覆盖）+ 内存 600s。
+  asin_detail_pool.py          # 详情结果池（2026-11-04）：产品采集 / 类目榜单 / 排名监测共用的
+                              #   「同一份 ASIN 详情」。写 asin_detail_snapshots（一天一条），
+                              #   抓前 take_products() 命中最近 30 天快照就不再请求 Amazon；
+                              #   抓后 put() 回写。product_to_detail / detail_to_product 负责
+                              #   蛇形(scrape_products) ⇄ 驼峰(catmon 详情) 互转。
   product_fetcher.py           # 产品详情抓取器（bs4 解析 + 反爬：会话池/令牌桶/CAPTCHA/Dog-page检测）；
                               #   ⚠️ fetch_product_page 还会识别「200 但无 id="productTitle" 的空壳/软封页」
                               #   （Amazon 对被标记会话返回的空壳中间页）→ 清 cookie + 换指纹 + 重试，
@@ -898,10 +905,31 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
   · 前端 `src/features/tools/useAsinDetail.ts` 是共享钩子（类目榜单 / 排名监测都用它）：
     返回 `data / snapDate / fetchedAt / dates / refresh() / pickDate()`；
     `ProductDetailDialog` 新增 `snapDate / fetchedAt / snapDates / onPickDate / onPickLatest / refreshing`
-    等可选 props，头部显示「快照 2026-11-03（采集于 11-03 12:31）」+ 日历 + 最新 + 重新获取。
+    等可选 props，头部显示「快照 2026-11-03 · 抓取于 11-03 12:31」+ 日历 + 最新 + 重新获取。
   · ⚠️ 迁移必须放在 `_init_catmon()` 里（新表在那里建）：曾放进 `_init_db()`，
     因「表还不存在」静默失败，旧表一直没被迁移（踩过）。
   · ⚠️ 刷新失败时**保留当前显示的快照**（不清空），只浮一条提示——否则用户反而看不到内容。
+- **详情结果池：三个入口共用一份（2026-11-04）** —— 产品采集、类目榜单、排名监测抓的是
+  同一个 `/dp/` 页面，此前各存各的（`scrape_products` vs `asin_detail_snapshots`），
+  同一 ASIN 被反复抓（库里 5422 个唯一 ASIN 中 571 个被多任务采过，冗余约 650 次请求）。
+  现在以 `asin_detail_snapshots` 为**唯一结果池**，业务表各留各的：
+  · 模块 `backend/asin_detail_pool.py`：`take_products()`（批量取可复用快照并转成产品采集结构）、
+    `put()`（抓完写池）、`product_to_detail()` / `detail_to_product()`（蛇形 ⇄ 驼峰互转，
+    复用 `catmon_fetcher._build_detail_data` 保证与 catmon 详情口径一致）、`is_usable()`。
+  · **复用窗口** `db.ASIN_DETAIL_REUSE_DAYS = 30`（最近一个月）。快照自带真实 `fetched_at`，
+    界面显示「抓取于 …」，所以放宽窗口不会让人误判数据新旧。
+  · **完整度判定**：要求 Customers say 但池里那条没有 → 判为不可用、重新抓
+    （否则用户勾了 CS 却拿到无 CS 的旧数据）。池里有多余字段时无脑复用。
+  · **重采始终绕过池**（`force` 分支直接把 `use_pool` 置 False），否则「重采」等于什么都不做。
+  · 写池时机 `routes/scrape.py::_run_scrape`：`on_progress` 逐条写（暂停/取消也不丢本块成果）
+    + 块末兜底再写一次（幂等，覆盖重试轮结果）。`scrape_products.reused_from` 非空 = 该行
+    复用了池里更早的快照（值即那次真实抓取时间），前端「采集时间」列标「复用」。
+  · **任务级开关** `scrape_tasks.use_pool`（默认 1）：暂停/继续、重试失败项都沿用原选择。
+    UI 上这个勾选只对 **root** 显示，非 root 一律走默认（复用）；后端对非 root 也强制 True。
+  · `scripts/backfill_detail_pool.py` 一次性回填存量：把 `scrape_products` 里每个
+    (asin, marketplace) 最新一条成功记录写进池（`snap_date`/`fetched_at` 都用原采集时间，
+    **不能用「现在」**，否则界面全显示成今天抓的——已踩过并修正）。幂等，可重跑。
+  · ⚠️ `db.save_asin_detail_snapshot(..., fetched_at=None)`：回填/补历史时必须显式传原始时间。
 - **为什么「单条详情」比「批量采集」容易失败（2026-10-30 复盘）**：
   ⚠️ 两条链路**早就是同一套抓取函数**，差别不在"采集方式"，而在**机会数与时间分布**：
   批量一个 ASIN 有 4（函数内重试）× 2（失败项重试轮）= 8 次机会、跨数分钟摊开，失败还被第二轮盖过去

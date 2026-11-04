@@ -20,6 +20,12 @@ SIF_MAX_RETRIES_PER_DAY = len(SIF_RETRY_BACKOFF_MIN) + 1
 # （单条约 15KB，1000 个 ASIN × 30 条 ≈ 450MB 上限，实际只会更少）。
 ASIN_DETAIL_KEEP = 30
 
+# 详情结果池的「复用窗口」：产品采集/类目榜单/排名监测共用同一份详情快照，
+# 某 ASIN 在最近这么多天内有成功快照，就直接拿来用、不再请求 Amazon。
+# 快照里带 fetched_at（真实抓取时间），界面会显示出来，所以放宽到一个月也不会
+# 让人误以为是刚抓的。改这一个数即可调整窗口。
+ASIN_DETAIL_REUSE_DAYS = 30
+
 
 # ---------------------------------------------------------------------------
 # 货件跟踪：camelCase(接口/原项目) <-> snake_case(SQLite) 机械互转
@@ -820,11 +826,59 @@ class DbState:
             return None
         return {"snap_date": row["snap_date"], "data": d, "fetched_at": row["fetched_at"]}
 
+    def get_reusable_asin_details(self, asins, marketplace="US",
+                                  days=None, until=None):
+        """批量取「可复用」的详情快照（每个 ASIN 窗口内最新一条）。
+
+        用于三个入口共用详情结果池：产品采集落库前先问这里，命中的不再请求 Amazon。
+        返回 {ASIN: {snap_date, data, fetched_at}}；没命中的 ASIN 不出现在结果里。
+
+        days 默认取 `ASIN_DETAIL_REUSE_DAYS`（30 天）。`until` 可指定「视作今天」的
+        日期（YYYY-MM-DD，单测用），窗口按 (until - days, until] 算。
+        """
+        clean = []
+        for a in asins or []:
+            s = str(a or "").strip().upper()
+            if s and s not in clean:
+                clean.append(s)
+        if not clean:
+            return {}
+        mk = str(marketplace or "US").strip().upper()
+        n_days = ASIN_DETAIL_REUSE_DAYS if days is None else max(1, int(days))
+        end = str(until or _now_iso())[:10]
+        try:
+            d_end = datetime.date.fromisoformat(end)
+        except Exception:
+            d_end = datetime.date.today()
+        since = (d_end - datetime.timedelta(days=n_days)).isoformat()
+
+        marks = ",".join("?" for _ in clean)
+        sql = ("SELECT asin, snap_date, data, fetched_at FROM asin_detail_snapshots "
+               f"WHERE marketplace=? AND asin IN ({marks}) AND snap_date >= ? "
+               "ORDER BY asin ASC, snap_date DESC, fetched_at DESC")
+        with self._conn() as conn:
+            rows = conn.execute(sql, [mk] + clean + [since]).fetchall()
+        out = {}
+        for r in rows:
+            a = r["asin"]
+            if a in out:          # 已按日期倒序 → 每个 ASIN 只留最新一天
+                continue
+            try:
+                d = json.loads(r["data"] or "{}")
+            except Exception:
+                continue
+            if isinstance(d, dict) and d:
+                out[a] = {"snap_date": r["snap_date"], "data": d,
+                          "fetched_at": r["fetched_at"]}
+        return out
+
     def save_asin_detail_snapshot(self, asin, marketplace, data,
-                                  snap_date=None, keep=None):
+                                  snap_date=None, keep=None, fetched_at=None):
         """写/覆盖当天快照，并清掉超出 keep 条的旧快照。
 
         keep 默认取模块常量 `ASIN_DETAIL_KEEP`（可配置：每个 ASIN 留多少条历史）。
+        fetched_at 默认取当前时刻；**回填历史数据时必须传入原始抓取时间**，
+        否则界面会把「今天灌进池子」误显示成「今天抓的」（用户据此判断数据新旧）。
         返回 {"snap_date": "...", "fetched_at": "..."}；失败返回 None。
         """
         a = str(asin or "").strip().upper()
@@ -832,7 +886,7 @@ class DbState:
         if not a or not isinstance(data, dict):
             return None
         day = str(snap_date or _now_iso())[:10]
-        now = _now_iso()
+        now = str(fetched_at or "").strip() or _now_iso()
         n_keep = max(1, int(keep or ASIN_DETAIL_KEEP))
         with self.lock:
             with self._conn() as conn:
@@ -971,7 +1025,8 @@ class DbState:
                     asins        TEXT DEFAULT '[]',
                     started_at   TEXT,
                     ended_at     TEXT,
-                    error        TEXT
+                    error        TEXT,
+                    use_pool     INTEGER DEFAULT 1
                 );
 
                 CREATE TABLE IF NOT EXISTS scrape_products (
@@ -1008,7 +1063,8 @@ class DbState:
                     error_message TEXT,
                     scraped_at    TEXT,
                     seq           INTEGER DEFAULT 0,
-                    review_media  TEXT
+                    review_media  TEXT,
+                    reused_from   TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_scrape_prod_task ON scrape_products(task_id);
 
@@ -1541,7 +1597,10 @@ class DbState:
             for col, ddl in (("asins", "TEXT DEFAULT '[]'"),
                              ("started_at", "TEXT"),
                              ("ended_at", "TEXT"),
-                             ("error", "TEXT")):
+                             ("error", "TEXT"),
+                             # 是否复用「详情结果池」（默认复用）。任务级记录，
+                             # 保证暂停/继续、重试失败项不会把用户的选择改掉。
+                             ("use_pool", "INTEGER DEFAULT 1")):
                 if col not in _scrape_cols:
                     conn.execute(f"ALTER TABLE scrape_tasks ADD COLUMN {col} {ddl}")
 
@@ -1585,6 +1644,11 @@ class DbState:
             # 与采集主链路解耦——采集阶段不写它，只在详情页 tab / 批量预热时写入。
             if "review_media" not in _scraped_cols:
                 conn.execute("ALTER TABLE scrape_products ADD COLUMN review_media TEXT")
+            # 详情结果池复用标记：非空 = 这条不是本次抓的，而是直接沿用了池里
+            # 抓取时刻更早的快照（值就是那次真实抓取时间），界面上要标出来。
+            if "reused_from" not in _scraped_cols:
+                conn.execute("ALTER TABLE scrape_products ADD COLUMN reused_from TEXT")
+
 
             # SIF v1 → v2：旧版结构（单表快照 + detail 冗余存 60 周历史）与新「爆品关键词
             # 监控」不兼容，按确认「旧架构与历史数据全部丢弃」直接重建为 v2。
@@ -1988,6 +2052,8 @@ class DbState:
             "failed":      row["failed"],
             "withReviews": bool(row["with_reviews"]),
             "withCustomersSay": bool(row["with_customers_say"]),
+            # 是否复用详情结果池（老任务没有这列 → 视为复用，与默认一致）
+            "usePool": bool(row["use_pool"]) if "use_pool" in row.keys() else True,
             "status":      row["status"],
             "createdAt":   row["created_at"],
             "asins":       json.loads(row["asins"] or "[]"),
@@ -1997,7 +2063,7 @@ class DbState:
         }
 
     def create_scrape_task(self, marketplace, asins, with_reviews, name=None,
-                           with_customers_say=True):
+                           with_customers_say=True, use_pool=True):
         """建任务并把完整 ASIN 列表落库——这是断点续跑的唯一依据。"""
         tid = "st" + secrets.token_hex(6)
         now = _now_iso()
@@ -2006,10 +2072,10 @@ class DbState:
                 conn.execute(
                     """INSERT INTO scrape_tasks
                        (id, marketplace, name, total, success, failed, with_reviews,
-                        with_customers_say, status, created_at, asins, started_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        with_customers_say, use_pool, status, created_at, asins, started_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     [tid, marketplace, name, len(asins), 0, 0, 1 if with_reviews else 0,
-                     1 if with_customers_say else 0,
+                     1 if with_customers_say else 0, 1 if use_pool else 0,
                      "running", now, json.dumps(list(asins), ensure_ascii=False), now],
                 )
                 conn.commit()
@@ -2138,8 +2204,8 @@ class DbState:
                             bsr_sub_category, bsr_sub_rank, bsr_raw_text, customers_say,
                             customers_say_tags, customers_say_aspects,
                             review_images, select_to_learn_more, status, error_message, scraped_at,
-                            seq)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            seq, reused_from)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                            ON CONFLICT(task_id, asin, seq) DO UPDATE SET
                                marketplace=excluded.marketplace, title=excluded.title,
                                brand=excluded.brand, price=excluded.price,
@@ -2163,7 +2229,8 @@ class DbState:
                                review_images=excluded.review_images,
                                select_to_learn_more=excluded.select_to_learn_more,
                                status=excluded.status, error_message=excluded.error_message,
-                               scraped_at=excluded.scraped_at""",
+                               scraped_at=excluded.scraped_at,
+                               reused_from=excluded.reused_from""",
                         [
                             task_id, p.get("asin"), p.get("marketplace"),
                             p.get("title"), p.get("brand"), p.get("price"), p.get("rating"),
@@ -2183,8 +2250,11 @@ class DbState:
                             p.get("customers_say_aspects"),
                             json.dumps(p.get("review_images", []), ensure_ascii=False),
                             json.dumps(p.get("select_to_learn_more", []), ensure_ascii=False),
-                            p.get("status"), p.get("error_message"), now,
+                            p.get("status"), p.get("error_message"),
+                            # 复用池快照时传入池里的原始抓取时间，界面据此显示「抓取于 …」
+                            p.get("scraped_at") or now,
                             int(p.get("seq") or 0),
+                            p.get("reused_from"),
                         ],
                     )
                 conn.commit()
@@ -2231,6 +2301,8 @@ class DbState:
             "status":       row["status"],
             "errorMessage": row["error_message"],
             "scrapedAt":    row["scraped_at"],
+            # 非空 = 这条是「详情结果池」里沿用的旧快照，值是那次真实抓取时间
+            "reusedFrom":   row["reused_from"] if "reused_from" in row.keys() else None,
             "seq":          row["seq"] if row["seq"] is not None else 0,
         }
 

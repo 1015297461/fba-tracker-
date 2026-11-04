@@ -2376,6 +2376,13 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .ps-status { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
 .ps-status-ok { color: var(--green); background: rgba(22,163,74,0.1); }
 .ps-status-fail { color: var(--red); background: rgba(220,38,38,0.1); cursor: help; }
+/* 「复用」标记：这条结果来自详情结果池，实际抓取时间见同行时间 / 悬停提示 */
+.ps-reuse-tag {
+  display: inline-block; margin-left: 6px; padding: 0 5px;
+  font-size: 10px; line-height: 15px; border-radius: 4px;
+  color: var(--ink-3); background: var(--bg-2, rgba(127,127,127,0.12));
+  border: 1px solid var(--border); vertical-align: 1px; cursor: help;
+}
 
 .ps-empty { color: var(--ink-3); font-size: 13px; padding: 14px 4px; }
 .ps-empty-lg { display: flex; align-items: center; justify-content: center; height: 100%; font-size: 13px; text-align: center; padding: 40px; }

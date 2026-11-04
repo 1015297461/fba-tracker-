@@ -14,7 +14,7 @@ import threading
 import time
 from urllib.parse import urlparse, parse_qs
 
-from .. import product_fetcher, review_media
+from .. import asin_detail_pool, product_fetcher, review_media
 from ..utils import _extract_token, _now_iso, _log
 
 # 正在执行的采集任务：task_id -> _TaskCtl。
@@ -210,7 +210,7 @@ def _run_progress(ctl, task):
 
 
 def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, ctl,
-                force_asins=None, append=False):
+                force_asins=None, append=False, use_pool=True):
     """后台线程：按断点续跑，逐条落库，支持暂停/取消。
 
     force_asins：「强制重采」的 ASIN 集合。它们**即使已成功也不跳过**——这正是重采
@@ -218,6 +218,8 @@ def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, c
       给了这一项时，待跑列表就**恰好是这批 ASIN**，不会顺带把任务里其他失败项也跑一遍。
     append：True 时落库写 seq=max+1（「新增一条记录」，保留旧版本）；
       默认 False 写 seq=0，即覆盖（「替换当前记录」）。
+    use_pool：是否复用「详情结果池」。True 时每块先问池子要最近 30 天内的成功快照，
+      命中就不再请求 Amazon（省时间也省反爬额度）；重采（force）始终绕过池子。
     """
     try:
         state.set_scrape_task_status(task_id, "running", started_at=_now_iso())
@@ -226,16 +228,20 @@ def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, c
         force_set = set(force_asins or [])
         if force_set:
             pending = [a for a in asins if a in force_set]
+            use_pool = False          # 重采的意义就是重新抓，绝不吃池子里的旧快照
         else:
             # 待跑 = 全部 ASIN − 已成功的。这就是断点续跑：跳过跑过的，只补没跑的和失败的。
             done = state.get_scrape_done_asins(task_id)
             pending = [a for a in asins if a not in done]
         _log(f"[scrape] 任务 {task_id} 开始：待采集 {len(pending)} 个"
              f"（总 {len(asins)}）"
-             + (f"，本次为强制重采（{'新增' if append else '替换'}）" if force_set else ""))
+             + (f"，本次为强制重采（{'新增' if append else '替换'}）" if force_set else "")
+             + ("" if use_pool else "，不复用详情池"))
 
         since_refresh = 0
         scraped = 0
+        reused_total = 0
+        pool_saved = 0
         # append 模式下每条 ASIN 的 seq 只算一次并缓存 —— 否则 on_progress 与
         # 块末兜底写会各取一次 max+1，同一 ASIN 被写成两行。
         _seq_cache = {}
@@ -249,10 +255,18 @@ def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, c
                 products = [{**p, "seq": _seq_cache.get(p.get("asin"), 0)} for p in products]
             state.save_scrape_products(task_id, products)
 
+        def _to_pool(products):
+            """把成功结果写回详情池，供另外两个入口复用。失败只记日志，不影响采集。"""
+            nonlocal pool_saved
+            for p in products:
+                if asin_detail_pool.put(state, p, marketplace):
+                    pool_saved += 1
+
         def on_progress(_completed, _total, product):
             """每抓完一个 ASIN 就落库，进度条才不会长时间停在 0/500。"""
             nonlocal since_refresh, scraped
             _persist([product])
+            _to_pool([product])       # 立刻进池：暂停/取消时本块已抓到的成果也不会白费
             since_refresh += 1
             scraped += 1
             if scraped % PROGRESS_LOG_EVERY == 0:
@@ -263,11 +277,29 @@ def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, c
 
         for start in range(0, len(pending), CHUNK_SIZE):
             chunk = pending[start:start + CHUNK_SIZE]
-            _log(f"[scrape] 第 {start // CHUNK_SIZE + 1} 块：提交 {len(chunk)} 个 ASIN"
+            # ① 先问详情池：最近 N 天内抓过的 ASIN 直接沿用，不再打 Amazon
+            reused = (asin_detail_pool.take_products(
+                state, chunk, marketplace,
+                need_customers_say=with_customers_say) if use_pool else {})
+            if reused:
+                for a in chunk:                       # 按原顺序落库，列表顺序不变
+                    if a in reused:
+                        _persist([reused[a]])
+                reused_total += len(reused)
+                _log(f"[scrape] 第 {start // CHUNK_SIZE + 1} 块：{len(reused)} 个复用详情池"
+                     f"（最近 {asin_detail_pool.reuse_window_days()} 天内抓过），"
+                     f"{len(chunk) - len(reused)} 个需要现抓")
+            to_fetch = [a for a in chunk if a not in reused]
+            if not to_fetch:
+                state.refresh_scrape_task_counts(task_id)
+                if force_set:
+                    ctl.force_done = min(start + len(chunk), len(pending))
+                continue
+            _log(f"[scrape] 第 {start // CHUNK_SIZE + 1} 块：提交 {len(to_fetch)} 个 ASIN"
                  f"（待跑还剩 {len(pending) - start - len(chunk)}）")
             try:
                 results = product_fetcher.scrape_products(
-                    chunk, marketplace, with_reviews,
+                    to_fetch, marketplace, with_reviews,
                     on_progress=on_progress, should_stop=ctl.stop.is_set,
                     with_customers_say=with_customers_say)
             except product_fetcher.ScrapeInterrupted:
@@ -276,9 +308,10 @@ def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, c
                 # 单块异常不该让整个任务停摆：标记这一块失败后继续跑下一块
                 _log(f"[scrape] 任务 {task_id} 第 {start // CHUNK_SIZE + 1} 块异常: {e}")
                 results = [{**product_fetcher._empty_product(
-                    a, marketplace, f"fetch_exc:{type(e).__name__}")} for a in chunk]
+                    a, marketplace, f"fetch_exc:{type(e).__name__}")} for a in to_fetch]
             # 兜底再写一次：失败重试轮的结果不走 on_progress，靠这里落库（UPSERT 幂等）
             _persist(results)
+            _to_pool(results)          # 重试轮成功的结果也补进池子（写入幂等）
             state.refresh_scrape_task_counts(task_id)
             # 重采进度与任务计数脱钩，由这里按块推进（见 _run_progress 的说明）
             if force_set:
@@ -291,7 +324,9 @@ def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, c
             task_id, "partial" if failed else "completed",
             error=f"{failed} 个 ASIN 采集失败，可点「重试失败项」" if failed else None,
             ended_at=_now_iso())
-        _log(f"[scrape] 任务 {task_id} 结束：成功 {t.get('success')}，失败 {failed}")
+        _log(f"[scrape] 任务 {task_id} 结束：成功 {t.get('success')}，失败 {failed}"
+             + (f"，其中 {reused_total} 个复用详情池（未请求 Amazon）" if reused_total else "")
+             + (f"；{pool_saved} 条结果已进池" if pool_saved else ""))
 
     except product_fetcher.ScrapeInterrupted:
         state.refresh_scrape_task_counts(task_id)
@@ -316,7 +351,8 @@ def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, c
 
 
 def start_scrape_task(state, asins, marketplace, with_reviews, task_id=None,
-                      with_customers_say=True, force_asins=None, append=False):
+                      with_customers_say=True, force_asins=None, append=False,
+                      use_pool=True):
     """建/复用任务并起后台线程，立即返回 task_id。
 
     传 task_id 时把新 ASIN 合并进已有任务（「重试失败项」「继续」走这条路）。
@@ -325,6 +361,9 @@ def start_scrape_task(state, asins, marketplace, with_reviews, task_id=None,
 
     with_customers_say：是否解析 Customers say。新建任务用传入值；
     复用已有任务时改用任务里记录的开关（与上次采集保持一致）。
+
+    use_pool：是否复用「详情结果池」（默认 True）。新建任务用传入值；
+    复用已有任务时沿用任务里记录的选择——暂停后继续不该悄悄换成另一种行为。
 
     force_asins + append：重采通道。给了 force_asins 时，待跑列表恰好是这批 ASIN
     （不再按「已成功就跳过」过滤，否则重采已成功的项会什么都不发生）；
@@ -344,9 +383,11 @@ def start_scrape_task(state, asins, marketplace, with_reviews, task_id=None,
             state.update_scrape_task_asins(task_id, merged)
             # 续跑/重试沿用原任务的开关，避免同一任务两次采集字段不一致
             with_customers_say = bool(t.get("withCustomersSay", True))
+            use_pool = bool(t.get("usePool", True))
         else:
             task_id = state.create_scrape_task(marketplace, asins, with_reviews,
-                                               with_customers_say=with_customers_say)
+                                               with_customers_say=with_customers_say,
+                                               use_pool=use_pool)
             merged = asins
         _running[task_id] = ctl
         # 同步落状态再返回：否则 start 一返回、后台线程还没调度起来时，任务状态仍是
@@ -368,7 +409,8 @@ def start_scrape_task(state, asins, marketplace, with_reviews, task_id=None,
 
     threading.Thread(target=_run_scrape,
                      args=(state, task_id, marketplace, with_reviews, with_customers_say, ctl),
-                     kwargs={"force_asins": sorted(force_set), "append": append},
+                     kwargs={"force_asins": sorted(force_set), "append": append,
+                             "use_pool": use_pool},
                      daemon=True, name=f"ScrapeTask-{task_id[:8]}").start()
     return task_id
 
@@ -454,6 +496,13 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         # append=True 落库追加新版本（「新增一条记录」），否则覆盖（「替换」）。
         force = bool(payload.get("force", False))
         append = bool(payload.get("append", False))
+        # 详情结果池复用：默认开。这个配置项只对 root 显示，所以非 root 传什么
+        # 都按默认值处理（前端不显示开关，正常情况下也不会传）。
+        use_pool = payload.get("usePool", True)
+        use_pool = True if use_pool is None else bool(use_pool)
+        _me = auth.verify(_extract_token(self)) or {}
+        if _me.get("role") != "root":
+            use_pool = True
         task_id_in = payload.get("taskId")
         if not isinstance(task_id_in, str) or not task_id_in:
             task_id_in = None
@@ -465,7 +514,8 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
                                         task_id=task_id_in,
                                         with_customers_say=with_customers_say,
                                         force_asins=asins if force else None,
-                                        append=append)
+                                        append=append,
+                                        use_pool=use_pool)
         except RuntimeError as e:
             self._send_json(409, {"error": str(e)})
             return
@@ -481,6 +531,8 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
                 _extras.append("含评论")
             if with_customers_say:
                 _extras.append("含 Customers say")
+            if use_pool:
+                _extras.append(f"复用 {asin_detail_pool.reuse_window_days()} 天内详情")
             _log(f"[scrape] 已提交 {len(asins)} 个 ASIN @ {marketplace}"
                  f"{(' (' + ' + '.join(_extras) + ')') if _extras else ''} -> {task_id}")
         self._send_json(200, {"taskId": task_id})

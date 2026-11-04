@@ -273,10 +273,15 @@ function ProductDetailDialog({ product, open, onClose, taskId, onRefresh, refres
                 </div>
                 <div className="ps-detail-meta">
                   ASIN: {product.asin}
-                  {snapDate && (
+                  {/* 有日历 = 按天快照（类目榜单/排名监测）：显示「快照日期」 */}
+                  {snapDate && onPickDate && (
+                    <span className="ps-detail-snap">{' · '}快照 {snapDate}</span>
+                  )}
+                  {/* 抓取时间：三个入口都显示——复用的旧快照也能一眼看出是什么时候抓的 */}
+                  {fetchedAt && (
                     <span className="ps-detail-snap">
-                      {' · '}快照 {snapDate}
-                      {fetchedAt ? `（采集于 ${fmtSnapTime(fetchedAt)}）` : ''}
+                      {' · '}抓取于 {fmtSnapTime(fetchedAt)}
+                      {product.reusedFrom ? '（复用）' : ''}
                     </span>
                   )}
                 </div>
@@ -665,6 +670,9 @@ export interface ScrapedProduct {
   categories: string | null; seller: string | null;
   bestSellerRank: BestSellerRank; customerReviews: CustomerReviews;
   status: string; errorMessage: string | null; scrapedAt?: string;
+  // 非空 = 这条结果没有重新抓，而是沿用了「详情结果池」里那次抓取的快照；
+  // 值是那次真实抓取时间（与 scrapedAt 相同），界面上标「复用」用。
+  reusedFrom?: string | null;
   // 同一 (任务, ASIN) 可能因「重采 · 新增一条记录」存在多行；seq=0 是被覆盖的那条
   seq?: number;
 }
@@ -674,6 +682,8 @@ interface ScrapeTask {
   id: string; marketplace: string; name: string | null; total: number; success: number; failed: number;
   withReviews: boolean; withCustomersSay: boolean; status: string; createdAt: string;
   asins: string[]; startedAt: string | null; endedAt: string | null; error: string | null;
+  // 是否复用「详情结果池」（最近 30 天抓过的 ASIN 直接沿用，不再请求 Amazon）
+  usePool?: boolean;
 }
 
 // ---- API ----
@@ -690,7 +700,8 @@ async function apiGetProducts(taskId: string): Promise<ScrapedProduct[]> {
 // 提交即返回 taskId，真正的抓取在服务端后台线程里跑——所以刷新页面不会中断任务
 // extra.force/append：重采通道。force=强制重跑（绕过「已成功就跳过」），
 // append=true 追加新版本（「新增一条记录」），否则覆盖（「替换当前记录」）。
-async function apiStartScrape(asins: string[], marketplace: string, withReviews: boolean, taskId?: string, withCustomersSay: boolean = true, extra?: { force?: boolean; append?: boolean }): Promise<string> {
+// extra.usePool：是否复用详情结果池（默认开；重采时后端强制绕过）。
+async function apiStartScrape(asins: string[], marketplace: string, withReviews: boolean, taskId?: string, withCustomersSay: boolean = true, extra?: { force?: boolean; append?: boolean; usePool?: boolean }): Promise<string> {
   const r = await fetch('/api/scrape/start', {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ asins, marketplace, withReviews, withCustomersSay, ...(extra || {}), ...(taskId ? { taskId } : {}) }),
@@ -954,6 +965,9 @@ export function ProductScrape() {
   const [withReviews, setWithReviews] = React.useState(false);
   // Customers say（AI 评价摘要）默认开启：内容就在详情页里，不增加请求，实测净增约 44ms
   const [withCustomersSay, setWithCustomersSay] = React.useState(true);
+  // 复用「详情结果池」：最近 30 天抓过的 ASIN 直接沿用快照，不再请求 Amazon。
+  // 开关只对 root 显示（其他人看不到，永远走默认的「复用」）。
+  const [usePool, setUsePool] = React.useState(true);
   const [products, setProducts]       = React.useState<ScrapedProduct[]>([]);
   const [running, setRunning]         = React.useState(false);
   // 「本轮」进度：进度条用它。分母=本轮工作集（首次=全部 ASIN；重试/续跑=未成功的那些），
@@ -1191,7 +1205,9 @@ export function ProductScrape() {
     setErr(''); setProducts([]); setActiveTaskId(null); setPage(1);
     setProgress({ completed: 0, total: validAsins.length });
     try {
-      const taskId = await apiStartScrape(validAsins, marketplace, withReviews, undefined, withCustomersSay);
+      // usePool 只对 root 开放；非 root 不显示开关，后端也按默认（复用）处理
+      const taskId = await apiStartScrape(validAsins, marketplace, withReviews, undefined,
+                                          withCustomersSay, { usePool: isRoot ? usePool : true });
       startPolling(taskId);
     } catch (e: any) {
       setErr(e.message || '提交采集失败');
@@ -1377,6 +1393,13 @@ export function ProductScrape() {
           <span>抓取 Customers say 评价摘要</span>
         </label>
 
+        {isRoot && (
+          <label className="ps-check" title="产品采集、类目榜单、排名监测共用同一个详情库：最近 30 天内抓过的 ASIN 直接沿用，不再请求 Amazon（列表里会标「复用」并显示真实抓取时间）。想强制拿最新数据，关掉它或对单条用「重采」。">
+            <input type="checkbox" checked={usePool} onChange={e => setUsePool(e.target.checked)} disabled={running} />
+            <span>复用 30 天内已抓详情（不重复请求 Amazon）</span>
+          </label>
+        )}
+
         {err && <div className="ps-err">{err}</div>}
 
         <div className="ps-actions">
@@ -1441,7 +1464,8 @@ export function ProductScrape() {
               const fullTip = `${displayName}\n创建 ${fmtDateTime(t.createdAt)} · 共 ${t.total} · 成功 ${t.success} · 失败 ${t.failed}`
                 + `${taskStatusText(t) ? ` · ${taskStatusText(t)}` : ''}`
                 + `${t.withReviews ? ' · 含评论' : ''}`
-                + `${t.withCustomersSay === false ? ' · 无 Customers say' : ''}`;
+                + `${t.withCustomersSay === false ? ' · 无 Customers say' : ''}`
+                + `${t.usePool === false ? ' · 不复用详情池' : ' · 复用详情池（30 天内抓过的不重抓）'}`;
               return (
                 <React.Fragment key={t.id}>
                   {g !== prevG && <div className="ps-hist-group">{g}</div>}
@@ -1683,8 +1707,12 @@ export function ProductScrape() {
                         ? <span className="ps-status ps-status-ok">成功</span>
                         : <span className="ps-status ps-status-fail" title={p.errorMessage || '未知错误'}>失败</span>}
                     </td>
-                    <td className="ps-col-scraped" title={p.scrapedAt || ''}>
+                    <td className="ps-col-scraped"
+                        title={p.reusedFrom
+                          ? `复用详情池快照 · 实际抓取于 ${fmtDateTime(p.reusedFrom)}（未重新请求 Amazon）`
+                          : (p.scrapedAt || '')}>
                       {p.scrapedAt ? fmtDateTime(p.scrapedAt) : '—'}
+                      {p.reusedFrom && <span className="ps-reuse-tag">复用</span>}
                     </td>
                     <td className="ps-col-ops">
                       <button className="btn btn-sm ps-btn-detail" onClick={() => { setSelectedProduct(p); setDetailOpen(true); }}>详情</button>
@@ -1767,6 +1795,8 @@ export function ProductScrape() {
           open={detailOpen}
           onClose={() => { setDetailOpen(false); setSelectedProduct(null); }}
           taskId={activeTaskId || ''}
+          // 产品采集是「一次采集 = 一条结果」，没有历史快照可选，只显示这条的抓取时间
+          fetchedAt={selectedProduct?.scrapedAt || undefined}
         />
       )}
 
