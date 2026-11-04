@@ -518,9 +518,11 @@ function TaskModal({ task, timezones, onClose, onSaved }: {
   const [saving, setSaving]       = React.useState(false);
   const [err, setErr]             = React.useState('');
 
-  const sortSlots = (arr: string[]) => [...new Set(arr)].sort();
+  // 时间点编辑：**不要**在 onchange 里排序，也不要拿「值」当 key ——
+  // 值一变 key 就变 → React 重建 input → 焦点丢失，表现为「时间根本改不了」。
+  // 排序交给后端（db._norm_schedule），前端只保证不丢焦点。
   function setSlotAt(i: number, v: string) {
-    setSchedule(s => sortSlots(s.map((x, idx) => (idx === i ? v : x))));
+    setSchedule(s => s.map((x, idx) => (idx === i ? v : x)));
   }
   function removeSlot(i: number) { setSchedule(s => s.filter((_, idx) => idx !== i)); }
   function addSlot() {
@@ -531,23 +533,25 @@ function TaskModal({ task, timezones, onClose, onSaved }: {
       const s = `${String(h).padStart(2, '0')}:00`;
       if (!used.has(s)) { next = s; break; }
     }
-    setSchedule(s => sortSlots([...s, next]));
+    setSchedule(s => [...s, next]);     // 追加到末尾，不重排（否则新加的行会跳走）
   }
   /** 快捷档：点一下加入/移除「HH:00」 */
   function toggleHour(h: number) {
     const s = `${String(h).padStart(2, '0')}:00`;
-    setSchedule(cur => (cur.includes(s) ? cur.filter(x => x !== s) : sortSlots([...cur, s])));
+    setSchedule(cur => (cur.includes(s) ? cur.filter(x => x !== s) : [...cur, s]));
   }
   async function save() {
     const keywords = kwText.split('\n').map(s => s.trim()).filter(Boolean);
+    // 清掉空/不合法的时间点（time 输入框被清空时值是 ""）
+    const slots = schedule.map(s => s.trim()).filter(s => /^\d{2}:\d{2}$/.test(s));
     if (!asin.trim()) { setErr('请填写 ASIN'); return; }
     if (!keywords.length) { setErr('请至少填写一个关键词'); return; }
-    if (enabled && !schedule.length) { setErr('启用定时采集时至少要有一个时间点'); return; }
+    if (enabled && !slots.length) { setErr('启用定时采集时至少要有一个时间点'); return; }
     setSaving(true); setErr('');
     try {
       const saved = await apiSaveTask({
         id: task?.id, name: name.trim(), asin: asin.trim().toUpperCase(),
-        marketplace, keywords, keywordNotes: task?.keywordNotes || {}, schedule,
+        marketplace, keywords, keywordNotes: task?.keywordNotes || {}, schedule: slots,
         timezone, enabled,
       });
       onSaved(saved);
@@ -581,8 +585,10 @@ function TaskModal({ task, timezones, onClose, onSaved }: {
             <div className="kr-schedule">
               {schedule.length === 0 && <span className="kr-muted">还没有时间点</span>}
               {schedule.map((t, i) => (
-                <span className="kr-time-item" key={t + i}>
-                  <input type="time" value={t} onChange={e => setSlotAt(i, e.target.value)} />
+                // key 只用索引：拿时间值当 key 会在每次输入后重建 input（焦点丢失）
+                <span className="kr-time-item" key={i}>
+                  <input type="time" value={t} step={60}
+                    onChange={e => setSlotAt(i, e.target.value)} />
                   <button type="button" className="kr-time-del" title="删除这个时间点"
                     onClick={() => removeSlot(i)}>✕</button>
                 </span>

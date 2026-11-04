@@ -2188,7 +2188,11 @@ select.meta-edit { cursor: pointer; }
 .kr-time-item input[type="time"] {
   font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--border-strong);
   border-radius: 6px; background: var(--card-bg); color: var(--ink);
+  width: 104px; min-width: 88px;     /* 太窄时原生时间控件只显示一部分，看起来像「点不动」 */
+  /* 让浏览器原生时间控件（时钟/上下箭头）跟随主题配色，暗色下否则是白底深字看不清 */
+  color-scheme: light;
 }
+[data-theme="dark"] .kr-time-item input[type="time"] { color-scheme: dark; }
 .kr-time-del {
   font: inherit; font-size: 11px; line-height: 1; padding: 3px 5px; border: 0; border-radius: 5px;
   background: transparent; color: var(--ink-4); cursor: pointer;
