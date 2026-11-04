@@ -242,11 +242,16 @@ def locate_rank(asin, marketplace, keyword, max_pages=3,
     elif organic_rank is not None or sponsored_hits:
         status = "ok"
     elif last_error and last_error.startswith("blocked"):
-        status = "blocked"
+        status = "blocked"     # 被验证码/风控拦了，页面没打开成功
     elif last_error and last_error.startswith(("neterr", "http_")):
-        status = "error"
+        status = "error"       # 网络/HTTP 错误
+    elif last_error:
+        status = "failed"      # no_results(_x3)：页面打开了，但里面没有商品列表
     else:
-        status = "not_found"   # 含 no_results / no_results_x3：页面能打开但没结果
+        # 页面全部正常、也解析到了商品，只是这几页里没有这个 ASIN。
+        # 这是一个**有效结论**（排名掉出前 N 页），不是采集失败 —— 必须和
+        # 「页面没抓到」分开，否则用户看到「失败」会以为是网络问题。
+        status = "not_ranked"
 
     return {
         "asin": asin,

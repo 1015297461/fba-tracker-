@@ -1038,7 +1038,8 @@ class DbState:
                     organic_page INTEGER,
                     sponsored    TEXT,
                     status       TEXT,
-                    error        TEXT
+                    error        TEXT,
+                    organic_scanned INTEGER
                 );
                 CREATE INDEX IF NOT EXISTS idx_snap_task_kw
                     ON rank_snapshots(task_id, keyword, captured_at);
@@ -1642,6 +1643,12 @@ class DbState:
                 conn.execute("ALTER TABLE keyword_tasks ADD COLUMN timezone TEXT "
                              "DEFAULT 'Asia/Shanghai'")
 
+            # 排名快照：记录「这次一共扫了多少个自然位」，用于区分
+            # 「没找到（扫完了确实没有）」与「没抓到（页面本身有问题）」
+            _rs_cols = {r[1] for r in conn.execute("PRAGMA table_info(rank_snapshots)")}
+            if _rs_cols and "organic_scanned" not in _rs_cols:
+                conn.execute("ALTER TABLE rank_snapshots ADD COLUMN organic_scanned INTEGER")
+
             # 「获取最新数据」去重：同一词同一天允许多条，但内容没变就不新增。
             # fingerprint 存榜单/份额的结构摘要，比对时不用解析 1~2MB 的 JSON；
             # checked_at 是「最后一次确认过内容相同」的时间（无变化时只更新它）。
@@ -2040,14 +2047,16 @@ class DbState:
                 conn.execute(
                     """INSERT INTO rank_snapshots
                        (task_id, asin, marketplace, keyword, captured_at,
-                        organic_rank, organic_page, sponsored, status, error)
-                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                        organic_rank, organic_page, sponsored, status, error,
+                        organic_scanned)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     [
                         task_id, res.get("asin"), res.get("marketplace"),
                         res.get("keyword"), res.get("captured_at"),
                         res.get("organic_rank"), res.get("organic_page"),
                         json.dumps(res.get("sponsored", []), ensure_ascii=False),
                         res.get("status"), res.get("error"),
+                        res.get("organic_scanned"),
                     ],
                 )
                 conn.commit()
@@ -2075,6 +2084,9 @@ class DbState:
                 "sponsored":   json.loads(r["sponsored"] or "[]"),
                 "status":      r["status"],
                 "error":       r["error"],
+                # 这次一共扫了多少个自然位（not_ranked 时用来说明「扫完 N 位没有」）
+                "organicScanned": (r["organic_scanned"]
+                                   if "organic_scanned" in r.keys() else None),
             } for r in rows]
 
     # ---- 产品采集：任务与明细 ----

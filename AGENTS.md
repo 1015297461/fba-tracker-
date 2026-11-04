@@ -154,6 +154,15 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   `fetch_page_resilient()` 会换指纹 + 退避 4~8s 重试 3 次，
                               #   仍失败才标 `no_results_x3`（前端据此提示「已重试 3 次」）。
                               #   它返回 (html, err, fingerprint)，重试换过指纹时调用方后续翻页要用同一个。
+                              #   **三种结果必须分开**（2026-11-04）：
+                              #   · `ok`        找到排名
+                              #   · `not_ranked` 页面正常、也解析到商品，但前 3 页没有这个 ASIN
+                              #                 —— 这是**有效结论**（排名掉出去了），不是失败
+                              #   · `failed` / `blocked` / `error` 页面没抓到（no_results / 验证码 / 网络）
+                              #   原来全塞进 `not_found`，用户分不清「网络问题」和「排名掉了」。
+                              #   老数据 `not_found` + `error` 为空 = not_ranked（前端 isSuccessLike 兼容）。
+                              #   快照另存 `organic_scanned`（这次扫了多少自然位），
+                              #   前端据此说「扫完 144 个自然位都没有」。
   catmon_fetcher.py            # 类目榜单采集器（Best Sellers / New Releases）：
                               #   URL 解析 → 抓第 1 页 + 跟随 a-last Next 抓第 2 页；
                               #   每页内嵌 data-client-recs-list JSON 含 50 条(rank+asin)、网格 30 条全字段，

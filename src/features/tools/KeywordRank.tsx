@@ -70,6 +70,26 @@ interface Snapshot {
   organicRank: number | null; organicPage: number | null;
   sponsored: { page: number; slot: number }[];
   status: string; error: string | null;
+  /** 这次一共扫了多少个自然位（status=not_ranked 时用来说明「扫完 N 位没找到」） */
+  organicScanned?: number | null;
+}
+
+/**
+ * 这次采集有没有得出「有效结论」。
+ *
+ * 三种结果必须分开（原来都塞进 not_found 一个值，用户看不出是网络问题还是排名掉了）：
+ *   · ok         找到了排名
+ *   · not_ranked 页面正常、也解析到商品，只是前几页里没有这个 ASIN（**有效结论**）
+ *   · 其余       failed / blocked / error —— 页面没抓到，属于**采集失败**
+ * 老数据里 not_found + error 为空，等价于 not_ranked（早期版本没区分）。
+ */
+function isSuccessLike(s: Snapshot | null | undefined): boolean {
+  if (!s) return false;
+  if (s.status === 'ok' || s.status === 'not_ranked') return true;
+  return s.status === 'not_found' && !s.error;
+}
+function isRealFailure(s: Snapshot | null | undefined): boolean {
+  return !!s && !isSuccessLike(s);
 }
 
 // ---- API ----
@@ -154,10 +174,11 @@ function mkLabel(code: string) {
 // Per-keyword computed row
 interface KwRow {
   keyword: string;
-  latest: Snapshot | null;      // 最近一次**成功**抓到排名
+  latest: Snapshot | null;      // 最近一次**拿到排名**
   prev: Snapshot | null;
   last5: Snapshot[];
-  lastAttempt: Snapshot | null; // 最近一次尝试（不管成败）——用来显示「采集失败」
+  lastResult: Snapshot | null;  // 最近一次**有效结论**（拿到排名 / 扫完没找到）
+  lastAttempt: Snapshot | null; // 最近一次尝试（含失败）
 }
 
 function buildRows(keywords: string[], snapshots: Snapshot[]): KwRow[] {
@@ -167,28 +188,47 @@ function buildRows(keywords: string[], snapshots: Snapshot[]): KwRow[] {
   return keywords.map(kw => {
     const snaps = (byKw[kw] || []).slice().sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
     const ok = snaps.filter(s => s.status === 'ok');
+    const valid = snaps.filter(isSuccessLike);
     return {
       keyword: kw,
       latest: ok[ok.length - 1] || null,
       prev:   ok[ok.length - 2] || null,
       last5:  snaps.filter(s => s.capturedAt >= cut5),
+      lastResult: valid[valid.length - 1] || null,
       lastAttempt: snaps[snaps.length - 1] || null,
     };
   });
 }
 
-/** 把采集失败的原因翻成人话（后端存的是 err 代码，_x3 表示换指纹重试 3 次仍失败） */
+/** 采集失败的具体原因（短标签，直接显示在单元格里） */
+function failShort(s: Snapshot | null): string {
+  if (!s) return '';
+  const e = String(s.error || '');
+  if (e.startsWith('no_results')) return '页面没返回商品列表';
+  if (s.status === 'blocked' || e.startsWith('blocked')) return '被 Amazon 拦截';
+  if (e.startsWith('neterr')) return '网络请求失败';
+  if (e.startsWith('http_')) return `HTTP ${e.slice(5)}`;
+  if (e === 'fetch_exc' || s.status === 'error') return '抓取出错';
+  return '采集失败';
+}
+
+/** 悬停时的完整说明 */
 function failReason(s: Snapshot | null): string {
   if (!s) return '';
   const e = String(s.error || '');
-  if (s.status === 'blocked' || e.startsWith('blocked')) {
-    return '被 Amazon 拦截（已换指纹重试 3 次），过一会儿再采';
-  }
   if (e.startsWith('no_results')) {
-    return '搜索页返回空结果（已换指纹重试 3 次仍空，多为反爬临时拦截），过一会儿点「采集」重试';
+    return '页面打开了，但里面没有商品列表（多为 Amazon 反爬临时拦截）。'
+         + '已自动换指纹重试 3 次仍空，过一会儿再采一次通常就好。';
   }
-  if (e.startsWith('http_')) return `HTTP ${e.slice(5)}`;
-  if (e.startsWith('neterr')) return '网络错误';
+  if (s.status === 'blocked' || e.startsWith('blocked')) {
+    return '被 Amazon 验证码/风控拦住，页面没有正常打开。已换指纹重试 3 次，建议过几小时再采。';
+  }
+  if (e.startsWith('neterr')) {
+    return `网络请求失败（${e.slice(7)}），检查本机网络或代理后重试。`;
+  }
+  if (e.startsWith('http_')) {
+    return `Amazon 返回 HTTP ${e.slice(5)}。5xx 多为临时故障，4xx 需检查站点/关键词。`;
+  }
   if (e) return e;
   return s.status === 'ok' ? '' : `状态 ${s.status}`;
 }
@@ -244,6 +284,9 @@ function RankCell({ snap, prevSnap, type }: { snap: Snapshot | null; prevSnap: S
   const diff = (cur != null && pre != null) ? cur - pre : null;
   const pageInfo = type === 'organic' && snap?.organicPage && cur != null
     ? `第${snap.organicPage}页第${cur}名` : null;
+  // 页面正常抓到了、但前几页没有这个 ASIN —— 这是结论，不是「没数据」
+  const scanned = snap?.organicScanned;
+  const noRank = !!snap && isSuccessLike(snap) && cur == null && type === 'organic';
 
   return (
     <div className="kr-rank-cell">
@@ -255,6 +298,13 @@ function RankCell({ snap, prevSnap, type }: { snap: Snapshot | null; prevSnap: S
         {diff !== null && diff > 0 && <span className="kr-arrow kr-arrow-down">↓{diff}</span>}
       </div>
       {pageInfo && <div className="kr-rank-page">{pageInfo}</div>}
+      {!pageInfo && noRank && (
+        <div className="kr-rank-page kr-rank-none"
+          title={scanned ? `扫完 ${scanned} 个自然位都没有这个 ASIN（页面本身是正常的）`
+                         : '前 3 页没有找到这个 ASIN（页面本身是正常的）'}>
+          前3页未找到
+        </div>
+      )}
     </div>
   );
 }
@@ -842,13 +892,21 @@ export function KeywordRank() {
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map(row => (
+                    {rows.map(row => {
+                      // 最近一次尝试是「真失败」且比最近一次有效结论更新 → 显示失败原因
+                      const lastTry = row.lastAttempt;
+                      const lastRes = row.lastResult;
+                      const lastIsFail = isRealFailure(lastTry)
+                        && (!lastRes || (lastTry as Snapshot).capturedAt > lastRes.capturedAt);
+                      const shown = row.latest || lastRes;
+                      return (
                       <tr key={row.keyword}>
                         <td className="kr-col-kw">
                           <span className="kr-kw-text" title={row.keyword}>{row.keyword}</span>
                         </td>
                         <td className="kr-col-rank">
-                          <RankCell snap={row.latest} prevSnap={row.prev} type="organic" />
+                          {/* 没拿到排名时把「有效结论」传进去，才能显示「前3页未找到」 */}
+                          <RankCell snap={row.latest || lastRes} prevSnap={row.prev} type="organic" />
                         </td>
                         <td className="kr-col-rank">
                           <RankCell snap={row.latest} prevSnap={row.prev} type="sponsored" />
@@ -859,14 +917,24 @@ export function KeywordRank() {
                           </div>
                         </td>
                         <td className="kr-col-time">
-                          {row.latest ? fmtDateTime(row.latest.capturedAt) : '—'}
-                          {row.lastAttempt && row.lastAttempt.status !== 'ok'
-                            && (!row.latest || row.lastAttempt.capturedAt > row.latest.capturedAt) && (
+                          {lastIsFail ? (
                             <span className="kr-fail"
-                              title={`最近一次采集（${fmtDateTime(row.lastAttempt.capturedAt)}）失败：${failReason(row.lastAttempt)}`}>
-                              最近一次失败
+                              title={`${fmtDateTime((lastTry as Snapshot).capturedAt)} 采集失败：${failReason(lastTry)}`}>
+                              {failShort(lastTry)}
                             </span>
-                          )}
+                          ) : shown ? (
+                            <>
+                              {fmtDateTime(shown.capturedAt)}
+                              {!row.latest && (
+                                <span className="kr-norank"
+                                  title={lastRes?.organicScanned
+                                    ? `扫完 ${lastRes.organicScanned} 个自然位都没有这个 ASIN（页面正常，不是采集失败）`
+                                    : '页面正常但前 3 页没有这个 ASIN（不是采集失败）'}>
+                                  未排名
+                                </span>
+                              )}
+                            </>
+                          ) : '—'}
                         </td>
                         <td className="kr-col-time">
                           {active.createdAt ? fmtDateTime(active.createdAt) : '—'}
@@ -889,7 +957,8 @@ export function KeywordRank() {
                             onClick={() => removeKeyword(row.keyword)}>删除</button>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
