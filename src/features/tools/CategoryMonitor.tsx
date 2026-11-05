@@ -10,6 +10,7 @@ import { groupsApi, groupItems, moveBefore } from './recordGroups';
 import type { RecGroup, RecMember, RecGroupsPayload } from './recordGroups';
 import { NameDialog, MoveDialog } from './RecordGroupDialogs';
 import { SpriteStatusBar } from './SpriteStatusBar';
+import { MAX_STRIP_CELLS, bucketBounds, bucketMin, bucketLabel } from './rankStrip';
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -1234,6 +1235,7 @@ interface CatMatrixRow {
 }
 interface CatMatrix { dates: string[]; rows: CatMatrixRow[]; }
 
+
 function MatrixPanel({ targetId, listType, onOpen }: {
   targetId: string; listType: string; onOpen: (asin: string) => void;
 }) {
@@ -1271,6 +1273,9 @@ function MatrixPanel({ targetId, listType, onOpen }: {
   const winIdx: number[] = [];
   allDates.forEach((d, i) => { if ((!from || d >= from) && (!to || d <= to)) winIdx.push(i); });
   const winDates = winIdx.map(i => allDates[i]);
+  // 趋势条分桶：>40 天时自动合并（见 rankStrip.ts），两处位次矩阵行为一致
+  const buckets = bucketBounds(winDates.length, winDates);
+  const cellSize = buckets.length ? buckets[0].span : 1;
 
   // 每行在区间内的派生值（出现天数 / 最好 / 最新 / 变化 / 趋势序列）
   const view = rows.map(r => {
@@ -1322,22 +1327,27 @@ function MatrixPanel({ targetId, listType, onOpen }: {
     );
   };
 
-  // 趋势条悬浮：显示当天位次（复用排名监测的 .rk-tip-card）
-  const stripMove = (e: React.MouseEvent, seq: (number | null)[]) => {
+  // 趋势条悬浮：显示该格对应的位次（天数太多时是「区间 + 区间内最好位次」）
+  const stripMove = (e: React.MouseEvent, row: { seq: (number | null)[] }) => {
     const t = e.target as HTMLElement;
     const di = t.dataset ? t.dataset.i : undefined;
     if (di == null) { stripIdx.current = null; setTip(null); return; }
     const i = Number(di);
     if (stripIdx.current === i) return;
     stripIdx.current = i;
-    const v = seq[i];
+    const b = buckets[i];
+    if (!b) { setTip(null); return; }
+    const v = bucketMin(row.seq, b);
     const rect = t.getBoundingClientRect();
     const W = 200, H = 56, pad = 8;
     let x = Math.min(Math.max(rect.left - 70, pad), window.innerWidth - W - pad);
     let y = rect.bottom + 6;
     if (y + H > window.innerHeight - pad) y = rect.top - 6 - H;
     if (y < pad) y = pad;
-    setTip({ x, y, head: winDates[i], body: v == null ? '掉榜（当天不在抓取范围内）' : `自然位 #${v}` });
+    const body = v == null
+      ? (b.span > 1 ? `${b.span} 天都不在抓取范围内（掉榜）` : '掉榜（当天不在抓取范围内）')
+      : (b.span > 1 ? `区间最好自然位 #${v}` : `自然位 #${v}`);
+    setTip({ x, y, head: bucketLabel(b), body });
   };
   /** 把当前区间内「还没有上架时间」的 ASIN 一次补齐（卖家精灵通道，取到后永久缓存） */
   const fillMissingDates = async () => {
@@ -1394,7 +1404,8 @@ function MatrixPanel({ targetId, listType, onOpen }: {
                 {th('best', '最好', 'c-num', '区间内最好自然位')}
                 {th('last', '最新', 'c-num')}
                 {th('delta', '变化', 'c-delta', '区间内位次变化（负数=变好）')}
-                {th('trend', `趋势（${winDates.length} 天）`, 'c-strip')}
+                {th('trend', `趋势（${winDates.length} 天${cellSize > 1 ? `，每格 ${cellSize} 天` : ''}）`, 'c-strip',
+                    cellSize > 1 ? '天数较多，已按区间合并；每格取区间内最好位次' : undefined)}
               </tr>
             </thead>
             <tbody>
@@ -1426,10 +1437,14 @@ function MatrixPanel({ targetId, listType, onOpen }: {
                     </td>
                     <td className={'c-delta ' + cls}>{dlt == null ? '—' : dlt === 0 ? '持平' : dlt < 0 ? `↑ ${Math.abs(dlt)}` : `↓ ${dlt}`}</td>
                     <td className="c-strip">
-                      <div className="rk-strip" onMouseMove={e => stripMove(e, r.seq)} onMouseLeave={stripLeave}>
-                        {r.seq.map((v: number | null, i: number) => (
-                          <i key={i} data-i={i} className={v == null ? 'na' : ('lv' + Math.min(4, Math.floor(v / 40)))} />
-                        ))}
+                      <div className="rk-strip" onMouseMove={e => stripMove(e, r)} onMouseLeave={stripLeave}>
+                        {buckets.map((b, i) => {
+                          const v = bucketMin(r.seq, b);
+                          return (
+                            <i key={i} data-i={i}
+                              className={v == null ? 'na' : ('lv' + Math.min(4, Math.floor(v / 40)))} />
+                          );
+                        })}
                       </div>
                     </td>
                   </tr>

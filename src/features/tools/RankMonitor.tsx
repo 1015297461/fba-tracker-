@@ -10,6 +10,7 @@ import { groupsApi, groupItems } from './recordGroups';
 import type { RecGroup, RecMember, RecGroupsPayload } from './recordGroups';
 import { NameDialog, MoveDialog } from './RecordGroupDialogs';
 import { SpriteStatusBar } from './SpriteStatusBar';
+import { bucketBounds, bucketMin, bucketLabel, lastRankedIndex } from './rankStrip';
 import { DateCalendar } from './DateCalendar';
 import type { CatDetail } from './CategoryMonitor';
 import {
@@ -1396,6 +1397,9 @@ function SrpTrendBlock({ trend, meta }: { trend: any; meta?: Record<string, any>
   const lineDates = dates.slice(lf, lt + 1);
 
   const winDates = dates.slice(mf, mt + 1);
+  // 趋势条分桶：>40 天自动合并（与类目榜单「全部 ASIN 位次」同一套规则）
+  const stripBuckets = bucketBounds(winDates.length, winDates);
+  const stripCellSize = stripBuckets.length ? stripBuckets[0].span : 1;
   const deltaOf = (r: any) => {
     const vs = r.ranks.slice(mf, mt + 1);
     const first = vs.find((v: number | null) => v != null);
@@ -1407,15 +1411,19 @@ function SrpTrendBlock({ trend, meta }: { trend: any; meta?: Record<string, any>
   const presentDays = (r: any) => r.ranks.slice(mf, mt + 1).filter((v: number | null) => v != null).length;
 
   // 趋势条格子悬浮：只在「换了一格」时更新，避免 mousemove 每帧 setState
-  const stripMove = (e: React.MouseEvent, r: any) => {
+  const stripMove = (e: React.MouseEvent, ranks: (number | null)[], spots: any[] | null) => {
     const t = e.target as HTMLElement;
     const di = t.dataset ? t.dataset.i : undefined;
     if (di == null) { stripIdx.current = null; setStripTip(null); return; }
     const i = Number(di);
     if (stripIdx.current === i) return;
     stripIdx.current = i;
-    const v = r.ranks[mf + i];
-    const sp = r.spots ? r.spots[mf + i] : null;
+    const b = stripBuckets[i];
+    if (!b) { setStripTip(null); return; }
+    const v = bucketMin(ranks, b);
+    // 聚合后广告位取该区间内最后一个有排名的点（位次和广告位来自同一天才不矛盾）
+    const li = lastRankedIndex(ranks, b);
+    const sp = spots && li >= 0 ? spots[li] : null;
     const rect = t.getBoundingClientRect();
     const W = 240, H = 64, pad = 8;
     let x = Math.min(Math.max(rect.left - 80, pad), window.innerWidth - W - pad);
@@ -1425,10 +1433,12 @@ function SrpTrendBlock({ trend, meta }: { trend: any; meta?: Record<string, any>
     if (y < pad) y = pad;
     setStripTip({
       x, y,
-      head: winDates[i],
+      head: bucketLabel(b),
       body: v == null
-        ? '掉榜（当天不在抓取范围内）'
-        : (sp && sp[0] ? `第 ${sp[0]} 页第 ${sp[1]} 位 · 自然位 #${v}` : `自然位 #${v}`),
+        ? (b.span > 1 ? `${b.span} 天都不在抓取范围内（掉榜）` : '掉榜（当天不在抓取范围内）')
+        : (sp && sp[0]
+            ? `第 ${sp[0]} 页第 ${sp[1]} 位 · ${b.span > 1 ? '区间最好' : ''}自然位 #${v}`
+            : `${b.span > 1 ? '区间最好' : ''}自然位 #${v}`),
     });
   };
   const stripLeave = () => { stripIdx.current = null; setStripTip(null); };
@@ -1512,7 +1522,11 @@ function SrpTrendBlock({ trend, meta }: { trend: any; meta?: Record<string, any>
               {th('best', '最好', 'c-num', '区间内最好的自然位（越小越好）')}
               {th('last', '最新', 'c-num', '最新一次自然位，越小越靠前')}
               {th('delta', '变化', 'c-delta', '区间内位次变化（负数 = 变好）')}
-              {th('trend', `趋势（${winDates.length} 天）`, 'c-strip', '按区间内平均位次排序，越小越靠前')}
+              {th('trend', `趋势（${winDates.length} 天${stripCellSize > 1 ? `，每格 ${stripCellSize} 天` : ''}）`,
+                  'c-strip',
+                  stripCellSize > 1
+                    ? '天数较多，已按区间合并（每格取区间内最好位次）；点击按区间平均位次排序'
+                    : '按区间内平均位次排序，越小越靠前')}
             </tr>
           </thead>
           <tbody>
@@ -1558,14 +1572,23 @@ function SrpTrendBlock({ trend, meta }: { trend: any; meta?: Record<string, any>
                     {dlt == null ? '—' : dlt === 0 ? '持平' : dlt < 0 ? `↑ ${Math.abs(dlt)}` : `↓ ${dlt}`}
                   </td>
                   <td className="c-strip">
-                    <div className="rk-strip"
-                      onMouseMove={e => stripMove(e, r)}
-                      onMouseLeave={stripLeave}>
-                      {r.ranks.slice(mf, mt + 1).map((v: number | null, i: number) => (
-                        <i key={i} data-i={i}
-                          className={v == null ? 'na' : ('lv' + Math.min(4, Math.floor(v / 40)))} />
-                      ))}
-                    </div>
+                    {(() => {
+                      const wr = r.ranks.slice(mf, mt + 1);
+                      const wsp = r.spots ? r.spots.slice(mf, mt + 1) : null;
+                      return (
+                        <div className="rk-strip"
+                          onMouseMove={e => stripMove(e, wr, wsp)}
+                          onMouseLeave={stripLeave}>
+                          {stripBuckets.map((b, i) => {
+                            const v = bucketMin(wr, b);
+                            return (
+                              <i key={i} data-i={i}
+                                className={v == null ? 'na' : ('lv' + Math.min(4, Math.floor(v / 40)))} />
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
                   </td>
                 </tr>
               );
