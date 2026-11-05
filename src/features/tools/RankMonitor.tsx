@@ -2306,7 +2306,10 @@ function ScrapeResult({ snap, ownAsin, myAsins, history, trend, events, onPick, 
         </div>
       )}
 
+      {/* 「榜单异动」暂时下线（2026-11-05 用户要求）。组件 SrpEvents / EvTh /
+          parseSales / EVENT_META 都保留着，恢复时取消下面这行注释即可。
       <SrpEvents data={events} keyword={snap?.keyword || data.keyword} />
+      */}
       <SrpTrendBlock trend={trend} meta={meta} />
     </>
   );
@@ -2659,7 +2662,8 @@ export function RankMonitor() {
             : { kind: 'ok', text: '已更新 · 新增 1 条记录' });
           apiScrapeHistory(kw).then(setScrapeHist).catch(() => setScrapeHist([]));
           apiScrapeTrend(kw).then(setScrapeTrend).catch(() => setScrapeTrend(null));
-          apiScrapeEvents(kw).then(setScrapeEvents).catch(() => setScrapeEvents(null));
+          // 「榜单异动」暂时下线：不再拉这个接口（恢复时连同下方 SrpEvents 一起解注释）
+          // apiScrapeEvents(kw).then(setScrapeEvents).catch(() => setScrapeEvents(null));
           loadSrpList();
           return;
         }
@@ -2789,12 +2793,13 @@ export function RankMonitor() {
       try {
         const s = await apiScrapeSnap(r.scrape.id);
         setScrapeSnap(s || null);
-        const [hist, tr, ev] = await Promise.all([
+        const [hist, tr] = await Promise.all([
           apiScrapeHistory(r.value).catch(() => []),
           apiScrapeTrend(r.value).catch(() => null),
-          apiScrapeEvents(r.value).catch(() => null),
+          // 「榜单异动」暂时下线，不再拉取（恢复时把 apiScrapeEvents 加回来）
+          // apiScrapeEvents(r.value).catch(() => null),
         ]);
-        setScrapeHist(hist); setScrapeTrend(tr); setScrapeEvents(ev);
+        setScrapeHist(hist); setScrapeTrend(tr);
       } catch (e: any) { setErr({ title: e.message || '读取榜单失败' }); }
     } else {
       setScrapeSnap(null); setScrapeHist([]); setScrapeTrend(null); setScrapeEvents(null);
