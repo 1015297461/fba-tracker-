@@ -1244,7 +1244,10 @@ function MatrixPanel({ targetId, listType, onOpen }: {
   const [err, setErr] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
+  // 默认按「变化」升序 = 排名上升最多的在最前（delta = 尾 − 首，负值表示名次前进）
+  const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>({ key: 'delta', dir: 1 });
+  /** 只显示前 N 个（0 = 全部）。长区间攒下来的 ASIN 可能上千个，不截断会很难找 */
+  const [topN, setTopN] = useState(20);
   const [tip, setTip] = useState<{ x: number; y: number; head: string; body: string } | null>(null);
   const [fillBusy, setFillBusy] = useState(false);
   const [fillMsg, setFillMsg] = useState('');
@@ -1316,6 +1319,8 @@ function MatrixPanel({ targetId, listType, onOpen }: {
     if (typeof va === 'string' || typeof vb === 'string') return sort.dir * String(va).localeCompare(String(vb));
     return sort.dir * ((va as number) - (vb as number));
   }) : view;
+  // Top N 截断：按当前排序列取前 N 行（默认 delta 升序 → 上升最多的 20 个）
+  const shown = topN > 0 ? sorted.slice(0, topN) : sorted;
   const th = (key: string, label: string, cls?: string, tip?: string) => {
     const on = sort?.key === key;
     return (
@@ -1379,6 +1384,20 @@ function MatrixPanel({ targetId, listType, onOpen }: {
         <span className="rk-range-arrow">→</span>
         <DateCalendar value={to} dates={allDates} onChange={setTo} />
         <span className="rk-ev-count">（{winDates.length} 天）{loading ? ' 读取中…' : ''}</span>
+        <span className="rk-range-lb" style={{ marginLeft: 6 }}>显示</span>
+        <select value={topN} onChange={e => setTopN(Number(e.target.value))}
+          title="按「变化」排序后取前 N 个（默认上升最多的 20 个）">
+          <option value={10}>Top 10</option>
+          <option value={20}>Top 20</option>
+          <option value={30}>Top 30</option>
+          <option value={50}>Top 50</option>
+          <option value={0}>全部</option>
+        </select>
+        <span className="rk-ev-count">
+          {sorted.length > shown.length
+            ? `共 ${sorted.length} 个 ASIN，显示 ${shown.length}`
+            : `共 ${sorted.length} 个 ASIN`}
+        </span>
         <button className="cm-ghost" style={{ marginLeft: 'auto' }}
                 title="用卖家精灵补齐本区间内缺失的上架时间（补过就永久缓存，不会重复取）"
                 onClick={fillMissingDates} disabled={fillBusy || loading}>
@@ -1409,7 +1428,7 @@ function MatrixPanel({ targetId, listType, onOpen }: {
               </tr>
             </thead>
             <tbody>
-              {sorted.map((r: any) => {
+              {shown.map((r: any) => {
                 const dlt = r.delta;
                 const cls = dlt == null || dlt === 0 ? 'delta-flat' : dlt < 0 ? 'delta-up' : 'delta-dn';
                 return (
