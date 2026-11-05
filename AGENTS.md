@@ -1061,6 +1061,8 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
 - **「全部 ASIN 位次」矩阵（2026-10-30 起替代「变动事件」，两模块展示完全一致）**：
   · 排名监测：`build_srp_trend(all_in_range=1)`（去掉"出现≥2天"过滤）→ 区间内出现过的**全部** ASIN；
     列＝主图 / ASIN / 标题 / 价格 / **上架** / 出现天数 / 最好 / 最新 / 变化 / 趋势条。时间筛选用 `DateCalendar`。
+    默认也按「变化」升序 + Top 20（与类目榜单一致，见下条）；选「全部」时仍受 `showN`
+    分批保护（默认 200，底部「再显示 80 条」），避免一次渲染上千行。
   · 类目榜单：`GET /api/catmon/matrix?targetId&listType=&start=&end=` → `db.list_catmon_matrix`
     （`{dates, rows}`，行含 `price` / `rating` / `firstAvailable`）；
     前端 `MatrixPanel` 用同一套 `.rk-mtx` 类渲染，列＝主图 / ASIN / 标题 / 价格 / **评分** /

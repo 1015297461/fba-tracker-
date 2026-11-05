@@ -1356,13 +1356,16 @@ function SrpTrendBlock({ trend, meta }: { trend: any; meta?: Record<string, any>
   const [lineTo, setLineTo] = useState(0);
   const [matFrom, setMatFrom] = useState(0);
   const [matTo, setMatTo] = useState(0);
-  const [showN, setShowN] = useState(1000);   // 区间内「所有出现过」的 ASIN 全部列出
+  const [showN, setShowN] = useState(200);   // 「全部」模式下的分批渲染上限
   // 趋势条格子悬浮：显示当天落在第几页第几位（后端 spots 数组）
   const [stripTip, setStripTip] = useState<{ x: number; y: number; head: string; body: string } | null>(null);
   const stripIdx = useRef<number | null>(null);
   const mtxCols = useColResize('rank-matrix');
   // 矩阵表排序：点表头循环「升序 → 降序 → 还原」
-  const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
+  // 默认按「变化」升序 —— delta = 尾 − 首，负值代表名次前进，所以上升最多的排最前
+  const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>({ key: 'delta', dir: 1 });
+  /** 只显示前 N 个（0 = 全部），与类目榜单「全部 ASIN 位次」保持一致 */
+  const [topN, setTopN] = useState(20);
   useEffect(() => {
     setLineFrom(0);
     setLineTo(Math.max(0, n - 1));
@@ -1473,6 +1476,9 @@ function SrpTrendBlock({ trend, meta }: { trend: any; meta?: Record<string, any>
         return sort.dir * ((va as number) - (vb as number));
       })
     : rows;
+  // Top N 截断：取当前排序结果的前 N 行（默认 delta 升序 → 上升最多的 20 个）。
+  // 选「全部」时仍受 showN 分批保护，避免一次渲染上千行。
+  const shownRows = sorted.slice(0, topN > 0 ? Math.min(topN, showN) : showN);
   const th = (key: string, label: string, cls?: string, tip?: string) => {
     const on = sort?.key === key;
     return (
@@ -1507,6 +1513,20 @@ function SrpTrendBlock({ trend, meta }: { trend: any; meta?: Record<string, any>
         <DateCalendar value={dates[mt] || ''} dates={dates}
           onChange={d => { const i = dates.indexOf(d); if (i < 0) return; setMatTo(i); if (i < mf) setMatFrom(i); }} />
         <span className="rk-ev-count">（{winDates.length} 天）</span>
+        <span className="rk-range-lb" style={{ marginLeft: 6 }}>显示</span>
+        <select value={topN} onChange={e => setTopN(Number(e.target.value))}
+          title="按「变化」排序后取前 N 个（默认上升最多的 20 个）">
+          <option value={10}>Top 10</option>
+          <option value={20}>Top 20</option>
+          <option value={30}>Top 30</option>
+          <option value={50}>Top 50</option>
+          <option value={0}>全部</option>
+        </select>
+        <span className="rk-ev-count">
+          {sorted.length > shownRows.length
+            ? `共 ${sorted.length} 个 ASIN，显示 ${shownRows.length}`
+            : `共 ${sorted.length} 个 ASIN`}
+        </span>
       </div>
       <div className="rk-mtx-wrap" onScroll={stripLeave}>
         <table className={'rk-mtx col-rsz' + (mtxCols.active ? ' cw-fixed' : '')}>
@@ -1530,7 +1550,7 @@ function SrpTrendBlock({ trend, meta }: { trend: any; meta?: Record<string, any>
             </tr>
           </thead>
           <tbody>
-            {sorted.slice(0, showN).map((r: any) => {
+            {shownRows.map((r: any) => {
               const dlt = deltaOf(r);
               const cls = dlt == null || dlt === 0 ? 'delta-flat' : dlt < 0 ? 'delta-up' : 'delta-dn';
               return (
@@ -1596,10 +1616,10 @@ function SrpTrendBlock({ trend, meta }: { trend: any; meta?: Record<string, any>
           </tbody>
         </table>
       </div>
-      {rows.length > showN && (
+      {topN === 0 && sorted.length > showN && (
         <div className="ai-actions">
           <button className="btn btn-sm" onClick={() => setShowN(v => v + 80)}>
-            再显示 80 条（还有 {rows.length - showN} 条）
+            再显示 80 条（还有 {sorted.length - showN} 条）
           </button>
         </div>
       )}
