@@ -1186,6 +1186,9 @@ function RangeBar({ dates, from, to, onChange, maxSpan = null, presets = [7, 14,
       <div className="rk-range-seg">
         {presets.map(k => (
           <button key={k} type="button" className={presetOn(k) && !allOn ? 'on' : ''}
+            // 数据天数不足 k 天时禁用：否则点了「14天」其实还是全部，看着像功能坏了
+            disabled={k > n}
+            title={k > n ? `区间只有 ${n} 天数据，选 ${k} 天等于全部` : `显示最近 ${k} 天`}
             onClick={() => applyPreset(k)}>{k}天</button>
         ))}
         {showAll && (
@@ -1203,7 +1206,7 @@ function RangeBar({ dates, from, to, onChange, maxSpan = null, presets = [7, 14,
         onChange={e => setToIdx(Number(e.target.value))}>
         {dates.map((d, i) => <option key={i} value={i}>{d}</option>)}
       </select>
-      <span className="rk-range-cnt">{span} 天</span>
+      <span className="rk-range-cnt">{span} 天 / 共 {n} 天</span>
     </div>
   );
 }
@@ -1371,7 +1374,7 @@ function SrpTrendBlock({ trend, meta }: { trend: any; meta?: Record<string, any>
     setLineTo(Math.max(0, n - 1));
     setMatFrom(Math.max(0, n - 14));
     setMatTo(Math.max(0, n - 1));
-    setShowN(1000);
+    setShowN(200);   // 与 useState 初值一致（之前这里还留着 1000，会把分批上限重置回去）
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trend]);
 

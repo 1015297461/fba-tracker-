@@ -502,7 +502,7 @@ function TrendModal({ task, initialKw, snapshots, onClose }: {
   const [kw, setKw]               = React.useState(initialKw);
   const [showOrg, setShowOrg]     = React.useState(true);
   const [showSp, setShowSp]       = React.useState(true);
-  const [start, setStart]         = React.useState(daysAgo(7));
+  const [start, setStart]         = React.useState(daysAgo(6));   // 含今天共 7 天
   const [end, setEnd]             = React.useState(toDateInput(new Date().toISOString()));
 
   const filtered = React.useMemo(() => {
@@ -512,8 +512,16 @@ function TrendModal({ task, initialKw, snapshots, onClose }: {
       .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
   }, [snapshots, kw, start, end]);
 
+  /** 这个词一共有多少天数据 —— 快捷档位超过它就没有意义（点了看着像没反应） */
+  const dataDays = React.useMemo(() => {
+    const set = new Set(snapshots.filter(s => s.keyword === kw).map(s => s.capturedAt.slice(0, 10)));
+    return set.size;
+  }, [snapshots, kw]);
+
   function preset(d: number) {
-    setStart(daysAgo(d));
+    // ⚠️ 要减 1：daysAgo(7) 是 7 天前那一天，算上今天共 8 天。
+    // 原来写 daysAgo(7)，在「数据刚好 8 天」时等于全部，用户点「近7天」看不出任何变化。
+    setStart(daysAgo(d - 1));
     setEnd(toDateInput(new Date().toISOString()));
   }
 
@@ -538,8 +546,19 @@ function TrendModal({ task, initialKw, snapshots, onClose }: {
           </div>
           <div className="kr-presets">
             {[7, 14, 30].map(d => (
-              <button key={d} className="btn btn-sm" onClick={() => preset(d)}>近{d}天</button>
+              <button key={d} className="btn btn-sm" onClick={() => preset(d)}
+                disabled={dataDays > 0 && d > dataDays}
+                title={dataDays > 0 && d > dataDays
+                  ? `这个词只有 ${dataDays} 天数据，选它会显示全部`
+                  : `显示最近 ${d} 天`}>
+                近{d}天
+              </button>
             ))}
+            {dataDays > 0 && (
+              <span className="kr-muted" style={{ alignSelf: 'center' }}>
+                共 {dataDays} 天数据
+              </span>
+            )}
           </div>
         </div>
 
