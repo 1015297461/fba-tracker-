@@ -55,9 +55,17 @@ def _due_slot(task, now_utc=None):
 
 
 # 每个任务最多允许几个词走「真实浏览器」兜底。
-# 一次 CDP 要冷启动 Chrome（约 30s/页，3 页 ≈ 1.5 分钟），全批都走会把 26 个词拖成 40 分钟；
-# 给 3 个额度够拿到一部分数据，剩下的交给冷却后重试。
+#
+# 一次 CDP 约 31 秒/页（实测连测两次都是 31~35s，主要是冷启动 Chrome + 1.5MB 页面加载），
+# 而一个词平均要翻 1.96 页（11-09 正常批次实测：26 词 51 页）。
+# 所以：5 个词的小任务全走 ≈ 5 分钟（可接受，直接全给）；
+#       26 个词的大批全走 ≈ 26 分钟（太久，限 3 个，剩下的交给冷却后重试）。
 CDP_BUDGET_PER_TASK = 3
+CDP_FULL_GRANT_MAX_KW = 5
+
+
+def _cdp_budget(n_kw):
+    return n_kw if n_kw <= CDP_FULL_GRANT_MAX_KW else CDP_BUDGET_PER_TASK
 
 
 def run_rank_task(state, task, delay_between_kw=(3.0, 7.0)):
@@ -67,7 +75,7 @@ def run_rank_task(state, task, delay_between_kw=(3.0, 7.0)):
     """
     results = []
     kws = task.get("keywords", [])
-    cdp_budget = CDP_BUDGET_PER_TASK
+    cdp_budget = _cdp_budget(len(kws))
     for i, kw in enumerate(kws):
         kw = (kw or "").strip()
         if not kw:

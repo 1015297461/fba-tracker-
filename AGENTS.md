@@ -133,9 +133,10 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                 #   bm-verify 挑战页 = **出口 IP 被风控，换指纹无效**；
                                 #   继续按 15 分钟 × 3 轮硬撞只会让封禁更久。
                                 #   `/api/rank/queue` 返回 `cooldown`（剩余秒数），前端据此显示红字提示。
-                                #   **CDP 兜底配额**：`CDP_BUDGET_PER_TASK=3` —— 每个任务最多 3 个词
-                                #   允许走真实浏览器（一次约 3 页 × 30s ≈ 1.5 分钟），
-                                #   全走会把 26 个词拖成 40 分钟。用完就只走 HTTP，剩下的靠冷却后重试。
+                                #   **CDP 兜底配额**：`_cdp_budget(n)` —— 词数 ≤5 全给（5 词全走
+                                #   约 5 分钟），>5 只给 3 个（26 词全走约 26 分钟太久，剩下的靠冷却重试）。
+                                #   依据：实测一次 CDP 约 31s/页（冷启动 Chrome + 1.5MB 页面），
+                                #   一个词平均翻 1.96 页（11-09 正常批次：26 词 51 页）。
     scrape.py                   # /api/scrape/*：start_scrape_task()/_run_scrape() 服务端后台
                                 #   执行器（POST /start 立即返回 taskId，前端轮询 /progress，
                                 #   刷新不丢任务）+ 运行时暂停/取消/继续（/pause /resume /cancel，
