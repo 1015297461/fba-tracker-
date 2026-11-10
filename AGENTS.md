@@ -116,8 +116,12 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                 #   （下次定时会重新入队，手动的不补）。
                                 #   **全批失败自动重试（2026-11-10）**：worker 跑完若一个词都
                                 #   没拿到有效结论（ok / not_ranked），且 retry<MAX_AUTO_RETRY(2)，
-                                #   就 15 分钟后重新入队（`submit(..., delay=900, retry=n+1)`，
-                                #   用 threading.Timer 延迟，daemon）。
+                                #   就延迟重新入队（`submit(..., delay=wait, retry=n+1)`，
+                                #   threading.Timer daemon）。
+                                #   **等待时间按错误类型分（`_retry_delay`）**：
+                                #     neterr → 30s / 2min（网络闪断，等 15 分钟体感太差）
+                                #     blocked → 5min / 15min（风控挑战要几分钟才解除）
+                                #     其它   → 90s / 5min
                                 #   起因：11-10 的 00:00 与 06:00 两批全因 neterr 失败，
                                 #   没人手动点的话当天一条数据都采不到。
                                 #   **风控熔断（2026-11-10）**：连续 `BLOCK_STREAK_LIMIT(3)` 个任务

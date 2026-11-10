@@ -228,11 +228,34 @@ def submit(state, task, keyword=None, source="manual", delay=0, retry=0):
     return {"queued": True, "duplicate": False, **snap}
 
 
-# 一整批全失败（网络断/被风控）时自动重试：等一会儿再来，最多几次。
-# 为什么需要：实测 2026-11-10 00:00 与 06:00 两批都因 neterr 全失败，
-# 若没人手动点，当天等于一条数据都没采到。
+# 一整批全失败时自动重试。等待时间**按错误类型区分**，不能一刀切：
+#   · 网络抖动（neterr:URLError / SSLEOFError / TimeoutError）：几十秒就该重试，
+#     定 15 分钟等于把「一秒的网络闪断」拖成一刻钟，用户体感很差；
+#   · 风控（blocked）：挑战通常要几分钟才解除，太快只会加重；
+#   · 其它（no_results 等）：取中间值。
+# 每类按重试次数递增，最多 MAX_AUTO_RETRY 次。
 MAX_AUTO_RETRY = 2
-RETRY_DELAY_SEC = 15 * 60
+_RETRY_PLAN = {
+    "neterr": (30, 120),      # 30 秒 → 2 分钟
+    "blocked": (300, 900),    # 5 分钟 → 15 分钟
+    "other": (90, 300),       # 90 秒 → 5 分钟
+}
+
+
+def _retry_delay(results, retry):
+    """按本批的错误类型和已重试次数，算出这次该等多久（秒）。"""
+    err = str((results[0] if results else {}).get("error") or "")
+    if err.startswith("neterr"):
+        plan = _RETRY_PLAN["neterr"]
+    elif err.startswith("blocked"):
+        plan = _RETRY_PLAN["blocked"]
+    else:
+        plan = _RETRY_PLAN["other"]
+    return plan[min(max(retry, 0), len(plan) - 1)]
+
+
+def _fmt_wait(sec):
+    return f"{sec} 秒" if sec < 120 else f"{sec // 60} 分钟"
 
 
 def _maybe_retry(state, job, results):
@@ -245,11 +268,12 @@ def _maybe_retry(state, job, results):
     if in_block_cooldown():
         _log(f"[rank] 「{job['name']}」失败但不重试：风控冷却中（剩 {block_cooldown_left() // 60} 分钟）")
         return
+    wait = _retry_delay(results, retry)
     _log(f"[rank] 「{job['name']}」本次全部失败（{results[0].get('error')}），"
-         f"{RETRY_DELAY_SEC // 60} 分钟后自动重试（第 {retry + 1}/{MAX_AUTO_RETRY} 次）")
+         f"{_fmt_wait(wait)}后自动重试（第 {retry + 1}/{MAX_AUTO_RETRY} 次）")
     try:
         submit(state, job["task"], keyword=job.get("keyword"), source="retry",
-               delay=RETRY_DELAY_SEC, retry=retry + 1)
+               delay=wait, retry=retry + 1)
     except Exception as e:
         _log(f"[rank] 安排重试失败：{type(e).__name__}: {e}")
 
