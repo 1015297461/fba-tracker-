@@ -604,8 +604,10 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
 # ---------------------------------------------------------------------------
 # 失败后自动重试：2026-11-10 凌晨 05:00~06:16 一波网络故障，14 个榜单全 error，
 # 而「当天跑过就不再跑」让它们一整天没有数据、也没人察觉。现在失败会自己补。
-CATMON_RETRY_GAP_SEC = 5 * 60       # 两次重试至少隔 5 分钟（失败要快点补，别拖一整天）
-CATMON_MAX_ATTEMPTS = 3             # 每天最多试 3 次（含首次），用完就等明天
+# 失败重试节奏（用户 2026-11-10 定）：5 分钟 → 5 分钟 → 3 小时，最多 4 次（含首次）
+CATMON_RETRY_GAP_SEC = 5 * 60
+CATMON_LONG_RETRY_GAP_SEC = 3 * 3600
+CATMON_MAX_ATTEMPTS = 4
 
 
 def _is_due(t, now=None):
@@ -624,7 +626,13 @@ def _is_due(t, now=None):
             last_dt = datetime.datetime.fromisoformat(str(t["lastRunAt"]))
         except (ValueError, TypeError):
             return False
-        if (now - last_dt).total_seconds() < CATMON_RETRY_GAP_SEC:
+        # 次数存库里（retryCount/retryDate），重启不会把上限清零。
+        # 前两次补跑只隔 5 分钟，第 4 次（即已失败 3 次后）隔 3 小时。
+        n = int(t.get("retryCount") or 0) if (t.get("retryDate") or "") == now.strftime("%Y-%m-%d") else 0
+        if n >= CATMON_MAX_ATTEMPTS:
+            return False
+        gap = CATMON_RETRY_GAP_SEC if n < 3 else CATMON_LONG_RETRY_GAP_SEC
+        if (now - last_dt).total_seconds() < gap:
             return False
         return True
     if ft == "weekly":
@@ -643,8 +651,6 @@ def _is_due(t, now=None):
 
 def start_scheduler(state):
     def loop():
-        # (target_id, 'YYYY-MM-DD') -> 今天已尝试次数（失败重试要计数，防无限撞）
-        attempts = {}
         while True:
             try:
                 now = datetime.datetime.now()
@@ -654,17 +660,11 @@ def start_scheduler(state):
                         continue
                     if t.get("lastStatus") == "paused":
                         continue          # 用户手动暂停的，定时任务不抢跑
-                    key = (t["id"], today)
-                    if attempts.get(key, 0) >= CATMON_MAX_ATTEMPTS:
-                        continue
                     if not _start_run(state, t):
                         continue
-                    attempts[key] = attempts.get(key, 0) + 1
+                    n = int(t.get("retryCount") or 0) if (t.get("retryDate") or "") == today else 0
                     _log(f"[catmon] 定时触发 {t['id']} {t.get('label') or t['nodeId']} @ {now:%H:%M}"
-                         + (f"（第 {attempts[key]} 次尝试）" if attempts[key] > 1 else ""))
-                # 只留今天的计数，避免跨天无限增长
-                if len(attempts) > 300:
-                    attempts = {k: v for k, v in attempts.items() if k[1] == today}
+                         + (f"（今日第 {n + 1} 次尝试）" if n else ""))
             except Exception as e:
                 _log(f"[catmon] 调度异常: {type(e).__name__}: {e}")
             time.sleep(60)

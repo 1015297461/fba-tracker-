@@ -172,6 +172,8 @@ class DbState:
                     last_run_at      TEXT,
                     last_status      TEXT DEFAULT 'idle',
                     last_error       TEXT,
+                    retry_count      INTEGER DEFAULT 0,  -- 今日已尝试次数（跨天归零）
+                    retry_date       TEXT,
                     created_at       TEXT,
                     UNIQUE(marketplace, node_id)
                 );
@@ -322,6 +324,9 @@ class DbState:
             "lastStatus": row["last_status"],
             "lastError": row["last_error"],
             "lastProgress": row["last_progress"],
+            # 今日已尝试次数（含首次），调度器据此限制重试上限
+            "retryCount": (row["retry_count"] if "retry_count" in row.keys() else 0) or 0,
+            "retryDate": (row["retry_date"] if "retry_date" in row.keys() else None),
             "sortOrder": row["sort_order"],
             "createdAt": row["created_at"],
         }
@@ -543,6 +548,24 @@ class DbState:
     def set_catmon_target_status(self, tid, status, error=None, last_run_at=None, progress=None):
         with self.lock:
             with self._conn() as conn:
+                # 终态（ok/partial/error/cancelled）维护今日重试次数：
+                # running 这类中间态不动计数，否则一次采集会被算成好几次。
+                if status in ("ok", "partial", "error", "cancelled"):
+                    today = _now_iso()[:10]
+                    cur = conn.execute(
+                        "SELECT retry_count, retry_date FROM catmon_targets WHERE id=?", [tid]
+                    ).fetchone()
+                    n = (cur["retry_count"] or 0) if cur else 0
+                    d = (cur["retry_date"] or "") if cur else ""
+                    if d != today:
+                        n = 0
+                    if status == "error":
+                        n += 1
+                    elif status in ("ok", "partial"):
+                        n = 0
+                    conn.execute(
+                        "UPDATE catmon_targets SET retry_count=?, retry_date=? WHERE id=?",
+                        [n, today, tid])
                 if last_run_at is not None:
                     conn.execute(
                         "UPDATE catmon_targets SET last_status=?, last_error=?, last_run_at=? WHERE id=?",
@@ -1292,6 +1315,8 @@ class DbState:
                     last_run_at TEXT,
                     last_status TEXT,
                     last_error  TEXT,
+                    retry_count INTEGER DEFAULT 0,      -- 今日已尝试次数（跨天归零）
+                    retry_date  TEXT,                   -- 上面这个计数属于哪一天
                     username    TEXT,
                     created_at  TEXT
                 );
@@ -1645,6 +1670,16 @@ class DbState:
 
             # 排名快照：记录「这次一共扫了多少个自然位」，用于区分
             # 「没找到（扫完了确实没有）」与「没抓到（页面本身有问题）」
+            # 失败重试计数落库：重启后仍记得今天试过几次（内存计数会被重启清零）
+            _st_cols = {r[1] for r in conn.execute("PRAGMA table_info(rmon_srp_targets)")}
+            if _st_cols and "retry_count" not in _st_cols:
+                conn.execute("ALTER TABLE rmon_srp_targets ADD COLUMN retry_count INTEGER DEFAULT 0")
+                conn.execute("ALTER TABLE rmon_srp_targets ADD COLUMN retry_date TEXT")
+            _ct_cols = {r[1] for r in conn.execute("PRAGMA table_info(catmon_targets)")}
+            if _ct_cols and "retry_count" not in _ct_cols:
+                conn.execute("ALTER TABLE catmon_targets ADD COLUMN retry_count INTEGER DEFAULT 0")
+                conn.execute("ALTER TABLE catmon_targets ADD COLUMN retry_date TEXT")
+
             _rs_cols = {r[1] for r in conn.execute("PRAGMA table_info(rank_snapshots)")}
             if _rs_cols and "organic_scanned" not in _rs_cols:
                 conn.execute("ALTER TABLE rank_snapshots ADD COLUMN organic_scanned INTEGER")
@@ -3485,11 +3520,29 @@ class DbState:
                 conn.commit()
 
     def mark_srp_target_run(self, tid: str, status: str, error: str = None):
+        """记录一次执行结果，并维护「今日重试次数」（失败 +1、成功清零、跨天归零）。
+
+        计数落库（不存内存）：服务重启后仍然记得今天已经试过几次，
+        否则重启一次就能多重试 3 次，重试上限形同虚设。
+        """
+        today = _now_iso()[:10]
         with self.lock:
             with self._conn() as conn:
+                cur = conn.execute(
+                    "SELECT retry_count, retry_date FROM rmon_srp_targets WHERE id=?", [tid]
+                ).fetchone()
+                n = (cur["retry_count"] or 0) if cur else 0
+                d = (cur["retry_date"] or "") if cur else ""
+                if d != today:
+                    n = 0                       # 新的一天，计数归零
+                if status == "failed":
+                    n += 1
+                else:
+                    n = 0                       # 成功即清零
                 conn.execute(
-                    "UPDATE rmon_srp_targets SET last_run_at=?, last_status=?, last_error=? WHERE id=?",
-                    [_now_iso(), status, (error or "")[:200], tid],
+                    "UPDATE rmon_srp_targets SET last_run_at=?, last_status=?, last_error=?, "
+                    "retry_count=?, retry_date=? WHERE id=?",
+                    [_now_iso(), status, (error or "")[:200], n, today, tid],
                 )
                 conn.commit()
 

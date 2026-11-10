@@ -1138,12 +1138,14 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
     「当天跑过一次就不再跑」，于是凌晨一波网络故障（11-10 05:00~06:30，两个模块
     同时大面积 failed）会让它们一整天没有数据、也不会有任何后续动作。
     现在：
-    · catmon `_is_due`：今天跑过且 `lastStatus == "error"` → 隔 **5 分钟**允许重试，
-      调度器 `attempts` 限每天最多 **3 次**（含首次）；
-    · 前台实测 `_srp_due`：同样 5 分钟 / 3 次，计数在 `self._srp_attempts`
-      （key 带日期，跨天自动失效；成功即清零）。
-    · **为什么必须有次数上限**：失败后无限重试会从早上补到深夜，和隔天的任务
-      抢执行顺序；3 次 × 5 分钟 = 15 分钟内结束，剩下的等明天。
+    · **重试节奏（用户 2026-11-10 定，两模块一致）**：
+      第 2 次隔 **5 分钟**、第 3 次隔 **5 分钟**、第 4 次隔 **3 小时**；
+      第 4 次仍失败就当天放弃。
+    · 计数落库：`rmon_srp_targets.retry_count/retry_date`、
+      `catmon_targets.retry_count/retry_date`（`_row_to_catmon_target` 映射为 retryCount）。
+      失败 +1、成功清零、`retry_date != 今天` 视为 0 —— **重启不会把上限清零**，
+      这是之前存内存方案的漏洞（重启一次就多 3 次机会）。
+    · 判定：`n >= 4` 不再跑；`gap = 5min if n < 3 else 3h`。
     · 失败状态两个模块都在页面显示（catmon 的 `lastError`、前台实测的 `.rk-srp-warn`），
       不会静默失败。
   · **catmon 错误详情**：`errors.append` 现在带上 `res["error"]`（`blocked` / `no_html` /

@@ -706,7 +706,7 @@ export function CategoryMonitor() {
                     {freqText(current)} · 上次 {fmtTs(current.lastRunAt)} · {statusText(current.lastStatus)}
                     {current.lastError ? (
                   <span className="cm-err-inline"
-                    title="失败后每 5 分钟自动重试一次，每天最多 3 次（含首次）；3 次都失败就等明天，也可手动点「立即采集」">
+                    title="自动重试：5 分钟 → 5 分钟 → 3 小时，共 4 次（含首次）；仍失败就等明天，也可手动点「立即采集」">
                     {" "}· {fmtRunErr(current.lastError)}
                   </span>
                 ) : null}

@@ -3064,7 +3064,7 @@ export function RankMonitor() {
                 </span>
               ))}
               <span className="rk-srp-warn-note">
-                每 5 分钟自动重试一次，每天最多 3 次；仍不行请点「获取最新数据」手动补
+                自动重试：5 分钟 → 5 分钟 → 3 小时，共 4 次；仍失败请点「获取最新数据」手动补
               </span>
             </div>
           )}
