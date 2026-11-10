@@ -704,7 +704,12 @@ export function CategoryMonitor() {
                   </div>
                   <div className="cm-target-meta">
                     {freqText(current)} · 上次 {fmtTs(current.lastRunAt)} · {statusText(current.lastStatus)}
-                    {current.lastError ? <span className="cm-err-inline"> · {fmtRunErr(current.lastError)}</span> : null}
+                    {current.lastError ? (
+                  <span className="cm-err-inline"
+                    title="失败后每 5 分钟自动重试一次，每天最多 3 次（含首次）；3 次都失败就等明天，也可手动点「立即采集」">
+                    {" "}· {fmtRunErr(current.lastError)}
+                  </span>
+                ) : null}
                   </div>
                 </div>
                 <span className="cm-spacer" />

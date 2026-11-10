@@ -551,6 +551,12 @@ def run_due(state) -> dict:
 # 定时线程
 # ---------------------------------------------------------------------------
 
+# 前台实测失败重试：5 分钟一次、每天最多 3 次（含首次）。
+# 不能无限重试 —— 否则从早上一直补到深夜，还会和第三天的任务抢顺序。
+SRP_RETRY_GAP_SEC = 5 * 60
+SRP_MAX_RETRY = 3
+
+
 class RankMonitorWorker(threading.Thread):
     """每 5 分钟检查一次：到各自 run_at 且当天还没跑的目标补跑。
 
@@ -562,6 +568,8 @@ class RankMonitorWorker(threading.Thread):
         self.state = state
         self.interval = interval_sec
         self._stop = threading.Event()
+        # (target_id, 'YYYY-MM-DD') -> 今日已尝试次数（含首次），跨天自然失效
+        self._srp_attempts = {}
 
     def stop(self):
         self._stop.set()
@@ -613,12 +621,15 @@ class RankMonitorWorker(threading.Thread):
         if last[:10] == _now_date():
             if (t.get("last_status") or "") != "failed":
                 return False
-            # 今天跑过但失败了：距上次 ≥30 分钟就允许重来，直到成功
+            # 今天跑过但失败了：隔 5 分钟可再试，但每天最多 SRP_MAX_RETRY 次
+            key = (t.get("id"), _now_date())
+            if self._srp_attempts.get(key, 0) >= SRP_MAX_RETRY:
+                return False
             try:
                 last_dt = datetime.datetime.fromisoformat(last)
             except ValueError:
                 return True
-            if (datetime.datetime.now() - last_dt).total_seconds() < 1800:
+            if (datetime.datetime.now() - last_dt).total_seconds() < SRP_RETRY_GAP_SEC:
                 return False
         at = (t.get("daily_at") or "").strip()
         if at:
@@ -704,6 +715,7 @@ class RankMonitorWorker(threading.Thread):
             _log(f"[srp] 定时抓取{'完成' if res.get('ok') else '失败'}「{kw}」"
                  f"{res.get('pages_ok')}/{res.get('pages_requested')} 页")
             if res.get("ok"):
+                self._srp_attempts.pop((t.get("id"), _now_date()), None)
                 # 定时抓完顺手刷趋势，避免「定时跑了但趋势还是旧的」
                 self._refresh_trend(kw, country)
                 # 抓完在后台补上架时间（卖家精灵），不阻塞定时任务；补完回写记录快照
@@ -735,7 +747,14 @@ class RankMonitorWorker(threading.Thread):
                 for t in srp_due:
                     if self._stop.is_set():
                         break
+                    key = (t.get("id"), _now_date())
+                    self._srp_attempts[key] = self._srp_attempts.get(key, 0) + 1
                     self._run_srp_target(t)
+                # 只留今天的计数，别无限增长
+                if len(self._srp_attempts) > 200:
+                    today = _now_date()
+                    self._srp_attempts = {k: v for k, v in self._srp_attempts.items()
+                                          if k[1] == today}
             except Exception as e:
                 _log(f"[rank-monitor] 调度异常：{type(e).__name__}: {e}")
             self._stop.wait(self.interval)

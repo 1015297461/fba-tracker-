@@ -604,8 +604,8 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
 # ---------------------------------------------------------------------------
 # 失败后自动重试：2026-11-10 凌晨 05:00~06:16 一波网络故障，14 个榜单全 error，
 # 而「当天跑过就不再跑」让它们一整天没有数据、也没人察觉。现在失败会自己补。
-CATMON_RETRY_GAP_SEC = 30 * 60      # 两次重试至少隔 30 分钟
-CATMON_MAX_ATTEMPTS = 3             # 每天最多试 3 次（含首次）
+CATMON_RETRY_GAP_SEC = 5 * 60       # 两次重试至少隔 5 分钟（失败要快点补，别拖一整天）
+CATMON_MAX_ATTEMPTS = 3             # 每天最多试 3 次（含首次），用完就等明天
 
 
 def _is_due(t, now=None):
@@ -617,7 +617,7 @@ def _is_due(t, now=None):
     if now.strftime("%H:%M") < (t.get("scheduleTime") or "09:00"):
         return False
     if (t.get("lastRunAt") or "")[:10] == now.strftime("%Y-%m-%d"):
-        # 今天跑过：成功/部分成功就到此为止；**失败**则隔 30 分钟再试（次数由调度器限制）
+        # 今天跑过：成功/部分成功就到此为止；**失败**则隔 5 分钟再试（次数由调度器限制）
         if (t.get("lastStatus") or "") != "error":
             return False
         try:

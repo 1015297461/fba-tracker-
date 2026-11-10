@@ -3063,7 +3063,9 @@ export function RankMonitor() {
                   {t.last_error ? `（${t.last_error}）` : ''}
                 </span>
               ))}
-              <span className="rk-srp-warn-note">失败目标每 30 分钟自动重试，成功后自动消失</span>
+              <span className="rk-srp-warn-note">
+                每 5 分钟自动重试一次，每天最多 3 次；仍不行请点「获取最新数据」手动补
+              </span>
             </div>
           )}
           {srpPendingToday.length > 0 && (

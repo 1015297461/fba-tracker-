@@ -1138,9 +1138,14 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
     「当天跑过一次就不再跑」，于是凌晨一波网络故障（11-10 05:00~06:30，两个模块
     同时大面积 failed）会让它们一整天没有数据、也不会有任何后续动作。
     现在：
-    · catmon `_is_due`：今天跑过且 `lastStatus == "error"` → 隔 30 分钟允许重试，
-      调度器 `attempts` 限每天最多 3 次（含首次）；
-    · 前台实测 `_srp_due`：今天跑过且 `lastStatus == "failed"` → 隔 30 分钟重试，直到成功。
+    · catmon `_is_due`：今天跑过且 `lastStatus == "error"` → 隔 **5 分钟**允许重试，
+      调度器 `attempts` 限每天最多 **3 次**（含首次）；
+    · 前台实测 `_srp_due`：同样 5 分钟 / 3 次，计数在 `self._srp_attempts`
+      （key 带日期，跨天自动失效；成功即清零）。
+    · **为什么必须有次数上限**：失败后无限重试会从早上补到深夜，和隔天的任务
+      抢执行顺序；3 次 × 5 分钟 = 15 分钟内结束，剩下的等明天。
+    · 失败状态两个模块都在页面显示（catmon 的 `lastError`、前台实测的 `.rk-srp-warn`），
+      不会静默失败。
   · **catmon 错误详情**：`errors.append` 现在带上 `res["error"]`（`blocked` / `no_html` /
     `no_recs` / 异常类型），不再只有 `bestsellers:error` 这种看不出原因的信息。
   · **前台实测的失败提示**：`RankMonitor` A 区顶部新增 `.rk-srp-warn` 提示条，
