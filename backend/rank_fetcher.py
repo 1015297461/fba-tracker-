@@ -27,6 +27,7 @@ import re
 import json
 import time
 import random
+import threading
 import argparse
 import datetime
 
@@ -98,6 +99,68 @@ def _decompress(resp):
     return raw.decode("utf-8", "replace")
 
 
+# ---------------------------------------------------------------------------
+# 全局请求节流
+#
+# 亚马逊对未登录访客的社区经验上限是 10~15 请求/分钟（200~300/小时），
+# 超过就可能收到 CAPTCHA / bm-verify 挑战。
+# 取 7~9 秒/请求（≈7 次/分钟）留余量；所有 HTTP 抓取共用同一条速率线（跨线程）。
+# 注意：CDP 真实浏览器通道不走这里 —— 它本身就是慢的，且不是同一套指纹。
+# ---------------------------------------------------------------------------
+MIN_REQ_INTERVAL = 7.0
+REQ_JITTER = 2.0
+_rate_lock = threading.Lock()
+_rate_state = {"next_at": 0.0}
+
+
+def _throttle():
+    """全局节流：等到下一次允许发请求的时刻，再预约下一次。"""
+    with _rate_lock:
+        now = time.monotonic()
+        wait = _rate_state["next_at"] - now
+        if wait > 0:
+            time.sleep(wait)
+            now = time.monotonic()
+        _rate_state["next_at"] = now + MIN_REQ_INTERVAL + random.uniform(0, REQ_JITTER)
+
+
+def search_url(marketplace, keyword, page=1):
+    """搜索结果页 URL（HTTP 与 CDP 两条通道共用，避免两处拼参不一致）。"""
+    mk = MARKETPLACES.get((marketplace or "US").upper())
+    if not mk:
+        return None
+    qs = urllib.parse.urlencode({"k": keyword, "page": page, "ref": "nb_sb_noss"})
+    return f"https://{mk['domain']}/s?{qs}"
+
+
+def fetch_via_cdp(marketplace, keyword, page=1, timeout=60):
+    """用真实浏览器（CDP）抓搜索页 —— HTTP 被 bm-verify 拦时的兜底。
+
+    为什么有效：bm-verify 是一个要执行 JS 才能通过的插页，纯 HTTP 客户端
+    天生过不了；真实 Chrome 跑完脚本会自动跳转回正常结果页。
+    代价：每次约 25~40 秒（要冷启动 Chrome），只适合兜底，不能当主通道。
+    """
+    url = search_url(marketplace, keyword, page)
+    if not url:
+        return None, "unknown_marketplace"
+    try:
+        from . import browser_fetch
+        if not browser_fetch.available():
+            return None, "cdp_unavailable"
+        html, err = browser_fetch._fetch_headless_cdp(
+            url, ready_expr="!!document.querySelector('.s-search-result')",
+            timeout=timeout)
+    except Exception as e:
+        return None, f"cdp_exc:{type(e).__name__}"
+    if err:
+        return None, f"cdp_{err}"
+    if "s-search-result" not in html:
+        return None, "cdp_no_results"
+    if any(h in html for h in _BLOCK_HINTS) or "bm-verify" in html:
+        return None, "cdp_blocked"
+    return html, None
+
+
 def fetch_page(marketplace, keyword, page=1, timeout=20, fingerprint=None):
     """抓取一页搜索结果，返回 (html, error)。被封返回 (None, 'blocked')。
     fingerprint: 来自 _FINGERPRINTS 的一个条目，None 时随机选取。
@@ -105,6 +168,7 @@ def fetch_page(marketplace, keyword, page=1, timeout=20, fingerprint=None):
     mk = MARKETPLACES.get(marketplace.upper())
     if not mk:
         return None, "unknown_marketplace"
+    _throttle()
     fp = fingerprint if fingerprint is not None else random.choice(_FINGERPRINTS)
     qs = urllib.parse.urlencode({"k": keyword, "page": page, "ref": "nb_sb_noss"})
     url = f"https://{mk['domain']}/s?{qs}"
@@ -162,28 +226,41 @@ _SOFT_FAILS = ("blocked", "no_results")
 
 
 def fetch_page_resilient(marketplace, keyword, page=1, timeout=20, fingerprint=None,
-                         tries=3):
+                         tries=3, allow_cdp=False):
     """带「换指纹 + 退避」重试的 fetch_page，返回 (html, err, fingerprint)。
 
     返回值多带一个 fingerprint：重试时换过指纹的话，调用方后续翻页要用同一个，
     否则同一关键词的几页来自不同身份，容易又被拦。
+
+    allow_cdp：遇到 blocked 时改用真实浏览器（CDP）兜底。
+    bm-verify 是「要执行 JS 才能过」的插页，换指纹重试是白撞——实测量子级概率
+    还不如直接上浏览器。CDP 慢（25~40s/页），由调用方控制用几次。
     """
     fp = fingerprint or random.choice(_FINGERPRINTS)
     last = None
+    via = "http"
     for i in range(max(1, int(tries))):
         if i:
             fp = random.choice(_FINGERPRINTS)
             time.sleep(random.uniform(4.0, 8.0))
         html, err = fetch_page(marketplace, keyword, page, timeout=timeout, fingerprint=fp)
         if not err:
-            return html, None, fp
+            return html, None, fp, via
         last = err
         if err not in _SOFT_FAILS:
             break                      # 网络/HTTP 硬错误，重试没意义
+        if err == "blocked" and allow_cdp:
+            # 被 bm-verify 拦：直接走真实浏览器，别再用同一个指纹硬撞
+            html, cdp_err = fetch_via_cdp(marketplace, keyword, page)
+            if not cdp_err:
+                return html, None, fp, "cdp"
+            last = f"{err}|{cdp_err}"
+            via = "cdp_failed"
+            break
     # 重试过还不行 → 标记一下，方便前端区分「试了一次就空」与「试了三次都空」
     if last in _SOFT_FAILS:
         last = f"{last}_x{max(1, int(tries))}"
-    return None, last, fp
+    return None, last, fp, via
 
 
 def parse_cards(html_text, sp_words):
@@ -204,16 +281,19 @@ def parse_cards(html_text, sp_words):
 
 
 def locate_rank(asin, marketplace, keyword, max_pages=3,
-                delay_range=(2.0, 5.0), debug=False):
+                delay_range=(2.0, 5.0), debug=False, allow_cdp=False):
     """
     跨页定位 ASIN 排名。
     返回结构化结果（见模块文档）。organic_rank 为剔除广告后的全局自然序号。
+
+    allow_cdp=True 时，HTTP 被 bm-verify 拦就改用真实浏览器兜底（慢但能过）。
     """
     asin = asin.upper().strip() if asin else None
     mk = MARKETPLACES.get(marketplace.upper())
     sp_words = mk["sp"] if mk else ["Sponsored"]
     fp = random.choice(_FINGERPRINTS)  # 同一关键词所有翻页使用同一指纹
 
+    used_cdp = False           # 本词是否用了真实浏览器兜底（调用方据此扣配额）
     organic_seen = 0           # 截至目前累计的自然结果数（用于跨页全局排名）
     sponsored_hits = []        # 命中的广告坑位 [{page, slot}]
     organic_rank = None
@@ -221,8 +301,10 @@ def locate_rank(asin, marketplace, keyword, max_pages=3,
     last_error = None
 
     for page in range(1, max_pages + 1):
-        html_text, err, fp = fetch_page_resilient(
-            marketplace, keyword, page, fingerprint=fp)
+        html_text, err, fp, via = fetch_page_resilient(
+            marketplace, keyword, page, fingerprint=fp, allow_cdp=allow_cdp)
+        if via == "cdp":
+            used_cdp = True
         if err:
             last_error = err
             # 被封 / 网络错误 / 重试后仍空 → 这个关键词到此为止
@@ -275,6 +357,7 @@ def locate_rank(asin, marketplace, keyword, max_pages=3,
         "organic_page": organic_page,
         "sponsored": sponsored_hits,
         "organic_scanned": organic_seen,
+        "via": "cdp" if used_cdp else "http",
         "error": last_error,
         "captured_at": _now_iso(),
     }

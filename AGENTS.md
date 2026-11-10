@@ -129,6 +129,9 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                 #   bm-verify 挑战页 = **出口 IP 被风控，换指纹无效**；
                                 #   继续按 15 分钟 × 3 轮硬撞只会让封禁更久。
                                 #   `/api/rank/queue` 返回 `cooldown`（剩余秒数），前端据此显示红字提示。
+                                #   **CDP 兜底配额**：`CDP_BUDGET_PER_TASK=3` —— 每个任务最多 3 个词
+                                #   允许走真实浏览器（一次约 3 页 × 30s ≈ 1.5 分钟），
+                                #   全走会把 26 个词拖成 40 分钟。用完就只走 HTTP，剩下的靠冷却后重试。
     scrape.py                   # /api/scrape/*：start_scrape_task()/_run_scrape() 服务端后台
                                 #   执行器（POST /start 立即返回 taskId，前端轮询 /progress，
                                 #   刷新不丢任务）+ 运行时暂停/取消/继续（/pause /resume /cancel，
@@ -178,6 +181,16 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #     `<meta http-equiv="refresh" ... bm-verify=AAQ...>`，
                               #     里面没有 s-search-result —— 原来会被误判成 `no_results`
                               #     （看着像「这个词真没结果」），实际是风控，处理策略完全不同。
+                              #   **请求节流（2026-11-10）**：`_throttle()` 全局串行令牌，
+                              #   每个 HTTP 抓取前强制 `MIN_REQ_INTERVAL=7s + 0~2s 抖动`
+                              #   （≈7 次/分钟，低于亚马逊未登录访客 10~15 次/分的经验上限）。
+                              #   跨线程共用一条速率线；CDP 通道不受它约束。
+                              #   **CDP 兜底（2026-11-10）**：`fetch_via_cdp()` 用真实无头 Chrome
+                              #   抓搜索页。bm-verify 是「要执行 JS 才能过」的插页，纯 HTTP 天生
+                              #   过不了，换指纹也是白撞；真实 Chrome 跑完脚本自动跳转。
+                              #   实测 1.5MB / 50 个商品 / 约 30~40s。只在 `allow_cdp=True`
+                              #   且 HTTP 返回 blocked 时触发，不做重试（直接上浏览器）。
+                              #   `locate_rank` 结果带 `via: http|cdp`，调用方据此扣配额。
                               #   **三种结果必须分开**（2026-11-04）：
                               #   · `ok`        找到排名
                               #   · `not_ranked` 页面正常、也解析到商品，但前 3 页没有这个 ASIN

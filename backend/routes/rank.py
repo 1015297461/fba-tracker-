@@ -54,6 +54,12 @@ def _due_slot(task, now_utc=None):
     return None
 
 
+# 每个任务最多允许几个词走「真实浏览器」兜底。
+# 一次 CDP 要冷启动 Chrome（约 30s/页，3 页 ≈ 1.5 分钟），全批都走会把 26 个词拖成 40 分钟；
+# 给 3 个额度够拿到一部分数据，剩下的交给冷却后重试。
+CDP_BUDGET_PER_TASK = 3
+
+
 def run_rank_task(state, task, delay_between_kw=(3.0, 7.0)):
     """串行采集任务下所有关键词，写入快照，返回结果列表。
 
@@ -61,12 +67,15 @@ def run_rank_task(state, task, delay_between_kw=(3.0, 7.0)):
     """
     results = []
     kws = task.get("keywords", [])
+    cdp_budget = CDP_BUDGET_PER_TASK
     for i, kw in enumerate(kws):
         kw = (kw or "").strip()
         if not kw:
             continue
+        allow_cdp = cdp_budget > 0
         try:
-            res = rank_fetcher.locate_rank(task["asin"], task["marketplace"], kw, max_pages=3)
+            res = rank_fetcher.locate_rank(task["asin"], task["marketplace"], kw,
+                                           max_pages=3, allow_cdp=allow_cdp)
         except Exception as e:
             res = {
                 "asin": task["asin"], "keyword": kw,
@@ -74,6 +83,9 @@ def run_rank_task(state, task, delay_between_kw=(3.0, 7.0)):
                 "organic_rank": None, "organic_page": None, "sponsored": [],
                 "error": f"fetch_exc:{type(e).__name__}", "captured_at": _now_iso(),
             }
+        if res.get("via") == "cdp":
+            cdp_budget -= 1
+            _log(f"[rank] 「{kw}」HTTP 被拦，已用真实浏览器兜底成功（本批剩 {cdp_budget} 次额度）")
         state.add_snapshot(task["id"], res)
         results.append(res)
         if i < len(kws) - 1:
