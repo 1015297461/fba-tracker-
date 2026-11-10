@@ -21,6 +21,7 @@
 `off` 表示完全不启用浏览器通道（退回纯 HTTP，易被 CAPTCHA）。
 """
 
+import atexit
 import json
 import os
 import shutil
@@ -205,6 +206,168 @@ def _fetch_headless(url, timeout=DUMP_TIMEOUT):
 CDP_HEADLESS_PORT = int(os.environ.get("FBA_CDP_PORT", "9335"))
 CDP_FETCH_TIMEOUT = 90       # 含启动 + 导航 + 等就绪
 
+# ---------------------------------------------------------------- 常驻浏览器
+#
+# 2026-11-10 改：原先每次抓取都 `Popen` 一个 Chrome 再杀掉，实测 31s/页 ——
+# 其中 3~5s 纯粹耗在冷启动和 profile 初始化上。用户要求「启动程序时就起好，
+# 后续复用」，所以改成**一个常驻 Chrome + 每次开一个标签页、用完立刻关**。
+#
+# 标签页管理是这条通道唯一的泄漏风险：异常路径必须能在 finally 里关掉，
+# 否则跑一晚就是几百个标签页把内存吃光。为此：
+#   · 每次抓取 new 一个 target，id 记在 _CHROME["tabs"]，finally 里 close；
+#   · 启动时先 _cleanup_stale_tabs()，把上次异常退出残留的标签全关掉。
+_CHROME = {"proc": None, "pgid": None, "tabs": set(), "lock": threading.Lock()}
+_CHROME_BASE = f"http://127.0.0.1:{CDP_HEADLESS_PORT}"
+
+
+def _chrome_alive(timeout=2):
+    status, _ = _http(f"{_CHROME_BASE}/json/version", timeout=timeout)
+    return status == 200
+
+
+def _list_targets(timeout=3):
+    status, text = _http(f"{_CHROME_BASE}/json/list", timeout=timeout)
+    if status != 200:
+        return []
+    try:
+        return json.loads(text) or []
+    except Exception:
+        return []
+
+
+def _close_target(tid, timeout=3):
+    """关标签页（幂等，失败也不抛）。"""
+    if not tid:
+        return
+    try:
+        _http(f"{_CHROME_BASE}/json/close/{urllib.parse.quote(str(tid))}", timeout=timeout)
+    except Exception:
+        pass
+    _CHROME["tabs"].discard(tid)
+
+
+def _cleanup_stale_tabs():
+    """关掉除空白页以外的所有标签（上次异常退出的残留）。"""
+    n = 0
+    for t in _list_targets():
+        if t.get("type") != "page":
+            continue
+        url = str(t.get("url") or "")
+        tid = t.get("id")
+        if tid and not url.startswith("about:blank"):
+            _close_target(tid)
+            n += 1
+    if n:
+        _log(f"[browser] 清理了 {n} 个残留标签页")
+
+
+def _trim_tabs(rounds=3):
+    """兜底闸门：只保留一个空白标签，其余 page 一律关掉。
+
+    关闭标签是异步的（Chrome 要几百毫秒才真正销毁），所以这里带重试 +
+    短暂等待，否则下一次查询还能看到「已经请求关闭」的那个 —— 实测第一次
+    抓完会残留一个，正是这个原因。
+    """
+    for i in range(rounds):
+        pages = [t for t in _list_targets() if t.get("type") == "page"]
+        if len(pages) <= 1:
+            return
+        keep = next((t for t in pages if str(t.get("url") or "").startswith("about:blank")), pages[0])
+        for t in pages:
+            if t.get("id") != keep.get("id"):
+                _close_target(t.get("id"))
+        time.sleep(0.25)
+
+
+def ensure_chrome(wait=20):
+    """确保常驻无头 Chrome 在跑（幂等）。程序启动时调一次即可。"""
+    if MODE == "off":
+        return False
+    if _chrome_alive():
+        _cleanup_stale_tabs()
+        return True
+    with _CHROME["lock"]:
+        if _chrome_alive():
+            return True
+        chrome = _chrome_bin()
+        if not chrome:
+            _log("[browser] 没找到 Chrome/Chromium，浏览器通道不可用")
+            return False
+        try:
+            os.makedirs(CHROME_PROFILE_DIR, exist_ok=True)
+        except Exception:
+            pass
+        cmd = [
+            chrome,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--window-size=1400,1000",
+            f"--user-data-dir={CHROME_PROFILE_DIR}",
+            f"--remote-debugging-port={CDP_HEADLESS_PORT}",
+            "about:blank",
+        ]
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    stdin=subprocess.DEVNULL, start_new_session=True)
+        except Exception as e:
+            _log(f"[browser] 启动 Chrome 失败：{type(e).__name__}: {e}")
+            return False
+        _CHROME["proc"] = proc
+        try:
+            _CHROME["pgid"] = os.getpgid(proc.pid)
+        except Exception:
+            _CHROME["pgid"] = None
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            if _chrome_alive(1):
+                _log(f"[browser] 常驻无头 Chrome 已就绪（端口 {CDP_HEADLESS_PORT}）")
+                _cleanup_stale_tabs()
+                return True
+            time.sleep(0.3)
+        _log("[browser] Chrome 启动超时")
+        return False
+
+
+def shutdown_chrome():
+    """退出时清理（注册在 atexit）。"""
+    proc = _CHROME.get("proc")
+    if not proc:
+        return
+    try:
+        _kill_tree(proc, _CHROME.get("pgid"))
+    except Exception:
+        pass
+    _CHROME["proc"] = None
+
+
+def _new_target(url=None):
+    """开一个新的标签页，返回 (id, ws_url)。Chrome 111+ 的 /json/new 要求 PUT。
+
+    ⚠️ 不要把 url 拼进 query（`/json/new?about:blank`）：实测编码后 Chrome 会直接
+    断开调试端口（后续 /json/list 全部连不上）。开空白页、由 node 脚本去 navigate 更稳。
+    """
+    for method in ("PUT", "GET"):
+        status, text = _http(f"{_CHROME_BASE}/json/new", method=method, timeout=10)
+        if status == 200:
+            try:
+                d = json.loads(text)
+            except Exception:
+                continue
+            tid = d.get("id")
+            ws = d.get("webSocketDebuggerUrl")
+            if tid and ws:
+                _CHROME["tabs"].add(tid)
+                return tid, ws
+    return None, None
+
+
+atexit.register(shutdown_chrome)
+
+
 # node 侧脚本：一次收齐「设 cookie → 导航 → 轮询就绪 → 取 outerHTML」
 #
 # ⚠️ HTML 必须**写文件**再回传路径，不能直接 stdout：2MB 的字符串配合
@@ -276,96 +439,66 @@ setTimeout(() => { done({ error: "timeout" }); }, MAX_MS + 20000);
 
 def _fetch_headless_cdp(url, cookies=None, ready_expr="!!document.getElementById('productTitle')",
                         timeout=CDP_FETCH_TIMEOUT):
-    """无头 Chrome + CDP：注入 cookie 后取 DOM（需要指定货币/会话时用）。"""
-    chrome = _chrome_bin()
-    if not chrome:
-        return None, "chrome_not_found"
-    try:
-        os.makedirs(CHROME_PROFILE_DIR, exist_ok=True)
-    except Exception:
-        pass
+    """无头 Chrome + CDP：注入 cookie 后取 DOM（需要指定货币/会话时用）。
 
-    cmd = [
-        chrome,
-        "--headless=new",
-        "--disable-gpu",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-extensions",
-        "--disable-background-networking",
-        "--window-size=1400,1000",
-        f"--user-data-dir={CHROME_PROFILE_DIR}",
-        f"--remote-debugging-port={CDP_HEADLESS_PORT}",
-        "about:blank",
-    ]
-    # 与 dump 通道共用一把锁：同一个 profile 不能同时开两个 Chrome（profile 会被锁住）
+    用**常驻**的 Chrome，每次开一个标签页、跑完在 finally 里关掉 —— 既不重复付
+    冷启动的钱，也不会让标签页越攒越多。
+    """
+    # 全局串行：常驻 Chrome 只有一份，多线程同时开标签会互相踩
     with _browser_lock:
-        proc, pgid = None, None
+        return _cdp_fetch_locked(url, cookies, ready_expr, timeout)
+
+
+def _cdp_fetch_locked(url, cookies, ready_expr, timeout):
+    if not ensure_chrome():
+        return None, "chrome_not_started"
+
+    tid, ws_url = _new_target()
+    if not ws_url:
+        return None, "open_tab_failed"
+    try:
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                    stdin=subprocess.DEVNULL, start_new_session=True)
+            os.makedirs(DUMP_TMP_DIR, exist_ok=True)
+        except Exception:
+            pass
+        fd, out_path = tempfile.mkstemp(prefix="cdp-", suffix=".html", dir=DUMP_TMP_DIR)
+        os.close(fd)
+        try:
+            p = subprocess.run(
+                ["node", "-e", _JS_CDP_FETCH, ws_url, url, ready_expr,
+                 json.dumps(cookies or [], ensure_ascii=False),
+                 str(int(timeout * 1000)), out_path],
+                capture_output=True, text=True, timeout=timeout + 30)
+            out = (p.stdout or "").strip()
+            if not out:
+                return None, f"node_empty:{(p.stderr or '')[:120]}"
             try:
-                pgid = os.getpgid(proc.pid)
+                body = json.loads(out)
             except Exception:
-                pgid = None
-
-            ws_url = None
-            deadline = time.time() + 10      # Chrome 实测 0.9s 就绪，10s 是宽裕上限
-            while time.time() < deadline:
-                status, text = _http(f"http://127.0.0.1:{CDP_HEADLESS_PORT}/json/list", timeout=2)
-                if status == 200:
-                    try:
-                        tabs = json.loads(text)
-                    except Exception:
-                        tabs = []
-                    if tabs:
-                        ws_url = tabs[0].get("webSocketDebuggerUrl")
-                        if ws_url:
-                            break
-                time.sleep(0.4)
-            if not ws_url:
-                return None, "cdp_not_ready"
-
+                return None, "node_bad_json"
+            if body.get("error"):
+                return None, f"cdp_{body['error']}"
             try:
-                os.makedirs(DUMP_TMP_DIR, exist_ok=True)
+                with open(out_path, "r", encoding="utf-8", errors="replace") as f:
+                    html = f.read()
+            except Exception as e:
+                return None, f"read_failed:{type(e).__name__}"
+        finally:
+            try:
+                os.unlink(out_path)
             except Exception:
                 pass
-            fd, out_path = tempfile.mkstemp(prefix="cdp-", suffix=".html", dir=DUMP_TMP_DIR)
-            os.close(fd)
-            try:
-                p = subprocess.run(
-                    ["node", "-e", _JS_CDP_FETCH, ws_url, url, ready_expr,
-                     json.dumps(cookies or [], ensure_ascii=False),
-                     str(int(timeout * 1000)), out_path],
-                    capture_output=True, text=True, timeout=timeout + 30)
-                out = (p.stdout or "").strip()
-                if not out:
-                    return None, f"node_empty:{(p.stderr or '')[:120]}"
-                try:
-                    body = json.loads(out)
-                except Exception:
-                    return None, "node_bad_json"
-                if body.get("error"):
-                    return None, f"cdp_{body['error']}"
-                try:
-                    with open(out_path, "r", encoding="utf-8", errors="replace") as f:
-                        html = f.read()
-                except Exception as e:
-                    return None, f"read_failed:{type(e).__name__}"
-            finally:
-                try:
-                    os.unlink(out_path)
-                except Exception:
-                    pass
-            if len(html) < DUMP_MIN_BYTES:
-                return None, "empty_dom"
-            return html, None
-        except subprocess.TimeoutExpired:
-            return None, "cdp_timeout"
-        except Exception as e:
-            return None, f"cdp_fail:{type(e).__name__}"
-        finally:
-            _kill_tree(proc, pgid)
+        if len(html) < DUMP_MIN_BYTES:
+            return None, "empty_dom"
+        return html, None
+    except subprocess.TimeoutExpired:
+        return None, "cdp_timeout"
+    except Exception as e:
+        return None, f"cdp_fail:{type(e).__name__}"
+    finally:
+        # 关键：无论成功、失败还是超时，标签页必须关掉；再统一收一次防残留
+        _close_target(tid)
+        _trim_tabs()
 
 
 # ---------------------------------------------------------------- 通道 2：本机 CDP（默认不用）

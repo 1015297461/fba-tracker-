@@ -270,6 +270,23 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   历史/请求节奏），不是这台机器的 IP。** 故「单条详情」= 浏览器优先 → HTTP 兜底。
                               #   无头实现要点：`--headless=new --dump-dom` 写完 DOM **不会自己退出**，需轮询输出文件
                               #   大小（连续 3 次不变且 ≥80KB 判定完成）后主动 kill；实测 6.5~22s（视页面资源）。
+                              #
+                              #   **常驻 Chrome + 标签页回收（2026-11-10）**
+                              #   原来每次抓取都 Popen 一个 Chrome 再杀掉，31s/页里有 3~5s 是冷启动。
+                              #   现在：
+                              #   · `ensure_chrome()` 幂等启动一个常驻无头 Chrome（端口 `FBA_CDP_PORT`，默认 9335），
+                              #     `app.py` 的 `main()` 启动时用后台线程 `_warm_up_browser()` 预热（不拖慢启动）；
+                              #   · 每次抓取 `_new_target()` 开一个标签、**finally 里 `_close_target()` + `_trim_tabs()` 关掉**；
+                              #   · `_trim_tabs()` 带 3 轮重试 + 250ms 等待 —— 关闭标签是异步的，不重试会残留
+                              #     （实测第一次抓完留 1 个，第二轮才消失）；它的作用是把 page 标签恒压到 1 个，
+                              #     这是防泄漏的最后一道闸；
+                              #   · `_new_target()` **不要**把 url 拼进 query（`/json/new?about:blank`）：
+                              #     编码后 Chrome 会直接断掉调试端口，后续 /json/list 全部连不上；
+                              #   · 全程持 `_browser_lock`（单实例，多线程同时开标签会互相踩）。
+                              #   **退出清理**：`atexit` 注册 + `app.py` 的 SIGTERM/SIGHUP handler + finally，
+                              #   三路都调 `shutdown_chrome()`。只靠 atexit 不够 —— 被 SIGTERM 杀掉时 atexit 不执行，
+                              #   Chrome 会残留占着端口（实测过）。
+                              #   实测：常驻复用后 27~33s/页（页面加载是大头，复用只省 4s 左右）。
                               #   **进程不常驻**：一次抓取 = 临时拉起一棵 Chrome 进程树（峰值 8~11 个进程），抓完
                               #   整组回收。⚠️ 只 kill 主进程不够（实测仍留 3 个 renderer/gpu helper 数十秒），
                               #   故 Popen 用 `start_new_session=True` + `os.killpg(pgid, SIGKILL)` 整组杀；

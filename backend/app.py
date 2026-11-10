@@ -25,9 +25,11 @@ FBA Tracker — 局域网协作服务器 v2
 import http.server
 import json
 import os
+import signal
 import socket
 import argparse
 import socketserver
+import threading
 from urllib.parse import urlparse
 
 from .utils import PROJECT_ROOT, _log
@@ -36,6 +38,7 @@ from .auth import AuthManager
 from .workers.export_worker import ExportWorker
 from .workers.ai_analysis_worker import AiAnalysisWorker
 from . import pdf_splitter
+from . import browser_fetch
 from .routes import (auth_routes, products, rank, scrape, review, exports, pdf, ai_analysis,
                      sif_keywords, shipment, rank_monitor_routes, catmon, asin_meta_routes)
 from .rank_monitor import RankMonitorWorker
@@ -247,6 +250,25 @@ class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 # 入口
 # ---------------------------------------------------------------------------
 
+def _warm_up_browser():
+    """后台预热常驻无头 Chrome。
+
+    放后台线程是为了不拖慢启动（Chrome 就绪约 1~3s，首次建 profile 可能更久）；
+    失败也不影响主服务 —— 用到 CDP 时会再试一次。
+    """
+    def run():
+        try:
+            if browser_fetch.MODE == "off":
+                return
+            if browser_fetch.ensure_chrome():
+                _log("[browser] 浏览器通道已预热（后续 CDP 抓取复用同一实例）")
+            else:
+                _log("[browser] 浏览器通道预热失败，用到时会再尝试启动")
+        except Exception as e:
+            _log(f"[browser] 预热异常：{type(e).__name__}: {e}")
+    threading.Thread(target=run, daemon=True, name="ChromeWarmUp").start()
+
+
 def main():
     p = argparse.ArgumentParser(description="FBA Tracker 局域网协作服务器 v2")
     p.add_argument("--port",    type=int, default=8002,           help="监听端口 (默认 8002)")
@@ -305,14 +327,37 @@ def main():
     rank.start_scheduler(db_state)
     sif_keywords.start_scheduler(db_state)
     catmon.start_scheduler(db_state)
+    # 常驻无头 Chrome：启动时先起好，后续所有 CDP 抓取复用它（省掉每次 3~5s 冷启动）
+    _warm_up_browser()
     # 采集任务的执行线程在服务重启后会消失，这里把残留的 running 标成 paused，
     # 用户可在界面点「继续」从断点接着跑（已成功的 ASIN 会被自动跳过）
     scrape.recover_stale_tasks(db_state)
+
+    # 退出时必须收掉常驻 Chrome：
+    #   · Ctrl+C 走 KeyboardInterrupt → finally
+    #   · kill / 关闭终端 走 SIGTERM → signal handler
+    #   · 正常返回走 atexit（browser_fetch 里已注册，作为最后兜底）
+    # 只靠 atexit 不够：被 SIGTERM 杀掉时 atexit 不会执行，Chrome 会变僵尸占着端口。
+    def _on_term(signum, _frame):
+        _log(f"收到信号 {signum}，正在停止服务…")
+        browser_fetch.shutdown_chrome()
+        raise SystemExit(0)
+
+    for sig_name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, sig_name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, _on_term)
+            except Exception:
+                pass
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print()  # 空行分隔，避免和上一条日志挤在一起
         _log("已停止")
+    finally:
+        browser_fetch.shutdown_chrome()
 
 
 if __name__ == "__main__":
