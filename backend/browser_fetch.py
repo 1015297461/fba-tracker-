@@ -398,6 +398,15 @@ ws.onmessage = e => {
 ws.onopen = async () => {
   try {
     await send("Network.enable", {});
+    // 拦掉图片/字体/媒体与已知追踪域：排名只需要 DOM 里的 data-asin，
+    // 图片一张都不看。搜索页 1.5MB 里大头就是这些，实测能省 30~50% 时间。
+    // ⚠️ 绝不能拦 js/css —— 卡片是前端渲染出来的，拦了就没有 DOM 了。
+    await send("Network.setBlockedURLs", { urls: [
+      "*.jpg", "*.jpeg", "*.png", "*.gif", "*.webp", "*.avif", "*.svg", "*.ico",
+      "*media-amazon.com/images/*",
+      "*doubleclick.net/*", "*google-analytics.com/*", "*googletagmanager.com/*",
+      "*amazon-adsystem.com/*", "*fls-na.amazon.com/*"
+    ] });
     for (const c of COOKIES) await send("Network.setCookie", c);
     await send("Page.enable", {});
     await send("Page.navigate", { url: URL_ });

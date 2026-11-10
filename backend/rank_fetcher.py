@@ -133,12 +133,15 @@ def search_url(marketplace, keyword, page=1):
     return f"https://{mk['domain']}/s?{qs}"
 
 
-def fetch_via_cdp(marketplace, keyword, page=1, timeout=60):
+def fetch_via_cdp(marketplace, keyword, page=1, timeout=12):
     """用真实浏览器（CDP）抓搜索页 —— HTTP 被 bm-verify 拦时的兜底。
 
     为什么有效：bm-verify 是一个要执行 JS 才能通过的插页，纯 HTTP 客户端
     天生过不了；真实 Chrome 跑完脚本会自动跳转回正常结果页。
-    代价：每次约 25~40 秒（要冷启动 Chrome），只适合兜底，不能当主通道。
+
+    timeout=12：实测搜索页 10 秒就能拿到完整 50 张卡片（timeout 10/15/25 都返回 50 张，
+    但耗时 15.9/17.3/27.4s）—— 原来给 25 秒纯属白等，页面渲染完脚本还在空转。
+    代价仍然不低（冷加载 + JS 执行），只适合兜底，不能当主通道。
     """
     url = search_url(marketplace, keyword, page)
     if not url:
