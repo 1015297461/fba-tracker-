@@ -602,11 +602,24 @@ class RankMonitorWorker(threading.Thread):
         return True
 
     def _srp_due(self, t: dict) -> bool:
-        """前台实测目标：同一天只跑一次，到点才跑。"""
+        """前台实测目标：同一天成功跑过一次就不再跑；**失败则每 30 分钟重试**。
+
+        2026-11-10：凌晨 05:00~06:30 一波网络故障，11 个目标里 8 个 failed，
+        而原来失败也算「今天跑过了」→ 一整天没数据、也没人知道。现在失败会自己补。
+        """
         if not t.get("enabled"):
             return False
-        if (t.get("last_run_at") or "")[:10] == _now_date():
-            return False
+        last = t.get("last_run_at") or ""
+        if last[:10] == _now_date():
+            if (t.get("last_status") or "") != "failed":
+                return False
+            # 今天跑过但失败了：距上次 ≥30 分钟就允许重来，直到成功
+            try:
+                last_dt = datetime.datetime.fromisoformat(last)
+            except ValueError:
+                return True
+            if (datetime.datetime.now() - last_dt).total_seconds() < 1800:
+                return False
         at = (t.get("daily_at") or "").strip()
         if at:
             try:

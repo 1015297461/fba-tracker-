@@ -139,7 +139,10 @@ def _run_target(state, target, ctl=None):
                 state.update_catmon_target(tid, {"label": res["label"]})
                 target["label"] = res["label"]
             if res["status"] != "ok":
-                errors.append(f"{lt}:{res['status']}")
+                # 只记 "bestsellers:error" 用户根本没法判断是网络、被拦还是结构变了。
+                # fetch_listing 里已经把最后一条具体错误存在 error 字段，带上。
+                detail = str(res.get("error") or "").strip()
+                errors.append(f"{lt}:{res['status']}" + (f"（{detail}）" if detail else ""))
             state.set_catmon_target_status(
                 tid, "running", None, None,
                 progress=f"{list_label} 完成 {len(res['items'])} 条")
@@ -599,6 +602,12 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
 #   · every_n ：距上次运行 >= every_n_days 且在 schedule_time 之后
 # 进程重启后，只要当天已过时间点且没跑过，会自动补跑一次。
 # ---------------------------------------------------------------------------
+# 失败后自动重试：2026-11-10 凌晨 05:00~06:16 一波网络故障，14 个榜单全 error，
+# 而「当天跑过就不再跑」让它们一整天没有数据、也没人察觉。现在失败会自己补。
+CATMON_RETRY_GAP_SEC = 30 * 60      # 两次重试至少隔 30 分钟
+CATMON_MAX_ATTEMPTS = 3             # 每天最多试 3 次（含首次）
+
+
 def _is_due(t, now=None):
     """判断某个 target 此刻是否该触发。抽出来便于单测。"""
     now = now or datetime.datetime.now()
@@ -608,7 +617,16 @@ def _is_due(t, now=None):
     if now.strftime("%H:%M") < (t.get("scheduleTime") or "09:00"):
         return False
     if (t.get("lastRunAt") or "")[:10] == now.strftime("%Y-%m-%d"):
-        return False          # 当天已跑过
+        # 今天跑过：成功/部分成功就到此为止；**失败**则隔 30 分钟再试（次数由调度器限制）
+        if (t.get("lastStatus") or "") != "error":
+            return False
+        try:
+            last_dt = datetime.datetime.fromisoformat(str(t["lastRunAt"]))
+        except (ValueError, TypeError):
+            return False
+        if (now - last_dt).total_seconds() < CATMON_RETRY_GAP_SEC:
+            return False
+        return True
     if ft == "weekly":
         return now.isoweekday() == int(t.get("scheduleWeekday") or 1)
     if ft == "every_n":
@@ -625,7 +643,8 @@ def _is_due(t, now=None):
 
 def start_scheduler(state):
     def loop():
-        done = set()  # (target_id, 'YYYY-MM-DD') 防当天重复触发
+        # (target_id, 'YYYY-MM-DD') -> 今天已尝试次数（失败重试要计数，防无限撞）
+        attempts = {}
         while True:
             try:
                 now = datetime.datetime.now()
@@ -636,12 +655,16 @@ def start_scheduler(state):
                     if t.get("lastStatus") == "paused":
                         continue          # 用户手动暂停的，定时任务不抢跑
                     key = (t["id"], today)
-                    if key in done:
+                    if attempts.get(key, 0) >= CATMON_MAX_ATTEMPTS:
                         continue
                     if not _start_run(state, t):
                         continue
-                    done.add(key)
-                    _log(f"[catmon] 定时触发 {t['id']} {t.get('label') or t['nodeId']} @ {now:%H:%M}")
+                    attempts[key] = attempts.get(key, 0) + 1
+                    _log(f"[catmon] 定时触发 {t['id']} {t.get('label') or t['nodeId']} @ {now:%H:%M}"
+                         + (f"（第 {attempts[key]} 次尝试）" if attempts[key] > 1 else ""))
+                # 只留今天的计数，避免跨天无限增长
+                if len(attempts) > 300:
+                    attempts = {k: v for k, v in attempts.items() if k[1] == today}
             except Exception as e:
                 _log(f"[catmon] 调度异常: {type(e).__name__}: {e}")
             time.sleep(60)

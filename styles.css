@@ -4151,6 +4151,19 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .rk-toast-hint { margin-top: 4px; font-size: 11.5px; color: var(--ink-3); line-height: 1.55; }
 @keyframes rk-toast-in { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
+/* 前台实测：定时抓取失败/未跑的提示条（横跨顶部） */
+.rk-srp-warn {
+  grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px;
+  margin: 0 0 8px; padding: 8px 12px; border-radius: 8px;
+  font-size: 11.5px; line-height: 1.7; color: var(--ink-2);
+  background: rgba(220,38,38,.07); border: 1px solid rgba(220,38,38,.28);
+}
+.rk-srp-warn-item {
+  display: inline-block; margin: 0 6px 0 2px; padding: 0 5px; border-radius: 4px;
+  background: rgba(220,38,38,.1); color: var(--ink); cursor: help;
+}
+.rk-srp-warn-note { display: block; margin-top: 2px; color: var(--ink-4); font-size: 11px; }
+
 /* 采集队列提示：所有采集（定时 + 手动）串行，这里显示「正在跑谁 / 还排几个」 */
 .kr-queue-bar {
   display: flex; flex-wrap: wrap; gap: 10px; align-items: center;

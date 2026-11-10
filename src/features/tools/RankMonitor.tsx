@@ -3031,6 +3031,18 @@ export function RankMonitor() {
     (t: any) => String(t.value || '').toLowerCase() === activeKw) || null;
   const activeIsAsin = /^[A-Z0-9]{10}$/.test(activeKeyword.trim().toUpperCase());
   const activePages = activeSrpSched?.pages || scrapeSnap?.data?.pages_requested || scrapePages;
+  // 今日定时抓取状态：失败的、到点还没跑的（后者才需要提醒「怎么还没动」）
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const srpEnabled = srpTargets.filter((t: any) => t.enabled);
+  const srpFailedToday = srpEnabled.filter((t: any) =>
+    String(t.last_run_at || '').slice(0, 10) === todayStr && t.last_status === 'failed');
+  const srpPendingToday = srpEnabled.filter((t: any) => {
+    if (String(t.last_run_at || '').slice(0, 10) === todayStr) return false;   // 今天跑过了
+    const at = String(t.daily_at || '').trim();
+    if (!at) return false;                                                      // 没设时刻，随时可能跑
+    const nowHM = new Date().toTimeString().slice(0, 5);
+    return nowHM >= at;                                                         // 已过点还没跑
+  });
   // 输入框改了词但还没查询：右侧仍展示旧记录，此时 A/B 的「获取最新数据」不该去抓新词
   const inputDiffersFromActive = !!trimmed && !!activeKeyword
     && value.trim().toLowerCase() !== activeKeyword.trim().toLowerCase();
@@ -3038,6 +3050,34 @@ export function RankMonitor() {
   return (
     <>
     <div className="ai-root">
+      {/* 前台实测：今天失败过 / 还没跑的定时目标。之前完全没有提示，
+          用户看到「今天只有 2 条数据」会以为是漏采，其实那是失败（且已自动重试）。 */}
+      {(srpFailedToday.length > 0 || srpPendingToday.length > 0) && (
+        <div className="rk-srp-warn">
+          {srpFailedToday.length > 0 && (
+            <div>
+              ⚠️ 今日定时抓取失败 <b>{srpFailedToday.length}</b> 个：
+              {srpFailedToday.map((t: any) => (
+                <span key={t.id} className="rk-srp-warn-item" title={t.last_error || ''}>
+                  {t.keyword}
+                  {t.last_error ? `（${t.last_error}）` : ''}
+                </span>
+              ))}
+              <span className="rk-srp-warn-note">失败目标每 30 分钟自动重试，成功后自动消失</span>
+            </div>
+          )}
+          {srpPendingToday.length > 0 && (
+            <div>
+              尚未执行 <b>{srpPendingToday.length}</b> 个：
+              {srpPendingToday.map((t: any) => (
+                <span key={t.id} className="rk-srp-warn-item">
+                  {t.keyword}{t.daily_at ? `（${t.daily_at}）` : ''}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <div className="ai-side">
         <div className="ai-field">
           <label className="ai-label">查询对象</label>
