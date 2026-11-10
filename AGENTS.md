@@ -120,6 +120,15 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                 #   用 threading.Timer 延迟，daemon）。
                                 #   起因：11-10 的 00:00 与 06:00 两批全因 neterr 失败，
                                 #   没人手动点的话当天一条数据都采不到。
+                                #   **风控熔断（2026-11-10）**：连续 `BLOCK_STREAK_LIMIT(3)` 个任务
+                                #   全部 `blocked` → 进入 `BLOCK_COOLDOWN_SEC(30min)` 冷却期，
+                                #   期间**定时与自动重试一律跳过**（日志写明还剩几分钟），
+                                #   手动点击仍放行（用户可能刚换了网络）。任一批出现 ok/not_ranked
+                                #   立刻解除。
+                                #   为什么：11-10 实测所有指纹（含普通 Chrome UA）拿到的都是
+                                #   bm-verify 挑战页 = **出口 IP 被风控，换指纹无效**；
+                                #   继续按 15 分钟 × 3 轮硬撞只会让封禁更久。
+                                #   `/api/rank/queue` 返回 `cooldown`（剩余秒数），前端据此显示红字提示。
     scrape.py                   # /api/scrape/*：start_scrape_task()/_run_scrape() 服务端后台
                                 #   执行器（POST /start 立即返回 taskId，前端轮询 /progress，
                                 #   刷新不丢任务）+ 运行时暂停/取消/继续（/pause /resume /cancel，

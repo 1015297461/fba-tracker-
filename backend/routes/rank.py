@@ -117,7 +117,10 @@ def _queue_snapshot():
 
 def queue_status():
     with _RQ_LOCK:
-        return _queue_snapshot()
+        snap = _queue_snapshot()
+    # 风控冷却剩余秒数（>0 表示自动采集已暂停，前端据此提示）
+    snap["cooldown"] = block_cooldown_left() if in_block_cooldown() else 0
+    return snap
 
 
 def ensure_worker(state):
@@ -131,16 +134,64 @@ def ensure_worker(state):
     _log("[rank] 采集队列 worker 已启动（定时与手动采集串行执行）")
 
 
+# ---------------------------------------------------------------------------
+# 风控熔断
+#
+# 2026-11-10 实测：所有指纹（连普通 Chrome UA 都试了）拿到的都是 Amazon 的
+# bm-verify 挑战页 —— 这是**出口 IP 被风控**，换指纹没用。
+# 这时候继续按「15 分钟重试 + 每次 3 轮」硬撞，只会让风控更久不放。
+# 所以连续 N 个任务全被拦就进入冷却期，期间定时与自动重试一律跳过
+# （手动点击仍允许 —— 用户可能刚换了网络，不该拦着）。
+# ---------------------------------------------------------------------------
+BLOCK_STREAK_LIMIT = 3          # 连续几个任务全被拦就熔断
+BLOCK_COOLDOWN_SEC = 30 * 60    # 冷却 30 分钟
+
+_BLOCK_GUARD = {"streak": 0, "until": 0.0}
+
+
+def in_block_cooldown():
+    return time.time() < _BLOCK_GUARD["until"]
+
+
+def block_cooldown_left():
+    return max(0, int(_BLOCK_GUARD["until"] - time.time()))
+
+
+def _note_result(results):
+    """记录本批结果，维护「连续被拦」计数与冷却期。"""
+    if not results:
+        return
+    if any(r.get("status") in ("ok", "not_ranked") for r in results):
+        _BLOCK_GUARD["streak"] = 0
+        _BLOCK_GUARD["until"] = 0.0
+        return
+    all_blocked = all(str(r.get("error") or "").startswith("blocked") for r in results)
+    if not all_blocked:
+        return
+    _BLOCK_GUARD["streak"] += 1
+    if _BLOCK_GUARD["streak"] >= BLOCK_STREAK_LIMIT and not in_block_cooldown():
+        _BLOCK_GUARD["until"] = time.time() + BLOCK_COOLDOWN_SEC
+        _log(f"[rank] ⚠️ 连续 {_BLOCK_GUARD['streak']} 个任务被 Amazon 风控拦截，"
+             f"暂停自动采集 {BLOCK_COOLDOWN_SEC // 60} 分钟（换网络或等解封；"
+             f"手动点击不受限制）")
+
+
 def submit(state, task, keyword=None, source="manual", delay=0, retry=0):
     """把一次采集排进队列；同一任务同一词已在队列里就不重复排。
 
     delay>0 表示延迟入队（失败自动重试用），单位秒。
-    返回 {queued, duplicate, waiting, running, items}。
+    返回 {queued, duplicate, waiting, running, items, cooldown}。
     """
     if keyword:
         if keyword not in (task.get("keywords") or []):
             raise ValueError(f"任务里没有这个词：{keyword}")
         task = dict(task, keywords=[keyword])
+    # 风控冷却期内：定时与自动重试直接跳过（手动保留，用户可能换了网络）
+    if source in ("schedule", "retry") and in_block_cooldown():
+        left = block_cooldown_left()
+        _log(f"[rank] 风控冷却中（剩 {left // 60} 分钟），跳过「{task.get('name') or task.get('asin')}」")
+        return {"queued": False, "cooldown": True, "cooldownLeft": left,
+                **_queue_snapshot()}
     key = f"{task['id']}:{(keyword or '*').lower()}"
     with _RQ_LOCK:
         if key in _RQ_PENDING:
@@ -179,6 +230,9 @@ def _maybe_retry(state, job, results):
     # 只要有任何一个词拿到「有效结论」（有排名 / 页面正常但未排名），就不算整体失败
     if any(r.get("status") in ("ok", "not_ranked") for r in results):
         return
+    if in_block_cooldown():
+        _log(f"[rank] 「{job['name']}」失败但不重试：风控冷却中（剩 {block_cooldown_left() // 60} 分钟）")
+        return
     _log(f"[rank] 「{job['name']}」本次全部失败（{results[0].get('error')}），"
          f"{RETRY_DELAY_SEC // 60} 分钟后自动重试（第 {retry + 1}/{MAX_AUTO_RETRY} 次）")
     try:
@@ -208,6 +262,7 @@ def _worker_loop(state):
             ok_n = sum(1 for r in results if r.get("status") in ("ok", "not_ranked"))
             _log(f"[rank] 完成「{job['name']}」（{time.time() - t0:.0f}s，"
                  f"有效 {ok_n}/{len(results)}，队列剩 {left}）")
+            _note_result(results)        # 维护风控熔断计数（要在 _maybe_retry 之前）
             _maybe_retry(state, job, results)
             _RQ.task_done()
 

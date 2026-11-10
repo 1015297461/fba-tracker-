@@ -4161,6 +4161,8 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 }
 .kr-queue-wait { color: var(--ink-4); }
 .kr-queue-msg { color: var(--blue); font-weight: 500; }
+/* 风控熔断提示：整个自动采集被暂停时显示 */
+.kr-queue-cool { color: var(--red); font-weight: 500; }
 
 /* ===== 详情抓取完成提示（后台任务跑完时右上角弹出） ===== */
 .dt-toasts {

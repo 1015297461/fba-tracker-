@@ -123,6 +123,8 @@ interface QueueInfo {
   waiting: number;
   running: QueueItem | null;
   items: QueueItem[];
+  /** 风控冷却剩余秒数（>0 = 自动采集被暂停，手动仍可点） */
+  cooldown?: number;
 }
 
 /** 立即采集 = 入队（后端全局只有一个 worker，串行抓，不会并发撞 Amazon）
@@ -868,8 +870,14 @@ export function KeywordRank() {
                   {active.lastRunAt && <> · 上次采集 {fmtDateTime(active.lastRunAt)}</>}
                 </div>
                 {/* 采集队列：所有采集（定时 + 手动）串行，这里显示进度 */}
-                {(queueLen > 0 || runMsg) && (
+                {(queueLen > 0 || runMsg || (queue.cooldown || 0) > 0) && (
                   <div className="kr-queue-bar">
+                    {(queue.cooldown || 0) > 0 && (
+                      <span className="kr-queue-cool">
+                        ⚠️ 被 Amazon 风控拦截，自动采集已暂停（剩 {Math.ceil((queue.cooldown || 0) / 60)} 分钟）
+                        · 换网络后可手动点「采集」试试
+                      </span>
+                    )}
                     {queue.running && (
                       <span>正在采集「{queue.running.name}」
                         {queue.running.keyword ? ` · ${queue.running.keyword}` : ` · ${queue.running.words} 词`}
