@@ -114,6 +114,12 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                 #   `GET /api/rank/queue` 查队列；前端轮询它显示「正在采集谁/还排几个」。
                                 #   ⚠️ worker 是 daemon 线程，进程重启会丢弃队列中未跑的任务
                                 #   （下次定时会重新入队，手动的不补）。
+                                #   **全批失败自动重试（2026-11-10）**：worker 跑完若一个词都
+                                #   没拿到有效结论（ok / not_ranked），且 retry<MAX_AUTO_RETRY(2)，
+                                #   就 15 分钟后重新入队（`submit(..., delay=900, retry=n+1)`，
+                                #   用 threading.Timer 延迟，daemon）。
+                                #   起因：11-10 的 00:00 与 06:00 两批全因 neterr 失败，
+                                #   没人手动点的话当天一条数据都采不到。
     scrape.py                   # /api/scrape/*：start_scrape_task()/_run_scrape() 服务端后台
                                 #   执行器（POST /start 立即返回 taskId，前端轮询 /progress，
                                 #   刷新不丢任务）+ 运行时暂停/取消/继续（/pause /resume /cancel，
@@ -154,6 +160,15 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   `fetch_page_resilient()` 会换指纹 + 退避 4~8s 重试 3 次，
                               #   仍失败才标 `no_results_x3`（前端据此提示「已重试 3 次」）。
                               #   它返回 (html, err, fingerprint)，重试换过指纹时调用方后续翻页要用同一个。
+                              #   **错误分类（2026-11-10 细化）**：
+                              #   · `neterr:URLError:<原因>` —— 网络层失败，带 reason 类型
+                              #     （TimeoutError=超时 / OSError=DNS或连接不可达），原来只记
+                              #     `neterr:URLError` 根本没法判断是断网还是 DNS。
+                              #   · `blocked` —— 被拦。除 CAPTCHA 关键词外，**新增识别 Amazon 的
+                              #     `bm-verify` bot 验证跳转页**：HTTP 200、正文只有 2KB 的
+                              #     `<meta http-equiv="refresh" ... bm-verify=AAQ...>`，
+                              #     里面没有 s-search-result —— 原来会被误判成 `no_results`
+                              #     （看着像「这个词真没结果」），实际是风控，处理策略完全不同。
                               #   **三种结果必须分开**（2026-11-04）：
                               #   · `ok`        找到排名
                               #   · `not_ranked` 页面正常、也解析到商品，但前 3 页没有这个 ASIN

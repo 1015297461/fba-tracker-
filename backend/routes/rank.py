@@ -131,9 +131,10 @@ def ensure_worker(state):
     _log("[rank] 采集队列 worker 已启动（定时与手动采集串行执行）")
 
 
-def submit(state, task, keyword=None, source="manual"):
+def submit(state, task, keyword=None, source="manual", delay=0, retry=0):
     """把一次采集排进队列；同一任务同一词已在队列里就不重复排。
 
+    delay>0 表示延迟入队（失败自动重试用），单位秒。
     返回 {queued, duplicate, waiting, running, items}。
     """
     if keyword:
@@ -148,14 +149,43 @@ def submit(state, task, keyword=None, source="manual"):
             "key": key, "task": task, "taskId": task["id"],
             "name": task.get("name") or task.get("asin"),
             "keyword": keyword, "words": len(task.get("keywords") or []),
-            "source": source, "submittedAt": _now_iso(),
+            "source": source, "submittedAt": _now_iso(), "retry": retry,
         }
         _RQ_PENDING[key] = job
-    _RQ.put(job)
+    if delay > 0:
+        # 延迟入队：失败后等风控/网络恢复再试，不能立刻重撞
+        t = threading.Timer(delay, lambda: _RQ.put(job))
+        t.daemon = True
+        t.start()
+    else:
+        _RQ.put(job)
     ensure_worker(state)
     with _RQ_LOCK:
         snap = _queue_snapshot()
     return {"queued": True, "duplicate": False, **snap}
+
+
+# 一整批全失败（网络断/被风控）时自动重试：等一会儿再来，最多几次。
+# 为什么需要：实测 2026-11-10 00:00 与 06:00 两批都因 neterr 全失败，
+# 若没人手动点，当天等于一条数据都没采到。
+MAX_AUTO_RETRY = 2
+RETRY_DELAY_SEC = 15 * 60
+
+
+def _maybe_retry(state, job, results):
+    retry = int(job.get("retry") or 0)
+    if retry >= MAX_AUTO_RETRY or not results:
+        return
+    # 只要有任何一个词拿到「有效结论」（有排名 / 页面正常但未排名），就不算整体失败
+    if any(r.get("status") in ("ok", "not_ranked") for r in results):
+        return
+    _log(f"[rank] 「{job['name']}」本次全部失败（{results[0].get('error')}），"
+         f"{RETRY_DELAY_SEC // 60} 分钟后自动重试（第 {retry + 1}/{MAX_AUTO_RETRY} 次）")
+    try:
+        submit(state, job["task"], keyword=job.get("keyword"), source="retry",
+               delay=RETRY_DELAY_SEC, retry=retry + 1)
+    except Exception as e:
+        _log(f"[rank] 安排重试失败：{type(e).__name__}: {e}")
 
 
 def _worker_loop(state):
@@ -164,9 +194,10 @@ def _worker_loop(state):
         with _RQ_LOCK:
             _RQ_RUNNING["job"] = job
         t0 = time.time()
+        results = []
         _log(f"[rank] 开始采集「{job['name']}」（{job['words']} 词 · {job['source']}）")
         try:
-            run_rank_task(state, job["task"])
+            results = run_rank_task(state, job["task"])
         except Exception as e:
             _log(f"[rank] 采集异常「{job['name']}」: {type(e).__name__}: {e}")
         finally:
@@ -174,7 +205,10 @@ def _worker_loop(state):
                 _RQ_RUNNING["job"] = None
                 _RQ_PENDING.pop(job["key"], None)
                 left = len(_RQ_PENDING)
-            _log(f"[rank] 完成「{job['name']}」（{time.time() - t0:.0f}s，队列剩 {left}）")
+            ok_n = sum(1 for r in results if r.get("status") in ("ok", "not_ranked"))
+            _log(f"[rank] 完成「{job['name']}」（{time.time() - t0:.0f}s，"
+                 f"有效 {ok_n}/{len(results)}，队列剩 {left}）")
+            _maybe_retry(state, job, results)
             _RQ.task_done()
 
 

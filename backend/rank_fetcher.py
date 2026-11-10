@@ -132,11 +132,24 @@ def fetch_page(marketplace, keyword, page=1, timeout=20, fingerprint=None):
         if e.code in (503, 429):
             return None, "blocked"
         return None, f"http_{e.code}"
+    except urllib.error.URLError as e:
+        # 只记 "neterr:URLError" 根本没法诊断（DNS？超时？连接重置？）——
+        # 把 reason 带上：neterr:URLError:gaierror / :timeout / :ConnectionResetError
+        reason = getattr(e, "reason", None)
+        kind = type(reason).__name__ if reason is not None else "unknown"
+        return None, f"neterr:URLError:{kind}"
     except Exception as e:
         return None, f"neterr:{type(e).__name__}"
 
     if any(h in html_text for h in _BLOCK_HINTS):
         return None, "blocked"
+    # Amazon 的 bot 验证跳转页：HTTP 200、只有 2KB，正文是一句
+    # `<meta http-equiv="refresh" content="5; URL='/s?...&bm-verify=AAQ...'">`。
+    # 里面没有 s-search-result，原来会被误判成 "no_results"（看着像「这个词没结果」），
+    # 其实是**被拦了**——两者的处理策略完全不同（前者要重抓，后者要等风控解除）。
+    if "bm-verify" in html_text or len(html_text) < 20000:
+        if "bm-verify" in html_text or 'http-equiv="refresh"' in html_text:
+            return None, "blocked"
     if "s-search-result" not in html_text:
         return None, "no_results"
     return html_text, None
