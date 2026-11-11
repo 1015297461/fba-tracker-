@@ -706,6 +706,31 @@ function KeywordResult({ data: data0, hideKpis }: { data: any; hideKpis?: boolea
     } finally { setBatchBusy(false); }
   }
 
+  // 竞品份额榜的时间筛选改成日历：按「有快照的日子」出点，一天多条取最后一条
+  const histDays = useMemo(
+    () => Array.from(new Set(hist.map((q: any) => String(q.created_at || '').slice(0, 10))))
+      .filter(Boolean).sort(),
+    [hist]);
+  const curHistDay = override && override.__qid
+    ? (String((hist.find((q: any) => q.id === override.__qid) || {}).created_at || '')
+        .slice(0, 10) || histDays[histDays.length - 1] || '')
+    : (histDays[histDays.length - 1] || '');
+
+  const pickHistDay = async (d: string) => {
+    const sameDay = hist
+      .filter((q: any) => String(q.created_at || '').slice(0, 10) === d)
+      .sort((a: any, b: any) => String(a.created_at).localeCompare(String(b.created_at)));
+    if (!sameDay.length) return;
+    // 选回最新那天 = 显示「当前」数据（等价原来的「最新（当前）」选项）
+    if (d === histDays[histDays.length - 1]) { setOverride(null); return; }
+    const q = sameDay[sameDay.length - 1];
+    try {
+      const r: any = await apiQueryDetail(q.id);
+      const rec = r && r.query ? r.query : null;
+      if (rec) setOverride({ ...(rec.data || {}), __qid: q.id });
+    } catch { /* 忽略 */ }
+  };
+
   const kw = asinFilter.trim().toUpperCase();
   const filtered = kw ? top.filter(c => String(c.asin || '').includes(kw)) : top;
   const PAGE = 20;
@@ -719,24 +744,9 @@ function KeywordResult({ data: data0, hideKpis }: { data: any; hideKpis?: boolea
         <div className="tf-card-head">
           <span>竞品份额榜</span>
           {hist.length > 1 && (
-            <select className="rk-range-sel rk-hist-sel" title="选择历史快照"
-              value={override && override.__qid ? override.__qid : ''}
-              onChange={async e => {
-                const id = e.target.value;
-                if (!id) { setOverride(null); return; }
-                try {
-                  const r: any = await apiQueryDetail(id);
-                  const rec = r && r.query ? r.query : null;
-                  if (rec) setOverride({ ...(rec.data || {}), __qid: id });
-                } catch { /* 忽略 */ }
-              }}>
-              <option value="">最新（当前）</option>
-              {hist.map((q: any) => (
-                <option key={q.id} value={q.id}>
-                  {fmtDate(q.created_at)} · {q.summary || `${q.kind}`}
-                </option>
-              ))}
-            </select>
+            <span className="rk-hist-cal" title={`共 ${histDays.length} 天有快照，点日历选日期`}>
+              <DateCalendar value={curHistDay} dates={histDays} onChange={pickHistDay} />
+            </span>
           )}
           <span className="tf-card-sub">
             {kw ? `匹配 ${filtered.length} / ${top.length}` : `共 ${top.length} 个`}
@@ -1197,15 +1207,12 @@ function RangeBar({ dates, from, to, onChange, maxSpan = null, presets = [7, 14,
         )}
       </div>
       <span className="rk-range-lb">自定义</span>
-      <select className="rk-range-sel" value={from}
-        onChange={e => setFromIdx(Number(e.target.value))}>
-        {dates.map((d, i) => <option key={i} value={i}>{d}</option>)}
-      </select>
+      {/* 与位次矩阵、榜单异动统一成日历弹层（只有「有数据的日子」可点） */}
+      <DateCalendar value={dates[from] || ''} dates={dates}
+        onChange={d => { const i = dates.indexOf(d); if (i >= 0) setFromIdx(i); }} />
       <span className="rk-range-arrow">→</span>
-      <select className="rk-range-sel" value={to}
-        onChange={e => setToIdx(Number(e.target.value))}>
-        {dates.map((d, i) => <option key={i} value={i}>{d}</option>)}
-      </select>
+      <DateCalendar value={dates[to] || ''} dates={dates}
+        onChange={d => { const i = dates.indexOf(d); if (i >= 0) setToIdx(i); }} />
       <span className="rk-range-cnt">{span} 天 / 共 {n} 天</span>
     </div>
   );

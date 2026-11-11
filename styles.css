@@ -3462,6 +3462,9 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 [data-theme="dark"] .rk-ev-head select,
 [data-theme="dark"] .cm-filters select { color-scheme: dark; }
 
+/* 竞品份额榜卡片头里的日历：跟标题同一行，别把标题挤下去 */
+.rk-hist-cal { display: inline-flex; align-items: center; margin-left: 2px; }
+
 /* 异动头部（基准 / 对比日期选择） */
 .rk-ev-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11.5px;
   color: var(--ink-3); }
