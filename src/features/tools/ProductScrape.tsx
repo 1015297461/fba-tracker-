@@ -529,8 +529,8 @@ function Lightbox({ images, initialIndex, onClose }: LightboxProps) {
   const imagesKey = images.join('|');
   useEffect(() => {
     preloadImages([
-      images[current - 1] ? imgUrl(images[current - 1], 1200) : '',
-      images[current + 1] ? imgUrl(images[current + 1], 1200) : '',
+      images[current - 1] ? imgUrl(images[current - 1], 800) : '',
+      images[current + 1] ? imgUrl(images[current + 1], 800) : '',
     ], 2);
   }, [current, imagesKey]);
 
@@ -610,7 +610,7 @@ function Lightbox({ images, initialIndex, onClose }: LightboxProps) {
         >
           <img
             key={current}
-            src={imgUrl(images[current], isZoomed ? 1500 : 1200)}
+            src={imgUrl(images[current], isZoomed ? 1500 : 800)}
             alt={`Image ${current + 1}`}
             className={`ps-lightbox-img${!isZoomed ? ' ps-lightbox-fit' : ''}`}
             draggable={false}
@@ -627,7 +627,7 @@ function Lightbox({ images, initialIndex, onClose }: LightboxProps) {
                   onClick={() => { setCurrent(i); setZoom(1); }}
                   className={`ps-thumb ${i === current ? 'ps-thumb-active' : ''}`}
                 >
-                  <img src={imgUrl(img, 300)} alt={`Thumb ${i + 1}`} loading="lazy" />
+                  <img src={imgUrl(img, 200)} alt={`Thumb ${i + 1}`} loading="lazy" />
                 </button>
               ))}
             </div>
@@ -1093,8 +1093,8 @@ export function ProductScrape() {
     const neighbors = [pagedProducts[i - 1], pagedProducts[i + 1]].filter(Boolean);
     const urls: string[] = [];
     for (const n of neighbors) {
-      if (n.mainImage) urls.push(imgUrl(n.mainImage, 1200));
-      for (const u of (n.images || []).slice(0, 2)) urls.push(imgUrl(u, 1200));
+      if (n.mainImage) urls.push(imgUrl(n.mainImage, 800));
+      for (const u of (n.images || []).slice(0, 2)) urls.push(imgUrl(u, 800));
     }
     preloadImages(urls, 6);
   }
