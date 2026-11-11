@@ -11,6 +11,7 @@
 前端不要都标成「排名」。
 """
 
+import datetime
 import json
 import re
 import time
@@ -343,12 +344,16 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             except Exception:
                 snap, evs = None, []
             d = (snap or {}).get("data") or {}
+            due_at, hold = _next_due(t)
             out.append({
                 **{k: t.get(k) for k in ("id", "kind", "value", "label", "country",
                                          "own_asin", "freq", "competitor_n", "run_at",
                                          "extra_asins", "paused",
                                          "enabled", "created_at",
                                          "last_run_at", "last_status", "last_error")},
+                # 为什么「今天没跑」：界面必须说清楚，否则看着像漏采/失败
+                "next_due_at": due_at,
+                "hold_note": hold,
                 "snapshot_date": (snap or {}).get("snap_date"),
                 "summary": _summary(t["kind"], d),
                 "event_count": len(evs),
@@ -357,6 +362,36 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             })
         self._send_json(200, {"targets": out})
     GET["/api/rank/targets"] = get_rank_targets
+
+    def _next_due(t):
+        """算出这个目标「下次什么时候会跑」，以及现在不跑的原因。
+
+        判定规则和 rank_monitor.RankMonitorWorker._due() 必须一致，否则界面上
+        说的和实际执行对不上。现状：距上次 <6 天不跑（SIF 是周维度，重复抓没意义），
+        weekly 目标只在周一跑。
+        """
+        if t.get("paused"):
+            return None, "已暂停"
+        freq = (t.get("freq") or "daily")
+        last = (t.get("last_run_at") or "")[:10]
+        if not last:
+            return "今天", None
+        try:
+            last_d = datetime.date.fromisoformat(last)
+        except ValueError:
+            return "今天", None
+        today = datetime.date.today()
+        gap = (today - last_d).days
+        if gap < 6:
+            note = ("今天已跑过（同周期不重复抓，满 6 天才跑）" if gap == 0
+                    else f"距上次 {gap} 天（同周期不重复抓，满 6 天才跑）")
+            return (last_d + datetime.timedelta(days=6)).isoformat(), note
+        if freq == "weekly":
+            days = (7 - today.weekday()) % 7
+            d = today + datetime.timedelta(days=days)
+            return d.isoformat(), "周更 · 只在周一执行"
+        return "今天", None
+
 
     def _summary(kind: str, d: dict) -> dict:
         """列表页摘要：不返回整份快照，只给一眼能看的数。"""

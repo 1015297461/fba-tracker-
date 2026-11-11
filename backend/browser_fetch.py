@@ -306,6 +306,9 @@ def ensure_chrome(wait=20):
             "--disable-extensions",
             "--disable-background-networking",
             "--window-size=1400,1000",
+            # `--headless=new` 在 macOS 上是「真浏览器 + 隐藏窗口」，建新标签时窗口
+            # 偶尔会闪一下（用户实测：每次定时任务开始都闪）。挪到屏幕外最省事。
+            "--window-position=-10000,-10000",
             f"--user-data-dir={CHROME_PROFILE_DIR}",
             f"--remote-debugging-port={CDP_HEADLESS_PORT}",
             "about:blank",
@@ -351,7 +354,10 @@ def _new_target(url=None):
     断开调试端口（后续 /json/list 全部连不上）。开空白页、由 node 脚本去 navigate 更稳。
     """
     for method in ("PUT", "GET"):
-        status, text = _http(f"{_CHROME_BASE}/json/new", method=method, timeout=10)
+        # 加 /json/new?background=1 优先（部分版本支持），拿到的标签不抢焦点
+        status, text = _http(f"{_CHROME_BASE}/json/new?background=1", method=method, timeout=10)
+        if status != 200:
+            status, text = _http(f"{_CHROME_BASE}/json/new", method=method, timeout=10)
         if status == 200:
             try:
                 d = json.loads(text)
@@ -657,6 +663,11 @@ def fetch_html(url, timeout=None, ready_expr="!!document.getElementById('product
     if MODE == "local":
         return _fetch_local_cdp(url, ready_expr=ready_expr,
                                 timeout=timeout or DEFAULT_READY_TIMEOUT)
+    # 无 cookies 也优先走常驻 CDP：`_fetch_headless`（--dump-dom）每次都要 Popen 一个
+    # 新 Chrome，macOS 上会闪一下窗口。常驻实例只在 CDP 不可用时才退回 dump。
+    if ensure_chrome():
+        return _fetch_headless_cdp(url, ready_expr=ready_expr,
+                                   timeout=timeout or CDP_FETCH_TIMEOUT)
     return _fetch_headless(url, timeout=timeout or DUMP_TIMEOUT)
 
 
