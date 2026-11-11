@@ -168,7 +168,9 @@ async function apiSend<T = any>(path: string, method: string, body: unknown): Pr
 export function CategoryMonitor() {
   const [targets, setTargets] = useState<CatTarget[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
-  const [listType, setListType] = useState('bestsellers');
+  // 榜单类型按「每条记录」各自记：原来是一个全局 state，在 A 切到新品榜后
+  // 切到 B/C 也会跟着变成新品榜（看着像设置被应用到了所有记录）。
+  const [ltByTarget, setLtByTarget] = useState<Record<string, string>>({});
   const [snap, setSnap] = useState<CatSnapshot | null>(null);
   const [snapDates, setSnapDates] = useState<string[]>([]);   // 历史快照日期（供选择）
   const [snapDate, setSnapDate] = useState('');               // 当前查看的快照日期；'' = 最新
@@ -191,6 +193,19 @@ export function CategoryMonitor() {
   const pollRef = useRef<number | null>(null);
 
   const current = targets.find(t => t.id === selected) || targets[0] || null;
+
+  // 每条记录自己的榜单类型：没选过 / 选的不受支持 → 用该记录支持的第一个
+  const ltsOf = (t: CatTarget | null) =>
+    (t && t.listTypes && t.listTypes.length) ? t.listTypes : ['bestsellers'];
+  const listType = current
+    ? (ltsOf(current).includes(ltByTarget[current.id] || '')
+        ? (ltByTarget[current.id] as string)
+        : ltsOf(current)[0])
+    : 'bestsellers';
+  const setListType = (lt: string) => {
+    if (!current) return;
+    setLtByTarget(prev => ({ ...prev, [current.id]: lt }));
+  };
   const det = useAsinDetail(detailAsin, current?.marketplace || 'US', !!detailAsin);
   // 查询记录拖拽排序
   const [dragId, setDragId] = useState<string | null>(null);
@@ -356,11 +371,6 @@ export function CategoryMonitor() {
   useEffect(() => {
     if (!selected && targets.length) setSelected(targets[0].id);
   }, [targets, selected]);
-  useEffect(() => {
-    if (!current) return;
-    const lts = current.listTypes || ['bestsellers', 'new-releases'];
-    if (!lts.includes(listType)) setListType(lts[0]);
-  }, [current?.id]);
   useEffect(() => {
     if (!current) return;
     setSnapDate('');
