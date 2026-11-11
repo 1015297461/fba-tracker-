@@ -103,6 +103,17 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                 #   · 命中后 `SLOT_GRACE_SEC=600` 秒内都算数（重启/卡顿也能补跑），
                                 #     去重 key = (task_id, 任务时区的 YYYY-MM-DD-HH:MM)；
                                 #     `_due_slot()` 抽出来便于单测。
+                                #   **批量操作（2026-11-11）**：`POST /api/rank/tasks/batch` `{taskIds, action, ...}`
+                                #     · `action=schedule` + `mode=replace|add` + `slots:["HH:MM"]`
+                                #       （`_norm_slots` 校验格式/去重排序/最多 8 个）；
+                                #     · `action=enabled` + `enabled:bool`；
+                                #     · `action=run`：逐个 `submit(..., source="manual")`，走同一队列串行。
+                                #   ⚠️ **档位属于任务**（`keyword_tasks.schedule`），不是词级字段 ——
+                                #   前端勾单个任务的若干词也只是把该任务作为目标，设置会作用于它全部词。
+                                #   更新走 `db.update_rank_task_fields()`（白名单 + 参数绑定），
+                                #   **不能用 `upsert_rank_task`**（INSERT OR REPLACE 会清掉 asin/keywords/timezone）。
+                                #   前端：任务列表「批量」按钮 → 多选/全选；词表格也可勾词；
+                                #   底部操作条 + 「批量设置采集时间」弹窗（预设 + 自定义、替换/追加）。
                                 #   · /run 支持 `keyword`：只采那一个词（表格每行的「采集」按钮）。
                                 #   **采集队列（2026-11-04）**：定时与手动采集全部走
                                 #   `submit(state, task, keyword, source)` 入同一个 `queue.Queue`，
