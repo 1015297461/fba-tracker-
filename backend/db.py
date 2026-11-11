@@ -2061,6 +2061,31 @@ class DbState:
                 conn.commit()
         return self.get_rank_task(tid)
 
+    def update_rank_task_fields(self, tid, fields):
+        """只更新指定字段（批量设置档位 / 启停用）。
+
+        不能用 upsert_rank_task：那是 INSERT OR REPLACE，只传部分字段会把
+        asin/keywords/timezone 等全清掉。这里白名单 + 参数绑定，改完回读。
+        """
+        allowed = {"schedule", "enabled"}
+        sets, vals = [], []
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if k == "schedule":
+                vals.append(json.dumps(_norm_schedule(v), ensure_ascii=False))
+            else:
+                vals.append(1 if v else 0)
+            sets.append(f"{k}=?")
+        if not sets:
+            return self.get_rank_task(tid)
+        with self.lock:
+            with self._conn() as conn:
+                conn.execute(f"UPDATE keyword_tasks SET {', '.join(sets)} WHERE id=?",
+                             vals + [tid])
+                conn.commit()
+        return self.get_rank_task(tid)
+
     def delete_rank_task(self, task_id):
         with self.lock:
             with self._conn() as conn:

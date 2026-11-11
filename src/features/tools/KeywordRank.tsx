@@ -731,6 +731,17 @@ function TaskModal({ task, timezones, onClose, onSaved }: {
 // ---- Main View ----
 export function KeywordRank() {
   const [tasks, setTasks]   = React.useState<RankTask[]>([]);
+  // 批量操作：任务多选 + 单任务内词多选（档位属于任务，勾词等价于该任务全部词）
+  const [batchMode, setBatchMode] = React.useState(false);
+  const [checkedTasks, setCheckedTasks] = React.useState<Set<string>>(new Set());
+  const [checkedWords, setCheckedWords] = React.useState<Set<string>>(new Set());
+  const [batchOpen, setBatchOpen] = React.useState(false);
+  const [batchBusy, setBatchBusy] = React.useState(false);
+  const [batchMsg, setBatchMsg] = React.useState('');
+  const [bsSlots, setBsSlots] = React.useState<string[]>([]);
+  const [bsMode, setBsMode] = React.useState<'replace' | 'add'>('replace');
+  const [bsCustom, setBsCustom] = React.useState('');
+  const [bsInitial, setBsInitial] = React.useState<string[]>([]);
   const [activeId, setAId]  = React.useState<string | null>(null);
   const [snaps, setSnaps]   = React.useState<Snapshot[]>([]);
   const [modal, setModal]   = React.useState<{ open: boolean; task: RankTask | null }>({ open: false, task: null });
@@ -771,6 +782,48 @@ export function KeywordRank() {
   async function refreshQueue() {
     try { setQueue(await apiGetQueue()); } catch { /* 忽略瞬时失败 */ }
   }
+
+  const targetIds = checkedWords.size > 0 && active
+    ? [active.id] : Array.from(checkedTasks);
+  const selectedWordCount = tasks.filter(t => targetIds.includes(t.id))
+    .reduce((n, t) => n + (t.keywords?.length || 0), 0);
+
+  const toggleSet = (setter: React.Dispatch<React.SetStateAction<Set<string>>>, key: string) =>
+    setter(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+
+  const batchCall = async (payload: any, okMsg: string): Promise<boolean> => {
+    if (!targetIds.length) return false;
+    setBatchBusy(true); setBatchMsg('');
+    try {
+      const r = await fetch('/api/rank/tasks/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ taskIds: targetIds, ...payload }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${r.status}`);
+      }
+      await reloadTasks();
+      setCheckedTasks(new Set()); setCheckedWords(new Set());
+      setBatchMsg(okMsg);
+      return true;
+    } catch (e: any) {
+      setBatchMsg(e.message || '操作失败');
+      return false;
+    } finally { setBatchBusy(false); }
+  };
+
+  const openSchedule = () => {
+    const first = tasks.find(t => t.id === targetIds[0]);
+    const init = first?.schedule ? [...first.schedule] : [];
+    setBsInitial(init); setBsSlots(init);
+    setBsMode('replace'); setBsCustom(''); setBatchMsg(''); setBatchOpen(true);
+  };
 
   React.useEffect(() => { reloadTasks(); }, []);
   React.useEffect(() => { if (activeId) reloadSnaps(activeId); else setSnaps([]); }, [activeId]);
@@ -835,22 +888,44 @@ export function KeywordRank() {
       <div className="kr-list">
         <div className="kr-list-head">
           <span>监控任务</span>
-          <button className="btn btn-primary btn-sm" onClick={() => setModal({ open: true, task: null })}>+ 新建</button>
+          <div className="kr-list-head-ops">
+            <button className={'btn btn-sm' + (batchMode ? ' btn-primary' : '')}
+              onClick={() => {
+                setBatchMode(v => !v);
+                setCheckedTasks(new Set()); setCheckedWords(new Set()); setBatchMsg('');
+              }}>批量</button>
+            <button className="btn btn-primary btn-sm" onClick={() => setModal({ open: true, task: null })}>+ 新建</button>
+          </div>
         </div>
+        {batchMsg && <div className="kr-batch-flash">{batchMsg}</div>}
+        {batchMode && tasks.length > 0 && (
+          <label className="kr-all-chk">
+            <input type="checkbox"
+              checked={checkedTasks.size === tasks.length}
+              onChange={e => setCheckedTasks(e.target.checked ? new Set(tasks.map(t => t.id)) : new Set())} />
+            全选 {tasks.length} 个任务
+          </label>
+        )}
         {loadErr && <div className="kr-err">{loadErr}</div>}
         {!tasks.length && !loadErr && <div className="kr-empty">还没有监控任务</div>}
         {tasks.map(t => (
-          <button key={t.id} className="kr-task" data-active={t.id === activeId} onClick={() => setAId(t.id)}>
-            <div className="kr-task-top">
-              <span className="kr-task-name">{t.name || t.asin}</span>
-              {!t.enabled && <span className="kr-task-off">停</span>}
-            </div>
-            <div className="kr-task-sub">
-              <span>{mkLabel(t.marketplace)}</span>
-              <span className="kr-asin">{t.asin}</span>
-              <span>· {t.keywords.length} 词</span>
-            </div>
-          </button>
+          <div key={t.id} className="kr-task-row">
+            {batchMode && (
+              <input type="checkbox" className="kr-chk" checked={checkedTasks.has(t.id)}
+                onChange={() => toggleSet(setCheckedTasks, t.id)} title="选择任务" />
+            )}
+            <button className="kr-task" data-active={t.id === activeId} onClick={() => setAId(t.id)}>
+              <div className="kr-task-top">
+                <span className="kr-task-name">{t.name || t.asin}</span>
+                {!t.enabled && <span className="kr-task-off">停</span>}
+              </div>
+              <div className="kr-task-sub">
+                <span>{mkLabel(t.marketplace)}</span>
+                <span className="kr-asin">{t.asin}</span>
+                <span>· {t.keywords.length} 词</span>
+              </div>
+            </button>
+          </div>
         ))}
       </div>
 
@@ -908,6 +983,14 @@ export function KeywordRank() {
                 <table className="kr-table">
                   <thead>
                     <tr>
+                      {batchMode && (
+                        <th className="kr-col-chk">
+                          <input type="checkbox" title="全选当前任务的词"
+                            checked={rows.length > 0 && checkedWords.size === rows.length}
+                            onChange={e => setCheckedWords(
+                              e.target.checked ? new Set(rows.map(r => r.keyword)) : new Set())} />
+                        </th>
+                      )}
                       <th className="kr-col-kw">关键词</th>
                       <th className="kr-col-rank">自然排名</th>
                       <th className="kr-col-rank">广告排名</th>
@@ -928,6 +1011,12 @@ export function KeywordRank() {
                       const shown = row.latest || lastRes;
                       return (
                       <tr key={row.keyword}>
+                        {batchMode && (
+                          <td className="kr-col-chk">
+                            <input type="checkbox" checked={checkedWords.has(row.keyword)}
+                              onChange={() => toggleSet(setCheckedWords, row.keyword)} title="选择词" />
+                          </td>
+                        )}
                         <td className="kr-col-kw">
                           <span className="kr-kw-text" title={row.keyword}>{row.keyword}</span>
                         </td>
@@ -1006,6 +1095,87 @@ export function KeywordRank() {
         <TrendModal task={active} initialKw={detail.kw} snapshots={snaps}
           onClose={() => setDetail(null)} />
       )}
+
+    {/* 批量操作条：任务多选 / 单任务词多选都汇到这里 */}
+    {batchMode && targetIds.length > 0 && (
+      <div className="kr-batch-bar">
+        <div className="kr-batch-info">
+          已选 <b>{targetIds.length}</b> 个任务（共 {selectedWordCount} 个词）
+          {checkedWords.size > 0 && (
+            <span className="kr-batch-note">
+              勾了 {checkedWords.size} 个词 · 档位属于任务，设置会作用于该任务全部词
+            </span>
+          )}
+          {batchMsg && <span className="kr-batch-msg">{batchMsg}</span>}
+        </div>
+        <div className="kr-batch-ops">
+          <button className="btn btn-sm" onClick={openSchedule} disabled={batchBusy}>设置采集时间</button>
+          <button className="btn btn-sm" disabled={batchBusy}
+            onClick={() => batchCall({ action: 'enabled', enabled: true }, '已启用')}>启用</button>
+          <button className="btn btn-sm" disabled={batchBusy}
+            onClick={() => batchCall({ action: 'enabled', enabled: false }, '已停用')}>停用</button>
+          <button className="btn btn-sm btn-primary" disabled={batchBusy}
+            onClick={() => batchCall({ action: 'run' }, '已加入采集队列')}>立即采集</button>
+          <button className="btn btn-sm" onClick={() => {
+            setCheckedTasks(new Set()); setCheckedWords(new Set()); setBatchMsg('');
+          }}>取消选择</button>
+        </div>
+      </div>
+    )}
+
+    {/* 批量设置采集时间 */}
+    {batchOpen && (
+      <div className="modal-backdrop" onClick={() => setBatchOpen(false)}>
+        <div className="kr-batch-modal" onClick={e => e.stopPropagation()}>
+          <div className="kr-batch-hdr">
+            <span>批量设置采集时间</span>
+            <button className="modal-close" onClick={() => setBatchOpen(false)}>✕</button>
+          </div>
+          <div className="kr-batch-body">
+            <div className="kr-batch-tip">
+              将修改 {targetIds.length} 个任务（共 {selectedWordCount} 个词）· 时区沿用各任务自己的设置
+            </div>
+            <div className="kr-batch-mode">
+              <label><input type="radio" checked={bsMode === 'replace'}
+                onChange={() => { setBsMode('replace'); setBsSlots(bsInitial); }} /> 替换：用下面的时间点覆盖原有档位</label>
+              <label><input type="radio" checked={bsMode === 'add'}
+                onChange={() => { setBsMode('add'); setBsSlots([]); }} /> 追加：保留原有档位，只加选中的时间点</label>
+            </div>
+            <div className="kr-batch-presets">
+              {['06:00', '09:00', '12:00', '15:00', '18:00', '20:00', '22:00'].map(x => (
+                <button key={x} type="button" className={'kr-slot-btn' + (bsSlots.includes(x) ? ' on' : '')}
+                  onClick={() => setBsSlots(p => p.includes(x) ? p.filter(y => y !== x) : [...p, x])}>{x}</button>
+              ))}
+            </div>
+            <div className="kr-batch-custom">
+              <input type="time" value={bsCustom} onChange={e => setBsCustom(e.target.value)} />
+              <button className="btn btn-sm" type="button" onClick={() => {
+                if (/^\d{2}:\d{2}$/.test(bsCustom) && !bsSlots.includes(bsCustom))
+                  setBsSlots(p => [...p, bsCustom]);
+                setBsCustom('');
+              }}>添加自定义</button>
+            </div>
+            <div className="kr-batch-slots">
+              已选时间点：
+              {bsSlots.length ? bsSlots.slice().sort().map(x => (
+                <span key={x} className="kr-slot" title="点击移除"
+                  onClick={() => setBsSlots(p => p.filter(y => y !== x))}>{x} ✕</span>
+              )) : <i>请在上方选择</i>}
+            </div>
+            {batchMsg && <div className="kr-err">{batchMsg}</div>}
+          </div>
+          <div className="kr-batch-foot">
+            <button className="btn btn-sm" onClick={() => setBatchOpen(false)}>取消</button>
+            <button className="btn btn-primary btn-sm" disabled={!bsSlots.length || batchBusy}
+              onClick={async () => {
+                const ok = await batchCall({ action: 'schedule', slots: bsSlots, mode: bsMode },
+                  '采集时间已更新');
+                if (ok) setBatchOpen(false);
+              }}>{batchBusy ? '保存中…' : `应用到 ${targetIds.length} 个任务`}</button>
+          </div>
+        </div>
+      </div>
+    )}
     </div>
   );
 }

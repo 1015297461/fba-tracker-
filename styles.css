@@ -4177,6 +4177,49 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 }
 .kr-queue-wait { color: var(--ink-4); }
 .kr-queue-msg { color: var(--blue); font-weight: 500; }
+/* 关键词排名：批量多选（任务 + 单任务内的词） */
+.kr-list-head-ops { display: flex; gap: 6px; align-items: center; }
+.kr-all-chk { display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+  font-size: 11.5px; color: var(--ink-3); cursor: pointer; }
+.kr-task-row { display: flex; align-items: center; gap: 6px; }
+.kr-task-row .kr-task { flex: 1; min-width: 0; }
+.kr-chk { width: 14px; height: 14px; flex: 0 0 14px; cursor: pointer; accent-color: var(--blue); }
+.kr-col-chk { width: 28px; text-align: center; }
+
+.kr-batch-bar { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+  z-index: 220; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 10px 14px; border-radius: 10px; font-size: 12px;
+  background: var(--card-bg); border: 1px solid var(--border-strong);
+  box-shadow: 0 8px 28px rgba(0,0,0,.22); max-width: min(92vw, 900px); }
+.kr-batch-flash { margin: 4px 8px; padding: 6px 10px; border-radius: 6px;
+  font-size: 11.5px; color: var(--blue); background: rgba(59,130,246,.08); }
+.kr-batch-info { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--ink-2); }
+.kr-batch-note { color: var(--ink-4); font-size: 11px; }
+.kr-batch-msg { color: var(--blue); font-weight: 500; }
+.kr-batch-ops { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.kr-batch-modal { width: min(560px, 92vw); max-height: 86vh; overflow: auto;
+  background: var(--card-bg); border: 1px solid var(--border-strong);
+  border-radius: 12px; box-shadow: 0 16px 48px rgba(0,0,0,.35); }
+.kr-batch-hdr { display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--border); font-weight: 600; }
+.kr-batch-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; font-size: 12px; }
+.kr-batch-tip { color: var(--ink-3); }
+.kr-batch-mode { display: flex; flex-direction: column; gap: 6px; }
+.kr-batch-mode label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.kr-batch-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.kr-slot-btn { padding: 4px 9px; border-radius: 6px; font-size: 11.5px; cursor: pointer;
+  border: 1px solid var(--border-strong); background: transparent; color: var(--ink-2); }
+.kr-slot-btn.on { background: var(--blue); color: #fff; border-color: var(--blue); }
+.kr-batch-custom { display: flex; gap: 8px; align-items: center; }
+.kr-batch-custom input[type=time] { font: inherit; padding: 4px 8px; border-radius: 6px;
+  border: 1px solid var(--border-strong); background: var(--card-bg); color: var(--ink); }
+.kr-batch-slots { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: var(--ink-3); }
+.kr-slot { padding: 2px 7px; border-radius: 5px; cursor: pointer; font-size: 11.5px;
+  background: var(--accent-bg, rgba(59,130,246,.12)); color: var(--ink); }
+.kr-batch-foot { display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 16px; border-top: 1px solid var(--border); }
+
 /* 风控熔断提示：整个自动采集被暂停时显示 */
 .kr-queue-cool { color: var(--red); font-weight: 500; }
 

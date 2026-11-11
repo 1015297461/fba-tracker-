@@ -352,6 +352,28 @@ def start_scheduler(state):
     _log("[rank] 排名调度线程已启动（每分钟按任务时区检查自定义档位）")
 
 
+_SLOT_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+MAX_SLOTS = 8
+
+
+def _norm_slots(raw):
+    """批量接口的档位校验：只收 HH:MM，去重排序，1~8 个。"""
+    if not isinstance(raw, list):
+        raise ValueError("slots 必须是数组")
+    out = []
+    for x in raw:
+        s = str(x or "").strip()
+        if not _SLOT_RE.match(s):
+            raise ValueError(f"非法时间 {s!r}（应为 HH:MM）")
+        out.append(s)
+    out = sorted(set(out))
+    if not out:
+        raise ValueError("至少保留一个时间点")
+    if len(out) > MAX_SLOTS:
+        raise ValueError(f"最多 {MAX_SLOTS} 个时间点")
+    return out
+
+
 def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
 
     def get_tasks(self):
@@ -393,6 +415,73 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             return
         self._send_json(200, {"task": state.upsert_rank_task(payload)})
     POST["/api/rank/tasks"] = post_tasks
+
+    def post_batch(self):
+        """任务批量操作：schedule(替换/追加档位) / enabled(启停) / run(立即采集)。
+
+        单任务下勾词也走这里 —— 档位属于任务，勾任意词等于该任务全部词。
+        """
+        if not auth.verify(_extract_token(self)):
+            self._send_json(401, {"error": "请先登录"})
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        ids = payload.get("taskIds")
+        action = str(payload.get("action") or "").strip()
+        if not isinstance(ids, list) or not ids:
+            self._send_json(400, {"error": "taskIds required"})
+            return
+        if len(ids) > 50:
+            self._send_json(400, {"error": "一次最多 50 个任务"})
+            return
+        tasks = [state.get_rank_task(tid) for tid in ids]
+        tasks = [t for t in tasks if t]
+        if not tasks:
+            self._send_json(404, {"error": "任务不存在"})
+            return
+
+        if action == "schedule":
+            try:
+                slots = _norm_slots(payload.get("slots"))
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+                return
+            mode = str(payload.get("mode") or "replace")
+            if mode not in ("replace", "add"):
+                self._send_json(400, {"error": "mode 只能是 replace 或 add"})
+                return
+            for t in tasks:
+                merged = slots if mode == "replace" else sorted(set((t.get("schedule") or []) + slots))
+                state.update_rank_task_fields(t["id"], {"schedule": merged})
+            _log(f"[rank] 批量设置采集时间：{len(tasks)} 个任务 · {mode} · {slots}")
+            self._send_json(200, {"updated": len(tasks), "slots": slots, "mode": mode})
+            return
+
+        if action == "enabled":
+            val = bool(payload.get("enabled"))
+            for t in tasks:
+                state.update_rank_task_fields(t["id"], {"enabled": val})
+            _log(f"[rank] 批量{'启用' if val else '停用'}：{len(tasks)} 个任务")
+            self._send_json(200, {"updated": len(tasks), "enabled": val})
+            return
+
+        if action == "run":
+            results = []
+            for t in tasks:
+                try:
+                    res = submit(state, t, source="manual")
+                except ValueError as e:
+                    res = {"queued": False, "duplicate": True, "error": str(e)}
+                results.append({"taskId": t["id"], "name": t.get("name") or t.get("asin"),
+                                **{k: res.get(k) for k in ("queued", "duplicate")}})
+            n = sum(1 for r in results if r.get("queued"))
+            _log(f"[rank] 批量立即采集：{len(tasks)} 个任务，入队 {n} 个")
+            self._send_json(200, {"queued": n, "results": results, **queue_status()})
+            return
+
+        self._send_json(400, {"error": "unknown action"})
+    POST["/api/rank/tasks/batch"] = post_batch
 
     def post_run(self):
         """立即采集：入队（不在这里同步抓），返回排队情况。
