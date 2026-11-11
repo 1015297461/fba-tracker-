@@ -176,7 +176,9 @@ export function CategoryMonitor() {
   const [err, setErr] = useState('');
   const [url, setUrl] = useState('https://www.amazon.com/gp/bestsellers/home-garden/3732191/');
   const [q, setQ] = useState('');
-  const [runBusy, setRunBusy] = useState(false);
+  // 只记「我刚点了哪一个」——原来是个全局 boolean，导致 A 在跑时切到 B/C，
+  // 它们的「立即采集」也全变成「采集中…」，看着像所有记录都在采集。
+  const [runBusyId, setRunBusyId] = useState<string | null>(null);
   const [fillBusy, setFillBusy] = useState(false);
   const [spriteTick, setSpriteTick] = useState(0);   // 触发状态条刷新
   // 详情按天存快照：这里只记「正在看哪个 ASIN」，取数/切日期交给 useAsinDetail
@@ -428,20 +430,20 @@ export function CategoryMonitor() {
         const still = !!t && (t.lastStatus === 'running' || t.lastStatus === 'paused');
         if (!still || tries > 120) {           // 最多盯 6 分钟
           stopPoll();
-          setRunBusy(false);
+          setRunBusyId(null);
           setSnapDate('');
           loadSnapDates(id, listType);
           loadSnapshot(id, listType);
         }
       } catch {
         stopPoll();
-        setRunBusy(false);
+        setRunBusyId(null);
       }
     }, 3000);
   };
 
   const runNow = async (id: string) => {
-    setRunBusy(true);
+    setRunBusyId(id);
     setErr('');
     try {
       await apiSend('/api/catmon/run', 'POST', { id });
@@ -449,7 +451,7 @@ export function CategoryMonitor() {
       startPoll(id);
     } catch (e: any) {
       setErr(e.message);
-      setRunBusy(false);
+      setRunBusyId(null);
     }
   };
 
@@ -458,7 +460,7 @@ export function CategoryMonitor() {
     try {
       await apiSend('/api/catmon/pause', 'POST', { id });
       stopPoll();                              // 暂停后不再轮询，状态由接口即时写回
-      setRunBusy(false);
+      setRunBusyId(null);
       await loadTargets();
     } catch (e: any) {
       setErr(e.message);
@@ -498,14 +500,14 @@ export function CategoryMonitor() {
   };
 
   const resumeRun = async (id: string) => {    setErr('');
-    setRunBusy(true);
+    setRunBusyId(id);
     try {
       await apiSend('/api/catmon/resume', 'POST', { id });
       await loadTargets();
       startPoll(id);
     } catch (e: any) {
       setErr(e.message);
-      setRunBusy(false);
+      setRunBusyId(null);
     }
   };
 
@@ -724,8 +726,10 @@ export function CategoryMonitor() {
                   </span>
                 )}
                 <span className="cm-chip">覆盖 <b>{items.length}</b> 条</span>
-                <button className="cm-ghost" onClick={() => runNow(current.id)} disabled={runBusy}>
-                  {runBusy ? '采集中…' : '立即采集'}
+                {/* 只看「当前这条」是否在跑：本地刚点的 or 后端报 running */}
+                <button className="cm-ghost" onClick={() => runNow(current.id)}
+                  disabled={runBusyId === current.id || current.lastStatus === 'running'}>
+                  {(runBusyId === current.id || current.lastStatus === 'running') ? '采集中…' : '立即采集'}
                 </button>
                 <button className="cm-ghost" onClick={fillDates} disabled={fillBusy}
                         title="用卖家精灵批量补齐本榜单缺失的上架时间">
