@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useProducts } from '../../context/ProductContext';
 import { DateCalendar } from './DateCalendar';
+import { imgUrl, preloadImages } from './imgUrl';
 
 const AUTH_TOKEN_KEY = 'fba-auth-v1';
 function authHeaders(): Record<string, string> {
@@ -329,7 +330,7 @@ function ProductDetailDialog({ product, open, onClose, taskId, onRefresh, refres
                   <div className="ps-detail-img-grid">
                     {productImages.map((img, i) => (
                       <div key={i} className="ps-detail-img-card" onClick={() => openLightbox(productImages, i)}>
-                        <img src={img} alt={`Product ${i + 1}`} />
+                        <img src={imgUrl(img, 800)} alt={`Product ${i + 1}`} loading="lazy" />
                       </div>
                     ))}
                   </div>
@@ -399,7 +400,7 @@ function ProductDetailDialog({ product, open, onClose, taskId, onRefresh, refres
                   <div className="ps-detail-img-grid ps-grid-3">
                     {aplusImages.map((img, i) => (
                       <div key={i} className="ps-detail-img-card" onClick={() => openLightbox(aplusImages, i)}>
-                        <img src={img} alt={`A+ ${i + 1}`} />
+                        <img src={imgUrl(img, 800)} alt={`A+ ${i + 1}`} loading="lazy" />
                       </div>
                     ))}
                   </div>
@@ -433,7 +434,7 @@ function ProductDetailDialog({ product, open, onClose, taskId, onRefresh, refres
                   <div className="ps-detail-img-grid">
                     {reviewImages.slice(0, 10).map((img, i) => (
                       <div key={i} className="ps-detail-img-card" onClick={() => openLightbox(reviewImages, i)}>
-                        <img src={img} alt={`Review ${i + 1}`} />
+                        <img src={imgUrl(img, 800)} alt={`Review ${i + 1}`} loading="lazy" />
                       </div>
                     ))}
                   </div>
@@ -524,6 +525,15 @@ function Lightbox({ images, initialIndex, onClose }: LightboxProps) {
 
   const resetZoom = useCallback(() => setZoom(1), []);
 
+  // 翻页预热：只预加载前后各一张（1200），避免一次把整组图全拉下来抢带宽
+  const imagesKey = images.join('|');
+  useEffect(() => {
+    preloadImages([
+      images[current - 1] ? imgUrl(images[current - 1], 1200) : '',
+      images[current + 1] ? imgUrl(images[current + 1], 1200) : '',
+    ], 2);
+  }, [current, imagesKey]);
+
   /* keyboard */
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -600,7 +610,7 @@ function Lightbox({ images, initialIndex, onClose }: LightboxProps) {
         >
           <img
             key={current}
-            src={images[current]}
+            src={imgUrl(images[current], isZoomed ? 1500 : 1200)}
             alt={`Image ${current + 1}`}
             className={`ps-lightbox-img${!isZoomed ? ' ps-lightbox-fit' : ''}`}
             draggable={false}
@@ -617,7 +627,7 @@ function Lightbox({ images, initialIndex, onClose }: LightboxProps) {
                   onClick={() => { setCurrent(i); setZoom(1); }}
                   className={`ps-thumb ${i === current ? 'ps-thumb-active' : ''}`}
                 >
-                  <img src={img} alt={`Thumb ${i + 1}`} />
+                  <img src={imgUrl(img, 300)} alt={`Thumb ${i + 1}`} loading="lazy" />
                 </button>
               ))}
             </div>
@@ -1074,6 +1084,20 @@ export function ProductScrape() {
   const [histFilter, setHistFilter] = React.useState<'all' | 'active' | 'failed'>('all');
   const [histPage, setHistPage] = React.useState(1);
   const [histPageSize, setHistPageSize] = React.useState(15);
+
+  /** 打开详情，并预热列表里上下两条的图片：主图 + 前 2 张详情图（灯箱尺寸）。
+      只取相邻两条、限量 6 张，不会整页拉图，也不额外请求 Amazon 页面。 */
+  function openProductDetail(p: ScrapedProduct, i: number) {
+    setSelectedProduct(p);
+    setDetailOpen(true);
+    const neighbors = [pagedProducts[i - 1], pagedProducts[i + 1]].filter(Boolean);
+    const urls: string[] = [];
+    for (const n of neighbors) {
+      if (n.mainImage) urls.push(imgUrl(n.mainImage, 1200));
+      for (const u of (n.images || []).slice(0, 2)) urls.push(imgUrl(u, 1200));
+    }
+    preloadImages(urls, 6);
+  }
 
   function showThumbPreview(e: React.MouseEvent<HTMLImageElement>, src: string) {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -1748,10 +1772,10 @@ export function ProductScrape() {
                     </td>
                     <td className="ps-col-img">
                       {p.mainImage
-                        ? <img className="ps-thumb" src={p.mainImage} alt=""
+                        ? <img className="ps-thumb" src={imgUrl(p.mainImage, 300)} alt="" loading="lazy"
                             style={{ cursor: 'pointer' }}
-                            onClick={() => { setSelectedProduct(p); setDetailOpen(true); }}
-                            onMouseEnter={e => showThumbPreview(e, p.mainImage!)}
+                            onClick={() => openProductDetail(p, i)}
+                            onMouseEnter={e => showThumbPreview(e, imgUrl(p.mainImage!, 800))}
                             onMouseLeave={() => setHoverPreview(null)} />
                         : <div className="ps-thumb ps-thumb-empty" />}
                     </td>
@@ -1787,7 +1811,7 @@ export function ProductScrape() {
                       {p.reusedFrom && <span className="ps-reuse-tag">复用</span>}
                     </td>
                     <td className="ps-col-ops">
-                      <button className="btn btn-sm ps-btn-detail" onClick={() => { setSelectedProduct(p); setDetailOpen(true); }}>详情</button>
+                      <button className="btn btn-sm ps-btn-detail" onClick={() => openProductDetail(p, i)}>详情</button>
                       <a className="btn btn-sm" href={productUrl(p.asin, p.marketplace || marketplace)} target="_blank" rel="noopener noreferrer">查看</a>
                     </td>
                   </tr>
