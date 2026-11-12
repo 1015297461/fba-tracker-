@@ -195,7 +195,10 @@ def _launch_chrome(headless=True):
     if headless:
         # 无头：屏幕上不出现任何窗口/弹窗，cookie 与登录态照常走同一 profile
         cmd += ["--headless=new", "--hide-scrollbars", "--mute-audio",
-                "--disable-features=Translate"]
+                "--disable-features=Translate",
+                # macOS 的 headless=new 是「真浏览器 + 隐藏窗口」，启动瞬间会闪；
+                # 挪到屏幕外消除。有头登录窗口不加这个参数。
+                "--window-position=-10000,-10000"]
     cmd.append(ENTRY_URL)
     try:
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -699,12 +702,15 @@ def _run_batches(tab, uniq, country):
     return result, info
 
 
-def fetch_dates(asins, country="US", close_browser=True):
+def fetch_dates(asins, country="US", close_browser=False):
     """批量取上架时间。返回 (dict{asin: 'YYYY-MM-DD'}, info)。
 
     info.status：ok / need_login / no_asins / 错误码。
-    **无论成功、失败、需登录，结束时都会关掉浏览器**（唯一的例外是用户主动点了
-    「重新登录」，那由 `open_login_window` 管理窗口生命周期）。
+    **默认常驻浏览器**（2026-11-12 改）：以前每个定时任务跑完补上架时间都会
+    「启动 Chrome → 取数 → Browser.close」，macOS 上 Dock 就一闪一闪。
+    现在 `_ensure_browser()` 复用已活着的实例；只在程序退出（atexit / SIGTERM）
+    或用户点「重新登录」时才优雅关闭，保证 cookie 落盘。
+    需要强制用完即关时显式传 close_browser=True。
     """
     keys = [str(a or "").strip().upper() for a in (asins or []) if str(a or "").strip()]
     seen, uniq = set(), []
@@ -787,7 +793,7 @@ def fetch_dates(asins, country="US", close_browser=True):
             info["status"] = "error"
             _record("error", f"取数异常：{type(e).__name__}: {e}")
         finally:
-            # ⚠️ 关键：任何出口都关浏览器，**绝不留后台窗口**
+            # 默认常驻不关；显式 close_browser=True 时任何出口都关
             if close_browser:
                 close_browser_gracefully()
 
@@ -855,6 +861,10 @@ def close_browser_gracefully():
         subprocess.run(["node", "-e", script, ws_url], capture_output=True, timeout=10)
     except Exception:
         pass
+
+
+import atexit as _atexit
+_atexit.register(close_browser_gracefully)
 
 
 def status():

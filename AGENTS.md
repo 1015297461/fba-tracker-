@@ -329,7 +329,15 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   实测 100 个 ASIN 一次请求 1.08s 返回 99 条、漏 0、95 条有 `availableDate`。
                               #   前台查询**不扣额度**（query-quota 返回 -1）。
                               #   专用 Chrome：profile 在 `data/sprite-profile/`，CDP 端口 9333（`SPRITE_CDP_PORT`）。
-                              #   **登录态持久**：取到数据后用 CDP `Browser.close` 优雅关闭（强杀会丢 cookie，踩过）；
+                              #   **两套 Chrome 不要搞混**：这里 9333 / `data/sprite-profile/`（卖家精灵，带登录态），
+                              #   `browser_fetch.py` 是 9335 / `data/chrome-profile/`（通用抓取）。二者互不相干。
+                              #   **常驻化（2026-11-12）**：`fetch_dates(close_browser=False)` 默认不再每次
+                              #   「启动 → 取数 → Browser.close」，否则每个定时任务跑完补上架时间都会开关一次
+                              #   浏览器，macOS Dock 一闪一闪（用户实测）。`_ensure_browser()` 复用已活着的实例；
+                              #   只在程序退出（atexit / app.py 的 SIGTERM+finally）或点「重新登录」时优雅关闭，
+                              #   仍保证 cookie 落盘（强杀会丢登录态，踩过）。需要用完即关显式传 True。
+                              #   headless 启动加 `--window-position=-10000,-10000` 消除窗口闪现；
+                              #   **有头的登录窗口不能加**，用户必须看得见。
                               #   检测到停在登录页时返回 `need_login` 且**不关窗口**，让用户能登。
   asin_meta.py                 # ASIN 静态属性（上架时间/品牌）统一取数入口 + **来源开关**。
                               #   全局属性表 `rmon_asin_meta`（asin 主键），每个 ASIN 一辈子只查一次。

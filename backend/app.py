@@ -340,9 +340,19 @@ def main():
     #   · kill / 关闭终端 走 SIGTERM → signal handler
     #   · 正常返回走 atexit（browser_fetch 里已注册，作为最后兜底）
     # 只靠 atexit 不够：被 SIGTERM 杀掉时 atexit 不会执行，Chrome 会变僵尸占着端口。
+    def _shutdown_browsers():
+        # 两套常驻 Chrome：9335 通用抓取（可强杀），9333 卖家精灵（必须优雅关闭，
+        # 否则登录 cookie 不落盘，下次要重新登录）。
+        browser_fetch.shutdown_chrome()
+        try:
+            from . import sprite_fetch
+            sprite_fetch.close_browser_gracefully()
+        except Exception as e:
+            _log(f"[browser] 关闭卖家精灵浏览器失败：{type(e).__name__}: {e}")
+
     def _on_term(signum, _frame):
         _log(f"收到信号 {signum}，正在停止服务…")
-        browser_fetch.shutdown_chrome()
+        _shutdown_browsers()
         raise SystemExit(0)
 
     for sig_name in ("SIGTERM", "SIGHUP"):
@@ -359,7 +369,7 @@ def main():
         print()  # 空行分隔，避免和上一条日志挤在一起
         _log("已停止")
     finally:
-        browser_fetch.shutdown_chrome()
+        _shutdown_browsers()
 
 
 if __name__ == "__main__":
