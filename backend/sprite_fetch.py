@@ -209,6 +209,8 @@ def _launch_chrome(headless=True):
     while time.time() < deadline:
         if _alive():
             time.sleep(1.5)          # 给页面一点加载时间
+            _log(f"[sprite] 专用 Chrome 已就绪（端口 {CDP_PORT}）"
+                 + ("· 登录窗口" if not headless else "· 无头常驻"))
             return True, ("started_headless" if headless else "started_headed")
         time.sleep(0.5)
     return False, "cdp_timeout"

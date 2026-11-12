@@ -261,7 +261,9 @@ def _warm_up_browser():
             if browser_fetch.MODE == "off":
                 return
             if browser_fetch.ensure_chrome():
-                _log("[browser] 浏览器通道已预热（后续 CDP 抓取复用同一实例）")
+                _log(f"[browser] 通用抓取通道已预热（端口 {browser_fetch.CDP_HEADLESS_PORT}，"
+                     "后续 CDP 抓取复用同一实例）")
+                _log("[browser] 卖家精灵通道按需启动（端口 9333，首次补上架时间时才起）")
             else:
                 _log("[browser] 浏览器通道预热失败，用到时会再尝试启动")
         except Exception as e:
