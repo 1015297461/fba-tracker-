@@ -725,6 +725,7 @@ def fetch_dates(asins, country="US", close_browser=False):
 
     with _run_lock:
         ok, detail = _ensure_browser(headless=True)   # 无头：屏幕上不会有窗口
+        _log(f"[sprite] 浏览器状态：{detail}（端口 {CDP_PORT}）")
         if not ok:
             _log(f"[sprite] 浏览器不可用：{detail}")
             _record("error", f"浏览器启动失败：{detail}")
@@ -848,7 +849,9 @@ def close_browser_gracefully():
     """
     status, text = _http(f"http://127.0.0.1:{CDP_PORT}/json/version", timeout=3)
     if status != 200:
-        return
+        return                       # 本来就没活着，别打无意义的日志
+    # 常驻化后正常路径不该再关浏览器；打日志定位「Dock 还在闪」的触发方
+    _log(f"[sprite] 关闭专用 Chrome（端口 {CDP_PORT}）")
     try:
         ws_url = json.loads(text).get("webSocketDebuggerUrl")
     except Exception:

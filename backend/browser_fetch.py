@@ -129,6 +129,9 @@ def _fetch_headless(url, timeout=DUMP_TIMEOUT):
         "--disable-extensions",
         "--disable-background-networking",
         "--window-size=1400,1000",
+        # 与常驻实例一致：macOS 的 headless=new 是「真浏览器 + 隐藏窗口」，
+        # 不挪出屏幕，CDP 兜底失败回落到这里时 Dock 就会闪。
+        "--window-position=-10000,-10000",
         f"--user-data-dir={CHROME_PROFILE_DIR}",
         "--dump-dom",
         url,
