@@ -345,11 +345,16 @@ def main():
     def _shutdown_browsers():
         # 两套常驻 Chrome：9335 通用抓取（可强杀），9333 卖家精灵（必须优雅关闭，
         # 否则登录 cookie 不落盘，下次要重新登录）。
-        browser_fetch.shutdown_chrome()
+        # ⚠️ 清理期间用户可能再按一次 Ctrl+C：KeyboardInterrupt 是 BaseException，
+        #    用 except Exception 抓不住，会让清理半途而废并打一整段 traceback。
+        try:
+            browser_fetch.shutdown_chrome()
+        except BaseException as e:
+            _log(f"[browser] 关闭通用抓取浏览器失败：{type(e).__name__}")
         try:
             from . import sprite_fetch
             sprite_fetch.close_browser_gracefully()
-        except Exception as e:
+        except BaseException as e:
             _log(f"[browser] 关闭卖家精灵浏览器失败：{type(e).__name__}: {e}")
 
     def _on_term(signum, _frame):
@@ -371,7 +376,10 @@ def main():
         print()  # 空行分隔，避免和上一条日志挤在一起
         _log("已停止")
     finally:
-        _shutdown_browsers()
+        try:
+            _shutdown_browsers()
+        except BaseException:
+            pass
 
 
 if __name__ == "__main__":

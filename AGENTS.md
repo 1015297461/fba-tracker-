@@ -294,6 +294,12 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   · `_new_target()` **不要**把 url 拼进 query（`/json/new?about:blank`）：
                               #     编码后 Chrome 会直接断掉调试端口，后续 /json/list 全部连不上；
                               #   · 全程持 `_browser_lock`（单实例，多线程同时开标签会互相踩）。
+                              #   ⚠️ **清理必须免疫第二次 Ctrl+C**（2026-11-12）：`KeyboardInterrupt`
+                              #   继承 `BaseException` 而非 `Exception`，原来 `_kill_tree` /
+                              #   `_shutdown_browsers` 的 `except Exception` 全抓不住，
+                              #   退出清理被打断会打一整段 traceback 并残留 Chrome。
+                              #   现统一改 `except BaseException`，`shutdown_chrome` 用 finally
+                              #   保证 `_CHROME["proc"]=None`（atexit 重复调用直接 return）。
                               #   **退出清理**：`atexit` 注册 + `app.py` 的 SIGTERM/SIGHUP handler + finally，
                               #   三路都调 `shutdown_chrome()`。只靠 atexit 不够 —— 被 SIGTERM 杀掉时 atexit 不执行，
                               #   Chrome 会残留占着端口（实测过）。

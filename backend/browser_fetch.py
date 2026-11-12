@@ -102,7 +102,9 @@ def _kill_tree(proc, pgid=None):
         pass
     try:
         proc.wait(timeout=5)
-    except Exception:
+    except BaseException:
+        # KeyboardInterrupt 继承 BaseException（不是 Exception）：退出清理期间
+        # 用户再按一次 Ctrl+C 不该打断回收，否则 Chrome 会残留占端口。
         pass
 
 
@@ -345,9 +347,11 @@ def shutdown_chrome():
         return
     try:
         _kill_tree(proc, _CHROME.get("pgid"))
-    except Exception:
+    except BaseException:
         pass
-    _CHROME["proc"] = None
+    finally:
+        # 幂等：finally 里跑过一次后，atexit 再调用会直接 return，不重复杀
+        _CHROME["proc"] = None
 
 
 def _new_target(url=None):
