@@ -97,6 +97,14 @@ _BLOCK_HINTS = (
     "Robot Check",
     "/errors/validateCaptcha",
     "Sorry! Something went wrong",
+    # 2026-11-12 实测：搜索页的 JS 插页只有 2.4KB、title='&nbsp;'，
+    # 没有上面任何一个 robot 字样，原来被漏判成 no_cards（白重试 3 次）。
+    "bm-verify=",
+    "triggerInterstitialChallenge",
+    # 「Continue shopping」检查点页（约 290KB 的完整页，单看 size 也认不出来）
+    'id="checkpointForm"',
+    'action="/checkpoint/validate"',
+    "To continue, please click",
 )
 _PRICE_WHOLE_RE = re.compile(r'a-price-whole">([\d.,]+)')
 _PRICE_FRAC_RE = re.compile(r'a-price-fraction">(\d+)')
@@ -194,6 +202,29 @@ def parse_srp(html_text, sp_words=("Sponsored",)):
     return items
 
 
+def _fetch_via_cdp(url, timeout=12):
+    """JS 挑战页只能靠真实浏览器过：用常驻无头 Chrome 打开同一 URL 再取 DOM。
+
+    bm-verify 是「执行脚本后才跳回结果页」的插页，纯 HTTP 换指纹/清 cookie
+    都过不了；原来在 fetch_srp 里 25/60/120s 重试三次全是白撞。
+    """
+    try:
+        from . import browser_fetch
+        if not browser_fetch.available():
+            return None, "cdp_unavailable"
+        html_text, err = browser_fetch._fetch_headless_cdp(
+            url,
+            ready_expr='!!document.querySelector("[data-component-type=s-search-result]")',
+            timeout=timeout)
+        if err:
+            return None, f"cdp_{err}"
+        if "s-search-result" not in html_text:
+            return None, "cdp_no_cards"
+        return html_text, None
+    except Exception as e:
+        return None, f"cdp_exc:{type(e).__name__}"
+
+
 def _looks_blocked(html_text):
     return any(h in html_text for h in _BLOCK_HINTS)
 
@@ -258,6 +289,10 @@ def fetch_page(keyword, marketplace="US", page=1, referer=None, timeout=30):
     if status != 200:
         return None, f"http_{status}"
     if _looks_blocked(text):
+        cdp_html, cdp_err = _fetch_via_cdp(url)
+        if not cdp_err:
+            _log(f"[srp] HTTP 被挑战页拦截，已用常驻浏览器兜底成功（{len(cdp_html)} 字节）")
+            return cdp_html, None
         return None, "blocked"
     if any(h in text for h in _NO_RESULT_HINTS):
         return None, "empty"

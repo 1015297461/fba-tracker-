@@ -760,6 +760,17 @@ SIF 是周期内最后一次采样值，爬虫是点击那一刻的实测值，�
     （否则每次翻页都多撞一次首页）；`202` 在 `fetch_page` 里按 `blocked` 处理。
   · `no_cards` 现在会打一行诊断（status / 长度 / 标题 / 是否命中拦截特征），不用再靠猜。
   · 实测修复后 2 页 96 条（自然 94 / 广告 2）。
+- **挑战页识别 + CDP 兜底（2026-11-12）**：实测 `no_cards 诊断：status=200 len=2404
+  title='&nbsp;' block_hint=False` 其实就是 **bm-verify JS 插页**，但 `_BLOCK_HINTS`
+  原来只有经典 CAPTCHA / 503 字样，漏判成 `no_cards` → 白等 25/60/120s 三次重试。
+  · `_BLOCK_HINTS` 补 `bm-verify=` / `triggerInterstitialChallenge` /
+    `id="checkpointForm"` / `/checkpoint/validate` / `To continue, please click`
+    （2026 年三种挑战页：图片验证码、Continue shopping 检查点、JS 插页）。
+  · `fetch_page` 命中挑战页时先用 `_fetch_via_cdp(url)` 走**常驻无头 Chrome**
+    （ready_expr 等 `[data-component-type=s-search-result]`，timeout=12s）；
+    实测 5.4s 拿到 1.78MB / 50 卡 / parse_srp 解析 48 条，直接返回正常页。
+    只有 CDP 也失败才返回 `blocked` 走退避。
+  · 纯 HTTP 换指纹 / 清 cookie **过不了** JS 挑战，重试是白撞。
 - **软限流降级页要识别**：200 但 `s-search-result` 为空 → 记 `no_cards` 并重试，
   不能当「这个词没结果」；真没结果页有明确文案（`No results for` / `did not match any products`）→ 记 `empty` 且**不重试**。
   卡片数 < 10 视为异常，整页丢弃不写脏数据。
