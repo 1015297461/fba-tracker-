@@ -175,7 +175,11 @@ def _clear_stale_locks():
             pass
 
 
+_OWN_PID = None                     # 本进程亲自启动的 Chrome PID（atexit 用）
+
+
 def _launch_chrome(headless=True):
+    global _OWN_PID
     chrome = _chrome_bin()
     if not chrome:
         return False, "chrome_not_found"
@@ -201,8 +205,9 @@ def _launch_chrome(headless=True):
                 "--window-position=-10000,-10000"]
     cmd.append(ENTRY_URL)
     try:
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         stdin=subprocess.DEVNULL, start_new_session=True)
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                stdin=subprocess.DEVNULL, start_new_session=True)
+        _OWN_PID = proc.pid
     except Exception as e:
         return False, f"launch_failed:{type(e).__name__}"
     deadline = time.time() + START_TIMEOUT
@@ -868,8 +873,21 @@ def close_browser_gracefully():
         pass
 
 
+def _atexit_close():
+    """只关本进程启动的 Chrome。
+
+    ⚠️ 踩过：任何 `python3 -c "from backend import sprite_fetch"` 的短命脚本
+    退出时都会触发 atexit，原来无条件 Browser.close 会把**服务正在用的 9333**
+    一起关掉，服务下次补上架时间又得重启 → Dock 闪，而关闭日志打在短命进程里，
+    服务终端完全看不到。现在只有亲自 Popen 过 Chrome 的进程才关。
+    """
+    if _OWN_PID is None:
+        return
+    close_browser_gracefully()
+
+
 import atexit as _atexit
-_atexit.register(close_browser_gracefully)
+_atexit.register(_atexit_close)
 
 
 def status():

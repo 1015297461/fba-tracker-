@@ -335,6 +335,11 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   「启动 → 取数 → Browser.close」，否则每个定时任务跑完补上架时间都会开关一次
                               #   浏览器，macOS Dock 一闪一闪（用户实测）。`_ensure_browser()` 复用已活着的实例；
                               #   只在程序退出（atexit / app.py 的 SIGTERM+finally）或点「重新登录」时优雅关闭，
+                              #   ⚠️ **atexit 必须判断「本进程是否亲自启动过 Chrome」**（`_OWN_PID`）：
+                              #   任何 `python3 -c "from backend import sprite_fetch"` 的短命脚本退出都会触发
+                              #   atexit，原来无条件 Browser.close 会把**服务正在用的 9333** 一起关掉，
+                              #   服务下次补上架时间又重启 → Dock 闪，且关闭日志打在短命进程里，服务终端看不到。
+                              #   服务自己的退出由 app.py `_shutdown_browsers()` 显式关闭（不受 _OWN_PID 限制）。
                               #   仍保证 cookie 落盘（强杀会丢登录态，踩过）。需要用完即关显式传 True。
                               #   headless 启动加 `--window-position=-10000,-10000` 消除窗口闪现；
                               #   **有头的登录窗口不能加**，用户必须看得见。
