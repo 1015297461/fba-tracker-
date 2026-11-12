@@ -300,7 +300,9 @@ def main():
     ai_worker.start()
 
     # 排名监测：每 30 分钟检查一次当天没跑过的目标（首次启动会补齐当天）
-    rank_monitor_worker = RankMonitorWorker(db_state, interval_sec=300)
+    # 每分钟检查一轮：时间表是每 5 分钟一个任务，若也用 5 分钟轮询，
+    # 到点的任务可能要等下一轮（最多 5 分钟）才被捡起来。
+    rank_monitor_worker = RankMonitorWorker(db_state, interval_sec=60)
     rank_monitor_worker.start()
 
     handler  = make_handler(db_state, auth_mgr, ai_worker)

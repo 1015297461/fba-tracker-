@@ -3077,7 +3077,8 @@ export function RankMonitor() {
           )}
           {srpPendingToday.length > 0 && (
             <div>
-              尚未执行 <b>{srpPendingToday.length}</b> 个：
+              排队待执行 <b>{srpPendingToday.length}</b> 个（已到设定时间，每分钟自动检查一轮；
+              前一个任务还在抓取时会顺延）：
               {srpPendingToday.map((t: any) => (
                 <span key={t.id} className="rk-srp-warn-item">
                   {t.keyword}{t.daily_at ? `（${t.daily_at}）` : ''}
