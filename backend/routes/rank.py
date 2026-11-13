@@ -54,18 +54,16 @@ def _due_slot(task, now_utc=None):
     return None
 
 
-# 每个任务最多允许几个词走「真实浏览器」兜底。
-#
-# 一次 CDP 约 31 秒/页（实测连测两次都是 31~35s，主要是冷启动 Chrome + 1.5MB 页面加载），
-# 而一个词平均要翻 1.96 页（11-09 正常批次实测：26 词 51 页）。
-# 所以：5 个词的小任务全走 ≈ 5 分钟（可接受，直接全给）；
-#       26 个词的大批全走 ≈ 26 分钟（太久，限 3 个，剩下的交给冷却后重试）。
-CDP_BUDGET_PER_TASK = 3
-CDP_FULL_GRANT_MAX_KW = 5
+# CDP 兜底额度：常驻 Chrome + 12s 超时后，单次只要 5~12 秒（实测 5.4s 拿到
+# 1.78MB / 50 卡），比「HTTP 换指纹硬撞 3 次」的 20~30 秒还快，也不额外刺激风控。
+# 所以不再限 3 个：整批每个词都给额度，避免后段词额度耗尽后只能 blocked_x3 干等。
+CDP_BUDGET_PER_TASK = 3          # 保留兼容：只有显式传 0 时才会用到
+CDP_FULL_GRANT_MAX_KW = 5        # 保留兼容
 
 
 def _cdp_budget(n_kw):
-    return n_kw if n_kw <= CDP_FULL_GRANT_MAX_KW else CDP_BUDGET_PER_TASK
+    """每个被拦的词都允许走一次常驻浏览器兜底。"""
+    return max(1, int(n_kw))
 
 
 def run_rank_task(state, task, delay_between_kw=(3.0, 7.0)):

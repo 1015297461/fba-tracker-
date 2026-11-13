@@ -144,10 +144,14 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                 #   bm-verify 挑战页 = **出口 IP 被风控，换指纹无效**；
                                 #   继续按 15 分钟 × 3 轮硬撞只会让封禁更久。
                                 #   `/api/rank/queue` 返回 `cooldown`（剩余秒数），前端据此显示红字提示。
-                                #   **CDP 兜底配额**：`_cdp_budget(n)` —— 词数 ≤5 全给（5 词全走
-                                #   约 5 分钟），>5 只给 3 个（26 词全走约 26 分钟太久，剩下的靠冷却重试）。
-                                #   依据：实测一次 CDP 约 31s/页（冷启动 Chrome + 1.5MB 页面），
-                                #   一个词平均翻 1.96 页（11-09 正常批次：26 词 51 页）。
+                                #   **CDP 兜底额度（2026-11-13 放开）**：`_cdp_budget(n) = n`，
+                                #   每个词都允许走一次常驻浏览器兜底。
+                                #   原来 >5 词只给 3 个额度（基于旧数据 31s/页、26 词≈26 分钟）；
+                                #   但常驻 Chrome + 12s 超时后单次只要 5~12 秒（实测 5.4s/1.78MB/50 卡），
+                                #   **比 HTTP 换指纹硬撞 3 次的 20~30 秒还快**。踩过：11-13「方向盘套」
+                                #   6 个词里前 3 个被拦时用光额度（且兜底成功显示 ok），后 2 个再被拦
+                                #   只能 blocked_x3 干等 —— 看着像「只有这几个词有问题」，其实是额度耗尽。
+                                #   rank_fetcher._BLOCK_HINTS 同步补 bm-verify / checkpoint 等 2026 挑战页特征。
     scrape.py                   # /api/scrape/*：start_scrape_task()/_run_scrape() 服务端后台
                                 #   执行器（POST /start 立即返回 taskId，前端轮询 /progress，
                                 #   刷新不丢任务）+ 运行时暂停/取消/继续（/pause /resume /cancel，

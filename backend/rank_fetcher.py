@@ -84,6 +84,12 @@ _BLOCK_HINTS = [
     "To discuss automated access to Amazon data please contact",
     "Robot Check",
     "/errors/validateCaptcha",
+    "Sorry! Something went wrong",
+    # 与 search_fetcher 对齐：2026 年三种挑战页，别只靠后面的 bm-verify / 长度兜底
+    "bm-verify=",
+    "triggerInterstitialChallenge",
+    'id="checkpointForm"',
+    "/checkpoint/validate",
 ]
 
 
