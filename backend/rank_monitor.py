@@ -1332,7 +1332,12 @@ def batch_keyword_trends(state, keywords, country="US", granularity="week",
         return {"refreshed": 0, "cached": 0, "errors": []}
     cached = state.get_rmon_kw_trends(kws, country, granularity)
 
-    def _fresh(ts):
+    def _fresh(entry):
+        payload, ts = entry or (None, "")
+        # 旧缓存（keyword_trend 早期版本）没有 click_shares / conversion_shares，
+        # 即使时间没到也要重拉，否则弹窗里 Top3 集中度一直显示「数据不足」。
+        if not payload or not payload.get("click_shares"):
+            return False
         if max_age_hours <= 0 or not ts:
             return False
         try:
@@ -1341,7 +1346,7 @@ def batch_keyword_trends(state, keywords, country="US", granularity="week",
         except Exception:
             return False
 
-    todo = [k for k in kws if force or not _fresh((cached.get(k.lower()) or (None, ""))[1])]
+    todo = [k for k in kws if force or not _fresh(cached.get(k.lower()))]
     errors = []
     for i in range(0, len(todo), 10):
         part = todo[i:i + 10]

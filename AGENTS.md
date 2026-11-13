@@ -898,6 +898,11 @@ SIF 是周期内最后一次采样值，爬虫是点击那一刻的实测值，�
     · 弹窗 `TrendLine` 用 `onMouseMove` 把鼠标 x 换算成最近点，画竖向准星 +
       高亮点 + tooltip，显示该周全部 4 项指标（peers 传同区间切片）。
     · 弹窗用两个 `DateCalendar`（`dates` 只列有数据的 ABA 周）+ 26/52/104 周快捷档，
+    · **tooltip 靠边处理（2026-11-13）**：`left:0% + translateX(-50%)` 会让最左点的
+      卡片一半溢出容器；按 hover 比例改 `<16%` 左对齐 / `>84%` 右对齐 / 中间居中。
+    · **旧结构缓存自动重拉**：`batch_keyword_trends._fresh()` 发现 payload 缺
+      `click_shares` 就视为过期（即使时间没到），否则弹窗 Top3 集中度永远显示
+      「该区间数据不足」。存量 31 个词已 force 刷新一遍。
       纯前端切片，不额外请求后端；`useEffect([keyword, dates.length])` 处理异步到达。
     缩略图 `RankSpark` 与弹窗 `TrendLine` 都让**小值靠上**，与 RankMonitor 的
     `negative` 反转口径一致。⚠️ ABA 周报滞后 2~3 周，界面必须标数据截止日。

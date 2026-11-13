@@ -804,8 +804,15 @@ function TrendLine({ values, dates, color, label, format, invert = false, peers 
             <circle cx={toX(hi)} cy={toY(hoverVal)} r="3.4" fill={color} />}
           <circle cx={toX(last.i)} cy={toY(last.v)} r="2.6" fill={color} />
         </svg>
-        {hi != null && hoverVal != null && (
-          <div className="kr-tl-tip" style={{ left: `${(hi / Math.max(1, values.length - 1)) * 100}%` }}>
+        {hi != null && hoverVal != null && (() => {
+          // 靠边时改成左/右对齐，别让 -50% 把 tooltip 推出容器（最左点会溢出一半）
+          const ratio = hi / Math.max(1, values.length - 1);
+          const shift = ratio < 0.16 ? 'translateX(0)'
+            : ratio > 0.84 ? 'translateX(-100%)' : 'translateX(-50%)';
+          const nudge = ratio < 0.16 ? 6 : ratio > 0.84 ? -6 : 0;
+          return (
+          <div className="kr-tl-tip"
+            style={{ left: `calc(${ratio * 100}% + ${nudge}px)`, transform: shift }}>
             <div className="kr-tl-tip-date">{dates?.[hi] || `第 ${hi + 1} 周`}</div>
             <div className="kr-tl-tip-row"><b>{label.split('（')[0]}</b><span>{format(hoverVal)}</span></div>
             {delta != null && delta !== 0 &&
@@ -814,7 +821,8 @@ function TrendLine({ values, dates, color, label, format, invert = false, peers 
               <div className="kr-tl-tip-row" key={pr.label}><span>{pr.label}</span>
                 <span>{pr.format(pr.values[hi]!)}</span></div>)}
           </div>
-        )}
+          );
+        })()}
       </div>
       <div className="kr-tl-foot"><span>{format(first.v)}</span><span>{pts.length} 周</span></div>
     </div>
