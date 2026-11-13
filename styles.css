@@ -4177,6 +4177,14 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 }
 .kr-queue-wait { color: var(--ink-4); }
 .kr-queue-msg { color: var(--blue); font-weight: 500; }
+/* 关键词排名：数据来源标签（HTTP / 浏览器兜底） */
+.kr-col-via { width: 82px; text-align: center; white-space: nowrap; }
+.kr-via { display: inline-block; padding: 1px 6px; border-radius: 4px;
+  font-size: 10.5px; line-height: 1.6; }
+.kr-via-http { color: var(--ink-4); }
+.kr-via-cdp { color: var(--blue); background: rgba(59,130,246,.12); font-weight: 500; }
+.kr-via-fail { color: var(--red); background: rgba(220,38,38,.12); }
+
 /* 关键词排名：批量多选（任务 + 单任务内的词） */
 .kr-list-head-ops { display: flex; gap: 6px; align-items: center; }
 .kr-all-chk { display: flex; align-items: center; gap: 6px; padding: 6px 10px;

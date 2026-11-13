@@ -1062,7 +1062,8 @@ class DbState:
                     sponsored    TEXT,
                     status       TEXT,
                     error        TEXT,
-                    organic_scanned INTEGER
+                    organic_scanned INTEGER,
+                    via          TEXT DEFAULT 'http'   -- http / cdp / cdp_failed
                 );
                 CREATE INDEX IF NOT EXISTS idx_snap_task_kw
                     ON rank_snapshots(task_id, keyword, captured_at);
@@ -1683,6 +1684,10 @@ class DbState:
             _rs_cols = {r[1] for r in conn.execute("PRAGMA table_info(rank_snapshots)")}
             if _rs_cols and "organic_scanned" not in _rs_cols:
                 conn.execute("ALTER TABLE rank_snapshots ADD COLUMN organic_scanned INTEGER")
+            # 记录这条快照是 HTTP 直出还是被拦后由常驻浏览器兜底回来的
+            if _rs_cols and "via" not in _rs_cols:
+                conn.execute("ALTER TABLE rank_snapshots ADD COLUMN via TEXT DEFAULT 'http'")
+                _rs_cols.add("via")
 
             # 「获取最新数据」去重：同一词同一天允许多条，但内容没变就不新增。
             # fingerprint 存榜单/份额的结构摘要，比对时不用解析 1~2MB 的 JSON；
@@ -2108,8 +2113,8 @@ class DbState:
                     """INSERT INTO rank_snapshots
                        (task_id, asin, marketplace, keyword, captured_at,
                         organic_rank, organic_page, sponsored, status, error,
-                        organic_scanned)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        organic_scanned, via)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                     [
                         task_id, res.get("asin"), res.get("marketplace"),
                         res.get("keyword"), res.get("captured_at"),
@@ -2117,6 +2122,7 @@ class DbState:
                         json.dumps(res.get("sponsored", []), ensure_ascii=False),
                         res.get("status"), res.get("error"),
                         res.get("organic_scanned"),
+                        res.get("via") or "http",
                     ],
                 )
                 conn.commit()
@@ -2147,6 +2153,7 @@ class DbState:
                 # 这次一共扫了多少个自然位（not_ranked 时用来说明「扫完 N 位没有」）
                 "organicScanned": (r["organic_scanned"]
                                    if "organic_scanned" in r.keys() else None),
+                "via": (r["via"] or "http") if "via" in r.keys() else "http",
             } for r in rows]
 
     # ---- 产品采集：任务与明细 ----

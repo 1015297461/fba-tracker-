@@ -72,6 +72,8 @@ interface Snapshot {
   status: string; error: string | null;
   /** 这次一共扫了多少个自然位（status=not_ranked 时用来说明「扫完 N 位没找到」） */
   organicScanned?: number | null;
+  /** http = HTTP 直出；cdp = 被拦后浏览器兜底成功；cdp_failed = 兜底也失败 */
+  via?: string | null;
 }
 
 /**
@@ -997,6 +999,7 @@ export function KeywordRank() {
                       <th className="kr-col-spark">近5天趋势</th>
                       <th className="kr-col-time">更新时间</th>
                       <th className="kr-col-time">开始监控</th>
+                      <th className="kr-col-via" title="这条数据是 HTTP 直出，还是被拦后由常驻浏览器兜底回来的">来源</th>
                       <th className="kr-col-notes">备注</th>
                       <th className="kr-col-ops">操作</th>
                     </tr>
@@ -1054,6 +1057,20 @@ export function KeywordRank() {
                         </td>
                         <td className="kr-col-time">
                           {active.createdAt ? fmtDateTime(active.createdAt) : '—'}
+                        </td>
+                        <td className="kr-col-via">
+                          {(() => {
+                            const vs = (lastIsFail ? lastTry : shown) as Snapshot | undefined;
+                            if (!vs) return '—';
+                            const v = vs.via || 'http';
+                            if (v === 'cdp')
+                              return <span className="kr-via kr-via-cdp"
+                                title="HTTP 被拦，由常驻无头浏览器兜底成功（旧方案下这会消耗一次额度）">浏览器</span>;
+                            if (v === 'cdp_failed')
+                              return <span className="kr-via kr-via-fail"
+                                title="HTTP 被拦，浏览器兜底也失败">兜底失败</span>;
+                            return <span className="kr-via kr-via-http" title="纯 HTTP 直出">HTTP</span>;
+                          })()}
                         </td>
                         <td className="kr-col-notes">
                           <NotesCell

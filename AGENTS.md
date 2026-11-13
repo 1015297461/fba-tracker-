@@ -220,6 +220,11 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   老数据 `not_found` + `error` 为空 = not_ranked（前端 isSuccessLike 兼容）。
                               #   快照另存 `organic_scanned`（这次扫了多少自然位），
                               #   前端据此说「扫完 144 个自然位都没有」。
+                              #   **快照还存 `via`（2026-11-13）**：`http` 直出 / `cdp` HTTP 被拦后由
+                              #   常驻浏览器兜底成功 / `cdp_failed` 兜底也失败；旧行迁移默认 `http`。
+                              #   `db.get_rank_history` 透出 `via`，前端「来源」列显示标签。
+                              #   用途：以前前几个词用掉 CDP 额度后界面仍显示 ok，看不出它们其实被拦过，
+                              #   后段词 blocked_x3 才显得「只有这几个词有问题」。
   catmon_fetcher.py            # 类目榜单采集器（Best Sellers / New Releases）：
                               #   URL 解析 → 抓第 1 页 + 跟随 a-last Next 抓第 2 页；
                               #   每页内嵌 data-client-recs-list JSON 含 50 条(rank+asin)、网格 30 条全字段，
