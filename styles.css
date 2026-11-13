@@ -4204,6 +4204,35 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
   background: var(--accent-bg, rgba(59,130,246,.12)); }
 .kr-trend-note { font-size: 11px; line-height: 1.7; color: var(--ink-4);
   padding-top: 8px; border-top: 1px solid var(--border); }
+.kr-tl-canvas { position: relative; }
+.kr-tl-canvas svg { display: block; cursor: crosshair; }
+.kr-tl-tip { position: absolute; top: 4px; transform: translateX(-50%);
+  z-index: 5; min-width: 156px; max-width: 200px; pointer-events: none;
+  padding: 7px 9px; border-radius: 7px; font-size: 11px; line-height: 1.6;
+  background: var(--card-bg); border: 1px solid var(--border-strong);
+  box-shadow: 0 6px 20px rgba(0,0,0,.28); }
+.kr-tl-tip-date { font-weight: 600; color: var(--ink); margin-bottom: 3px; }
+.kr-tl-tip-row { display: flex; justify-content: space-between; gap: 10px; color: var(--ink-3); }
+.kr-tl-tip-row b { font-weight: 500; }
+.kr-tl-tip-row span:last-child { color: var(--ink); }
+.kr-tl-tip-delta { color: var(--ink-4); font-size: 10.5px; margin: 2px 0 3px; }
+.kr-spark-tip { position: fixed; z-index: 9999; min-width: 168px; pointer-events: none;
+  padding: 8px 10px; border-radius: 8px; font-size: 11px; line-height: 1.7;
+  background: var(--card-bg); border: 1px solid var(--border-strong);
+  box-shadow: 0 8px 24px rgba(0,0,0,.32); }
+.kr-spark-tip .kr-tl-tip-delta.good { color: var(--green); }
+.kr-spark-tip .kr-tl-tip-delta.bad { color: var(--red); }
+
+.kr-trend-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.kr-trend-fl { font-size: 11.5px; color: var(--ink-3); }
+.kr-trend-presets { display: flex; gap: 5px; margin-left: auto; }
+.kr-trend-presets .kr-ghost-btn { padding: 3px 9px; border-radius: 6px; font-size: 11px;
+  cursor: pointer; border: 1px solid var(--border-strong);
+  background: transparent; color: var(--ink-3); }
+.kr-trend-presets .kr-ghost-btn.on { background: var(--blue); color: #fff; border-color: var(--blue); }
+.kr-trend-count { font-size: 11px; color: var(--ink-4); min-width: 46px; text-align: right; }
+
 .kr-tl { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px 6px; }
 .kr-tl-head { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--ink-3); }
 .kr-tl-cur { font-weight: 600; }

@@ -891,6 +891,14 @@ SIF 是周期内最后一次采样值，爬虫是点击那一刻的实测值，�
     弹窗展示 4 组免费数据：ABA 排名 / 周搜索量 / Top3 点击集中度 / Top3 转化集中度
     + 最新 Top3 ASIN；**不调用任何按点工具**。
   · 前端 `KeywordRank` 加「ABA 排名」「近1月排名」两列：排名变小=变好（↑绿/↓红），
+  · **悬浮详情 + 时间筛选（2026-11-13）**：
+    · 列表缩略图 `RankSpark` 用 `createPortal` 到 body（表格会裁剪绝对定位），
+      跟随鼠标显示该周日期 / ABA 排名 / 环比前进后退 / 周搜索量；
+      用 `valid[]` 保留原始索引，避免序列里有 null 时 hover 详情错位。
+    · 弹窗 `TrendLine` 用 `onMouseMove` 把鼠标 x 换算成最近点，画竖向准星 +
+      高亮点 + tooltip，显示该周全部 4 项指标（peers 传同区间切片）。
+    · 弹窗用两个 `DateCalendar`（`dates` 只列有数据的 ABA 周）+ 26/52/104 周快捷档，
+      纯前端切片，不额外请求后端；`useEffect([keyword, dates.length])` 处理异步到达。
     缩略图 `RankSpark` 与弹窗 `TrendLine` 都让**小值靠上**，与 RankMonitor 的
     `negative` 反转口径一致。⚠️ ABA 周报滞后 2~3 周，界面必须标数据截止日。
     关键点：只画一条时另一侧值域为 `null`，网格必须退化成「有哪侧用哪侧」，

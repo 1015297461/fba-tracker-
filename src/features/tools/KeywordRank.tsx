@@ -1,4 +1,6 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
+import { DateCalendar } from './DateCalendar';
 
 const AUTH_TOKEN_KEY = 'fba-auth-v1';
 function authHeaders(): Record<string, string> {
@@ -752,57 +754,164 @@ function TaskModal({ task, timezones, onClose, onSaved }: {
 // ---- ABA 趋势：缩略图 + 完整弹窗 ----
 const TREND_W = 620, TREND_H = 120, TREND_PAD = 8;
 
-/** 通用折线：小值画在上方（ABA 排名数字越小越靠前） */
-function TrendLine({ values, color, label, format, invert = false }: {
-  values: (number | null)[]; color: string; label: string;
-  format: (v: number) => string; invert?: boolean;
+type Peer = { label: string; values: (number | null)[]; format: (v: number) => string };
+
+const F_INT = (v: number) => (v == null ? '—' : `#${Math.round(v).toLocaleString()}`);
+const F_NUM = (v: number) => (v == null ? '—' : Math.round(v).toLocaleString());
+const F_PCT = (v: number) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`);
+
+/** 通用折线：小值画在上方（ABA 排名数字越小越靠前）；悬浮显示该周全部指标 */
+function TrendLine({ values, dates, color, label, format, invert = false, peers = [] }: {
+  values: (number | null)[]; dates?: string[]; color: string; label: string;
+  format: (v: number) => string; invert?: boolean; peers?: Peer[];
 }) {
+  const [hi, setHi] = React.useState<number | null>(null);
   const pts = values.map((v, i) => ({ v, i })).filter(x => x.v != null) as { v: number; i: number }[];
-  if (pts.length < 2) return <div className="kr-tl-empty">{label}：数据不足</div>;
+  if (pts.length < 2) return <div className="kr-tl-empty">{label}：该区间数据不足</div>;
   const vs = pts.map(x => x.v);
   const min = Math.min(...vs), max = Math.max(...vs), span = Math.max(1e-9, max - min);
   const toX = (i: number) => TREND_PAD + (i / Math.max(1, values.length - 1)) * (TREND_W - TREND_PAD * 2);
-  // invert=false：小值靠上（排名）；invert=true：大值靠上（搜索量/集中度）
   const toY = (v: number) => TREND_PAD +
     ((invert ? (max - v) : (v - min)) / span) * (TREND_H - TREND_PAD * 2);
   const d = pts.map((x, k) => `${k ? 'L' : 'M'}${toX(x.i).toFixed(1)},${toY(x.v).toFixed(1)}`).join(' ');
   const first = pts[0], last = pts[pts.length - 1];
+
+  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - r.left) / Math.max(1, r.width)) * TREND_W;
+    const i = Math.round(((x - TREND_PAD) / (TREND_W - TREND_PAD * 2)) * (values.length - 1));
+    setHi(Math.max(0, Math.min(values.length - 1, i)));
+  };
+  const hoverVal = hi != null ? values[hi] : null;
+  const prevVal = hi != null && hi > 0 ? values[hi - 1] : null;
+  const delta = (hoverVal != null && prevVal != null) ? hoverVal - prevVal : null;
+
   return (
     <div className="kr-tl">
       <div className="kr-tl-head"><span>{label}</span>
-        <span className="kr-tl-cur" style={{ color }}>{format(last.v)}</span></div>
-      <svg viewBox={`0 0 ${TREND_W} ${TREND_H}`} width="100%" height={TREND_H} preserveAspectRatio="none">
-        <path d={d} fill="none" stroke={color} strokeWidth="1.6"
-          strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-        <circle cx={toX(last.i)} cy={toY(last.v)} r="2.6" fill={color} />
-      </svg>
+        <span className="kr-tl-cur" style={{ color }}>
+          {hi != null && hoverVal != null ? format(hoverVal) : format(last.v)}
+        </span></div>
+      <div className="kr-tl-canvas">
+        <svg viewBox={`0 0 ${TREND_W} ${TREND_H}`} width="100%" height={TREND_H}
+          preserveAspectRatio="none" onMouseMove={onMove} onMouseLeave={() => setHi(null)}>
+          <path d={d} fill="none" stroke={color} strokeWidth="1.6"
+            strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+          {hi != null && hoverVal != null &&
+            <line x1={toX(hi)} x2={toX(hi)} y1={0} y2={TREND_H}
+              stroke="var(--ink-4)" strokeWidth="1" strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />}
+          {hi != null && hoverVal != null &&
+            <circle cx={toX(hi)} cy={toY(hoverVal)} r="3.4" fill={color} />}
+          <circle cx={toX(last.i)} cy={toY(last.v)} r="2.6" fill={color} />
+        </svg>
+        {hi != null && hoverVal != null && (
+          <div className="kr-tl-tip" style={{ left: `${(hi / Math.max(1, values.length - 1)) * 100}%` }}>
+            <div className="kr-tl-tip-date">{dates?.[hi] || `第 ${hi + 1} 周`}</div>
+            <div className="kr-tl-tip-row"><b>{label.split('（')[0]}</b><span>{format(hoverVal)}</span></div>
+            {delta != null && delta !== 0 &&
+              <div className="kr-tl-tip-delta">较上周 {delta > 0 ? '+' : ''}{format(Math.abs(delta))}</div>}
+            {peers.map(pr => pr.values[hi] != null &&
+              <div className="kr-tl-tip-row" key={pr.label}><span>{pr.label}</span>
+                <span>{pr.format(pr.values[hi]!)}</span></div>)}
+          </div>
+        )}
+      </div>
       <div className="kr-tl-foot"><span>{format(first.v)}</span><span>{pts.length} 周</span></div>
     </div>
   );
 }
 
-/** 列表里的近 1 个月排名缩略图（线靠上 = 排名越靠前 = 越好） */
-function RankSpark({ values }: { values: (number | null)[] }) {
-  const vs = values.filter((v): v is number => v != null && v > 0);
+/** 列表里的近 1 个月排名缩略图：悬浮用 portal 显示详情（表格会裁剪绝对定位） */
+function RankSpark({ trend }: { trend?: KwTrend }) {
+  const srcRanks = trend?.rankRecent || [];
+  const valid = srcRanks.map((v, i) => ({ v, i }))
+    .filter((x): x is { v: number; i: number } => x.v != null && x.v > 0);
+  const vs = valid.map(x => x.v);
+  const [hv, setHv] = React.useState<{ x: number; y: number; i: number } | null>(null);
+  const allDates = trend?.dates || [];
+  const allRanks = trend?.ranks || [];
+  const allVols = trend?.volumes || [];
+  const offset = Math.max(0, allRanks.length - srcRanks.length);
+
   if (vs.length < 2) return <span className="kr-spark-empty">—</span>;
   const W = 76, H = 24, PAD = 2;
   const min = Math.min(...vs), max = Math.max(...vs), span = Math.max(1, max - min);
-  const toX = (i: number) => PAD + (i / (vs.length - 1)) * (W - PAD * 2);
+  const toX = (k: number) => PAD + (k / (valid.length - 1)) * (W - PAD * 2);
   const toY = (v: number) => PAD + ((v - min) / span) * (H - PAD * 2);
-  const d = vs.map((v, i) => `${i ? 'L' : 'M'}${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(' ');
-  return <svg width={W} height={H} style={{ display: 'block' }}>
-    <path d={d} fill="none" stroke="var(--orange)" strokeWidth="1.5"
-      strokeLinejoin="round" strokeLinecap="round" />
-  </svg>;
+  const d = valid.map((x, k) => `${k ? 'L' : 'M'}${toX(k).toFixed(1)},${toY(x.v).toFixed(1)}`).join(' ');
+
+  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const i = Math.max(0, Math.min(vs.length - 1,
+      Math.round(((e.clientX - r.left) / Math.max(1, r.width)) * (vs.length - 1))));
+    setHv({
+      x: Math.min(e.clientX + 14, window.innerWidth - 200),
+      y: Math.min(e.clientY + 14, window.innerHeight - 130), i,
+    });
+  };
+  const gi = hv ? offset + (valid[hv.i]?.i ?? hv.i) : 0;
+  const rank = allRanks[gi], prev = gi > 0 ? allRanks[gi - 1] : null;
+  const delta = (rank != null && prev != null) ? rank - prev : null;
+
+  return <>
+    <svg width={W} height={H} style={{ display: 'block' }} onMouseMove={onMove}
+      onMouseLeave={() => setHv(null)}>
+      <path d={d} fill="none" stroke="var(--orange)" strokeWidth="1.5"
+        strokeLinejoin="round" strokeLinecap="round" />
+      {hv && <circle cx={toX(hv.i)} cy={toY(vs[hv.i])} r="3" fill="var(--orange)" />}
+    </svg>
+    {hv && createPortal(
+      <div className="kr-spark-tip" style={{ left: hv.x, top: hv.y }}>
+        <div className="kr-tl-tip-date">{allDates[gi] || '—'}（ABA 周）</div>
+        <div className="kr-tl-tip-row"><b>ABA 排名</b><span>{rank != null ? F_INT(rank) : '—'}</span></div>
+        {delta != null && delta !== 0 &&
+          <div className={'kr-tl-tip-delta ' + (delta < 0 ? 'good' : 'bad')}>
+            {delta < 0 ? `较上周前进 ${Math.abs(delta)} 位 ↑` : `较上周后退 ${delta} 位 ↓`}
+          </div>}
+        <div className="kr-tl-tip-row"><span>周搜索量</span>
+          <span>{allVols[gi] != null ? F_NUM(allVols[gi]!) : '—'}</span></div>
+      </div>, document.body)}
+  </>;
 }
 
 function KwTrendModal({ keyword, trend, onClose }: {
   keyword: string; trend: KwTrend | null; onClose: () => void;
 }) {
-  const fInt = (v: number) => (v == null ? '—' : `#${Math.round(v).toLocaleString()}`);
-  const fNum = (v: number) => (v == null ? '—' : Math.round(v).toLocaleString());
-  const fPct = (v: number) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`);
+  const dates = trend?.dates || [];
+  const [from, setFrom] = React.useState('');
+  const [to, setTo] = React.useState('');
+  const [preset, setPreset] = React.useState(0);
+
+  // 切换关键词时重置为全区间
+  React.useEffect(() => {
+    setFrom(dates[0] || '');
+    setTo(dates[dates.length - 1] || '');
+    setPreset(0);
+  }, [keyword, dates.length]);
+
+  const i0 = Math.max(0, dates.indexOf(from));
+  const iTo = dates.indexOf(to);
+  const i1 = iTo < 0 ? dates.length - 1 : iTo;
+  const cut = (arr: (number | null)[] | undefined) => (arr || []).slice(i0, i1 + 1);
+  const viewDates = dates.slice(i0, i1 + 1);
+  const ranks = cut(trend?.ranks), volumes = cut(trend?.volumes);
+  const clicks = cut(trend?.clickShares), conv = cut(trend?.conversionShares);
+  const span = Math.max(0, i1 - i0 + 1);
+
+  const applyPreset = (n: number) => {
+    if (!dates.length) return;
+    setFrom(dates[Math.max(0, dates.length - n)] || dates[0]);
+    setTo(dates[dates.length - 1]);
+    setPreset(n);
+  };
+  const peers: Peer[] = [
+    { label: '周搜索量', values: volumes, format: F_NUM },
+    { label: 'Top3 点击', values: clicks, format: F_PCT },
+    { label: 'Top3 转化', values: conv, format: F_PCT },
+    { label: 'ABA 排名', values: ranks, format: F_INT },
+  ];
   const topAsins = trend?.latest?.top_asins || [];
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="kr-trend-modal" onClick={e => e.stopPropagation()}>
@@ -811,19 +920,40 @@ function KwTrendModal({ keyword, trend, onClose }: {
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
         <div className="kr-trend-body">
-          {!trend ? <div className="kr-empty">该词暂无 ABA 数据，首次同步后自动出现。</div> : (
-            <>
+          {!trend || !dates.length
+            ? <div className="kr-empty">该词暂无 ABA 数据，首次同步后自动出现。</div>
+            : <>
+              <div className="kr-trend-filter">
+                <span className="kr-trend-fl">时间</span>
+                <DateCalendar value={from} dates={dates}
+                  onChange={d => { setFrom(d); setPreset(0); if (d > to) setTo(d); }} />
+                <span className="rk-range-arrow">→</span>
+                <DateCalendar value={to} dates={dates}
+                  onChange={d => { setTo(d); setPreset(0); if (d < from) setFrom(d); }} />
+                <div className="kr-trend-presets">
+                  {[26, 52, 104].map(n =>
+                    <button key={n} className={'kr-ghost-btn' + (preset === n ? ' on' : '')}
+                      onClick={() => applyPreset(n)}>{n} 周</button>)}
+                </div>
+                <span className="kr-trend-count">{span} 周</span>
+              </div>
               <div className="kr-trend-meta">
-                数据截止 <b>{trend.latestDate || '—'}</b> · 共 {trend.dates?.length || 0} 周
+                数据截止 <b>{trend.latestDate || '—'}</b> · 当前区间 {viewDates[0] || '—'} ~ {viewDates[viewDates.length - 1] || '—'}
                 {trend.fetchedAt && <> · 缓存于 {trend.fetchedAt.slice(0, 16).replace('T', ' ')}</>}
               </div>
-              <TrendLine values={trend.ranks} color="var(--orange)" label="ABA 排名（越小越靠前，线靠上=变好）" format={fInt} />
-              <TrendLine values={trend.volumes} color="var(--blue)" label="周搜索量" format={fNum} invert />
+              <TrendLine values={ranks} dates={viewDates} color="var(--orange)"
+                label="ABA 排名（越小越靠前，线靠上=变好）" format={F_INT}
+                peers={peers.filter(p => p.label !== 'ABA 排名')} />
+              <TrendLine values={volumes} dates={viewDates} color="var(--blue)"
+                label="周搜索量" format={F_NUM} invert
+                peers={peers.filter(p => p.label !== '周搜索量')} />
               <div className="kr-trend-grid">
-                <TrendLine values={trend.clickShares} color="var(--purple, #a78bfa)"
-                  label="Top3 点击集中度" format={fPct} invert />
-                <TrendLine values={trend.conversionShares} color="var(--green)"
-                  label="Top3 转化集中度" format={fPct} invert />
+                <TrendLine values={clicks} dates={viewDates} color="var(--purple, #a78bfa)"
+                  label="Top3 点击集中度" format={F_PCT} invert
+                  peers={peers.filter(p => p.label !== 'Top3 点击')} />
+                <TrendLine values={conv} dates={viewDates} color="var(--green)"
+                  label="Top3 转化集中度" format={F_PCT} invert
+                  peers={peers.filter(p => p.label !== 'Top3 转化')} />
               </div>
               <div className="kr-trend-top3">
                 <span>最新周 Top3 ASIN</span>
@@ -831,10 +961,10 @@ function KwTrendModal({ keyword, trend, onClose }: {
               </div>
               <div className="kr-trend-note">
                 ABA 周报有 2~3 周发布滞后；排名为全部搜索词中的名次，数字越小越热门。
-                本页数据来自本地缓存（每周自动刷新），不消耗 SIF 额度。
+                悬浮曲线可看该周全部指标；日历只列出有数据的周。本页数据来自本地缓存
+                （每周自动刷新），不消耗 SIF 额度。
               </div>
-            </>
-          )}
+            </>}
         </div>
       </div>
     </div>
@@ -1188,7 +1318,7 @@ export function KeywordRank() {
                         <td className="kr-col-abatrend">
                           <button className="kr-aba-spark" title="线靠上 = 排名越靠前；点击查看完整趋势"
                             onClick={() => setTrendKw(row.keyword)}>
-                            <RankSpark values={kwTrends[row.keyword]?.rankRecent || []} />
+                            <RankSpark trend={kwTrends[row.keyword]} />
                           </button>
                         </td>
                         <td className="kr-col-rank">
