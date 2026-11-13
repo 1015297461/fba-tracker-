@@ -1255,6 +1255,8 @@ def keyword_trend(state, keyword: str, country: str = "US",
             "dates": ser.get("dates") or [],
             "volumes": ser.get("volumes") or [],
             "ranks": ser.get("ranks") or [],
+            "click_shares": ser.get("click_shares") or [],
+            "conversion_shares": ser.get("conversion_shares") or [],
             "latest": ser.get("latest") or {},
             "notice": raw.get("notice") or "",
             "source": "sif",
@@ -1291,6 +1293,9 @@ def keyword_trend(state, keyword: str, country: str = "US",
         "dates": dates,
         "volumes": vols,
         "ranks": ranks,
+        "clickShares": (data.get("click_shares") or [])[-len(dates):] if dates else [],
+        "conversionShares": (data.get("conversion_shares") or [])[-len(dates):] if dates else [],
+        "latest": data.get("latest") or {},
         "count": len(dates),
         "summary": {
             "volumeLast": vol_last,
@@ -1311,6 +1316,61 @@ def keyword_trend(state, keyword: str, country: str = "US",
                  "搜索量是「该词一周被搜了多少次」，ABA 排名是它在全部搜索词里的名次"
                  "（数字越小越热门）。周报有 2~3 周发布滞后，最新一周可能是空值。"),
     }
+
+
+def batch_keyword_trends(state, keywords, country="US", granularity="week",
+                         max_age_hours=168, force=False):
+    """批量补齐关键词 ABA 趋势缓存（关键词排名列表用）。
+
+    · 一次 `market_get_keyword_history` 最多 10 词、只扣 1 点 → 分批；
+    · 缓存 7 天（ABA 本身周更），命中就不调 SIF，列表零额度消耗；
+    · 由后台线程调用，不阻塞列表接口。
+    """
+    kws = list(dict.fromkeys(
+        str(k or "").strip() for k in (keywords or []) if str(k or "").strip()))
+    if not kws:
+        return {"refreshed": 0, "cached": 0, "errors": []}
+    cached = state.get_rmon_kw_trends(kws, country, granularity)
+
+    def _fresh(ts):
+        if max_age_hours <= 0 or not ts:
+            return False
+        try:
+            dt = datetime.datetime.fromisoformat(str(ts)[:19])
+            return (datetime.datetime.now() - dt).total_seconds() < max_age_hours * 3600
+        except Exception:
+            return False
+
+    todo = [k for k in kws if force or not _fresh((cached.get(k.lower()) or (None, ""))[1])]
+    errors = []
+    for i in range(0, len(todo), 10):
+        part = todo[i:i + 10]
+        try:
+            raw = sf.keyword_history(part, country, granularity)
+        except Exception as e:
+            errors.append(f"{part[0]}: {type(e).__name__}")
+            continue
+        series = raw.get("series") or {}
+        for kw in part:
+            ser = series.get(kw) or series.get(kw.lower())
+            if ser is None:
+                # SIF 回填的 key 可能被规范化过，用位置兜底
+                vals = list(series.values())
+                ser = vals[0] if len(part) == 1 and vals else {}
+            if not ser.get("dates"):
+                continue
+            payload = {
+                "keyword": kw, "country": country, "granularity": granularity,
+                "dates": ser.get("dates") or [],
+                "volumes": ser.get("volumes") or [],
+                "ranks": ser.get("ranks") or [],
+                "click_shares": ser.get("click_shares") or [],
+                "conversion_shares": ser.get("conversion_shares") or [],
+                "latest": ser.get("latest") or {},
+                "notice": raw.get("notice") or "",
+            }
+            state.save_rmon_kw_trend(kw, country, granularity, payload)
+    return {"refreshed": len(todo), "cached": len(kws) - len(todo), "errors": errors}
 
 
 # ---------------------------------------------------------------------------

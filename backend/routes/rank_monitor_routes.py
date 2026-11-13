@@ -14,6 +14,7 @@
 import datetime
 import json
 import re
+import threading
 import time
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -1148,6 +1149,78 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             return
         self._send_json(200, data)
     GET["/api/rank/keyword-trend"] = get_keyword_trend
+
+    _last_trend_refresh = [0.0]     # 后台补数节流（60s 内不重复起线程）
+
+    def get_batch_keyword_trends(self):
+        """关键词排名列表用：批量读本地缓存（零额度），缺失/过期词后台异步补。
+
+        `market_get_keyword_history` 一次最多 10 词/1 点；缓存 7 天（ABA 周更）。
+        列表接口不调 SIF，所以打开页面不会被慢请求卡住。
+        """
+        if not _user(self):
+            return
+        q = parse_qs(urlparse(self.path).query)
+        raw_kws = (q.get("keywords") or [""])[0]
+        kws = list(dict.fromkeys(k.strip() for k in raw_kws.split(",") if k.strip()))
+        country = (q.get("country") or ["US"])[0].upper()[:4]
+        try:
+            weeks = max(4, min(400, int((q.get("weeks") or ["104"])[0])))
+        except ValueError:
+            weeks = 104
+        if not kws:
+            self._send_json(200, {"trends": {}, "missing": []})
+            return
+        cached = state.get_rmon_kw_trends(kws, country, "week")
+        trends, stale = {}, []
+        for kw in kws:
+            payload, fetched = cached.get(kw.lower()) or (None, None)
+            if not payload:
+                stale.append(kw)
+                continue
+            dates = payload.get("dates") or []
+            n = min(len(dates), weeks)
+            cut = len(dates) - n
+            def tail(key):
+                v = payload.get(key) or []
+                return v[-n:] if len(v) >= n else v
+            ranks = tail("ranks")
+            vols = tail("volumes")
+            trends[kw] = {
+                "dates": dates[cut:], "volumes": vols, "ranks": ranks,
+                "clickShares": tail("click_shares"),
+                "conversionShares": tail("conversion_shares"),
+                "latest": payload.get("latest") or {},
+                "latestDate": dates[-1] if dates else None,
+                "fetchedAt": fetched,
+                "rankLast": ranks[-1] if ranks else None,
+                "rankPrev": ranks[-2] if len(ranks) > 1 else None,
+                # 近 1 个月（4~5 个周点）排名，供列表缩略图
+                "rankRecent": ranks[-5:] if len(ranks) >= 5 else ranks,
+                "volumeLast": vols[-1] if vols else None,
+            }
+            # 超过 7 天视为过期，后台刷新
+            try:
+                age = (datetime.datetime.now() - datetime.datetime.fromisoformat(
+                    str(fetched)[:19])).total_seconds()
+            except Exception:
+                age = 1e9
+            if age > 7 * 86400:
+                stale.append(kw)
+
+        if stale and (time.time() - _last_trend_refresh[0]) > 60:
+            _last_trend_refresh[0] = time.time()
+            def _bg():
+                try:
+                    r = rank_monitor.batch_keyword_trends(state, stale, country)
+                    _log(f"[rank] ABA 趋势后台补数：{r}")
+                except Exception as e:
+                    _log(f"[rank] ABA 趋势补数失败：{type(e).__name__}: {e}")
+            threading.Thread(target=_bg, daemon=True, name="KwTrendRefresh").start()
+
+        self._send_json(200, {"trends": trends,
+                              "missing": [k for k in kws if k not in trends]})
+    GET["/api/rank/keyword-trend-batch"] = get_batch_keyword_trends
 
     def get_scrape_targets(self):
         """前台实测的定时监测目标（每天自动抓某个词的搜索页）。"""

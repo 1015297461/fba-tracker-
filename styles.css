@@ -4177,6 +4177,40 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 }
 .kr-queue-wait { color: var(--ink-4); }
 .kr-queue-msg { color: var(--blue); font-weight: 500; }
+/* 关键词排名：ABA 周排名列 + 完整趋势弹窗 */
+.kr-col-aba { width: 94px; text-align: center; white-space: nowrap; }
+.kr-col-abatrend { width: 88px; text-align: center; }
+.kr-aba-link { background: none; border: 0; color: var(--ink); cursor: pointer;
+  font: inherit; padding: 2px 4px; border-radius: 4px; }
+.kr-aba-link:hover { color: var(--blue); background: rgba(59,130,246,.08); }
+.kr-aba-up { color: var(--green); margin-left: 3px; font-weight: 600; }
+.kr-aba-down { color: var(--red); margin-left: 3px; font-weight: 600; }
+.kr-aba-empty { color: var(--ink-4); cursor: help; }
+.kr-aba-spark { background: none; border: 0; padding: 2px; cursor: pointer; display: inline-flex; }
+.kr-aba-spark:hover { background: rgba(59,130,246,.08); border-radius: 4px; }
+
+.kr-trend-modal { width: min(760px, 94vw); max-height: 88vh; overflow: auto;
+  background: var(--card-bg); border: 1px solid var(--border-strong);
+  border-radius: 12px; box-shadow: 0 16px 48px rgba(0,0,0,.4); }
+.kr-trend-head { display: flex; align-items: flex-start; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--border); font-size: 14px; }
+.kr-trend-sub { display: block; margin-top: 3px; font-size: 11px; color: var(--ink-4); font-weight: 400; }
+.kr-trend-body { padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 12px; }
+.kr-trend-meta { font-size: 11.5px; color: var(--ink-3); }
+.kr-trend-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.kr-trend-top3 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 11.5px; color: var(--ink-3); }
+.kr-trend-top3 code { padding: 2px 6px; border-radius: 4px; font-size: 11px;
+  background: var(--accent-bg, rgba(59,130,246,.12)); }
+.kr-trend-note { font-size: 11px; line-height: 1.7; color: var(--ink-4);
+  padding-top: 8px; border-top: 1px solid var(--border); }
+.kr-tl { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px 6px; }
+.kr-tl-head { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--ink-3); }
+.kr-tl-cur { font-weight: 600; }
+.kr-tl-foot { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--ink-4); }
+.kr-tl-empty { padding: 14px; font-size: 11.5px; color: var(--ink-4); text-align: center;
+  border: 1px dashed var(--border); border-radius: 8px; }
+
 /* 关键词排名：数据来源标签（HTTP / 浏览器兜底） */
 .kr-col-via { width: 82px; text-align: center; white-space: nowrap; }
 .kr-via { display: inline-block; padding: 1px 6px; border-radius: 4px;

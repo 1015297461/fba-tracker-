@@ -3487,6 +3487,28 @@ class DbState:
         except json.JSONDecodeError:
             return None, fetched
 
+    def get_rmon_kw_trends(self, keywords, country="US", granularity="week"):
+        """批量读关键词趋势缓存，返回 {小写词: (payload, fetched_at)}。"""
+        kws = [str(k or "").strip() for k in (keywords or []) if str(k or "").strip()]
+        if not kws:
+            return {}
+        ph = ",".join(["UPPER(?)"] * len(kws))
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT keyword, payload, fetched_at FROM rmon_kw_trend "
+                "WHERE UPPER(country)=UPPER(?) AND granularity=? "
+                f"AND UPPER(keyword) IN ({ph})",
+                [country, granularity] + kws,
+            ).fetchall()
+        out = {}
+        for r in rows:
+            try:
+                out[str(r["keyword"]).lower()] = (json.loads(r["payload"] or "{}"),
+                                                  r["fetched_at"] or "")
+            except Exception:
+                pass
+        return out
+
     def save_rmon_kw_trend(self, keyword: str, country: str, granularity: str, payload: dict):
         with self.lock:
             with self._conn() as conn:

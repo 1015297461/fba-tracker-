@@ -882,6 +882,17 @@ SIF 是周期内最后一次采样值，爬虫是点击那一刻的实测值，�
   · 排名用 `negative` 反转，让「名次靠前」显示成「线在上」；右轴刻度因此是
     「越往上数字越小」—— 别照着数值大小去改，会反。
   · **点图例单独查看**（`legendClick`）：点一条只画这一条，再点同一恢复两条。
+  · **关键词排名列表也接了 ABA（2026-11-13）**：新增
+    `GET /api/rank/keyword-trend-batch?keywords=a,b,c&weeks=104`，批量读 `rmon_kw_trend`
+    本地缓存（**列表零 SIF 额度**）；缺失/超过 7 天的词由后台线程
+    `rank_monitor.batch_keyword_trends()` 分批补（≤10 词/次、1 点/次，7 天 TTL = ABA 周更），
+    60 秒内不重复起线程。
+  · `keyword_trend()` 与缓存补齐 `click_shares` / `conversion_shares`（原来丢了），
+    弹窗展示 4 组免费数据：ABA 排名 / 周搜索量 / Top3 点击集中度 / Top3 转化集中度
+    + 最新 Top3 ASIN；**不调用任何按点工具**。
+  · 前端 `KeywordRank` 加「ABA 排名」「近1月排名」两列：排名变小=变好（↑绿/↓红），
+    缩略图 `RankSpark` 与弹窗 `TrendLine` 都让**小值靠上**，与 RankMonitor 的
+    `negative` 反转口径一致。⚠️ ABA 周报滞后 2~3 周，界面必须标数据截止日。
     关键点：只画一条时另一侧值域为 `null`，网格必须退化成「有哪侧用哪侧」，
     否则单看排名时整张图空白。切换时间范围时要重置 `only`，不然索引可能越界。
 - **自然位是跨页累加的**：`org` 只对非广告卡片 +1，广告卡片 `org=None`。

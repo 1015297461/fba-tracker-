@@ -65,6 +65,16 @@ interface RankTask {
   createdAt?: string; lastRunAt?: string | null;
 }
 interface TzOption { id: string; label: string; short: string }
+
+/** SIF ABA 周趋势（全部来自本地缓存，零额度消耗） */
+interface KwTrend {
+  dates: string[]; volumes: (number | null)[]; ranks: (number | null)[];
+  clickShares: (number | null)[]; conversionShares: (number | null)[];
+  latest: { date?: string; volume?: number; rank?: number; top_asins?: string[] };
+  latestDate?: string | null; fetchedAt?: string | null;
+  rankLast?: number | null; rankPrev?: number | null;
+  rankRecent?: (number | null)[]; volumeLast?: number | null;
+}
 interface Snapshot {
   id: number; keyword: string; capturedAt: string;
   organicRank: number | null; organicPage: number | null;
@@ -95,6 +105,15 @@ function isRealFailure(s: Snapshot | null | undefined): boolean {
 }
 
 // ---- API ----
+async function apiKeywordTrendBatch(keywords: string[], country = 'US'):
+  Promise<{ trends: Record<string, KwTrend>; missing: string[] }> {
+  const r = await fetch(`/api/rank/keyword-trend-batch?keywords=${encodeURIComponent(keywords.join(','))}`
+    + `&country=${encodeURIComponent(country)}&weeks=104`, { headers: authHeaders() });
+  if (!r.ok) throw new Error('ABA 趋势加载失败');
+  const j = await r.json();
+  return { trends: j.trends || {}, missing: j.missing || [] };
+}
+
 async function apiGetTasks(): Promise<{ tasks: RankTask[]; timezones: TzOption[] }> {
   const r = await fetch('/api/rank/tasks', { headers: authHeaders() });
   if (!r.ok) throw new Error('加载任务失败');
@@ -730,6 +749,98 @@ function TaskModal({ task, timezones, onClose, onSaved }: {
   );
 }
 
+// ---- ABA 趋势：缩略图 + 完整弹窗 ----
+const TREND_W = 620, TREND_H = 120, TREND_PAD = 8;
+
+/** 通用折线：小值画在上方（ABA 排名数字越小越靠前） */
+function TrendLine({ values, color, label, format, invert = false }: {
+  values: (number | null)[]; color: string; label: string;
+  format: (v: number) => string; invert?: boolean;
+}) {
+  const pts = values.map((v, i) => ({ v, i })).filter(x => x.v != null) as { v: number; i: number }[];
+  if (pts.length < 2) return <div className="kr-tl-empty">{label}：数据不足</div>;
+  const vs = pts.map(x => x.v);
+  const min = Math.min(...vs), max = Math.max(...vs), span = Math.max(1e-9, max - min);
+  const toX = (i: number) => TREND_PAD + (i / Math.max(1, values.length - 1)) * (TREND_W - TREND_PAD * 2);
+  // invert=false：小值靠上（排名）；invert=true：大值靠上（搜索量/集中度）
+  const toY = (v: number) => TREND_PAD +
+    ((invert ? (max - v) : (v - min)) / span) * (TREND_H - TREND_PAD * 2);
+  const d = pts.map((x, k) => `${k ? 'L' : 'M'}${toX(x.i).toFixed(1)},${toY(x.v).toFixed(1)}`).join(' ');
+  const first = pts[0], last = pts[pts.length - 1];
+  return (
+    <div className="kr-tl">
+      <div className="kr-tl-head"><span>{label}</span>
+        <span className="kr-tl-cur" style={{ color }}>{format(last.v)}</span></div>
+      <svg viewBox={`0 0 ${TREND_W} ${TREND_H}`} width="100%" height={TREND_H} preserveAspectRatio="none">
+        <path d={d} fill="none" stroke={color} strokeWidth="1.6"
+          strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+        <circle cx={toX(last.i)} cy={toY(last.v)} r="2.6" fill={color} />
+      </svg>
+      <div className="kr-tl-foot"><span>{format(first.v)}</span><span>{pts.length} 周</span></div>
+    </div>
+  );
+}
+
+/** 列表里的近 1 个月排名缩略图（线靠上 = 排名越靠前 = 越好） */
+function RankSpark({ values }: { values: (number | null)[] }) {
+  const vs = values.filter((v): v is number => v != null && v > 0);
+  if (vs.length < 2) return <span className="kr-spark-empty">—</span>;
+  const W = 76, H = 24, PAD = 2;
+  const min = Math.min(...vs), max = Math.max(...vs), span = Math.max(1, max - min);
+  const toX = (i: number) => PAD + (i / (vs.length - 1)) * (W - PAD * 2);
+  const toY = (v: number) => PAD + ((v - min) / span) * (H - PAD * 2);
+  const d = vs.map((v, i) => `${i ? 'L' : 'M'}${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(' ');
+  return <svg width={W} height={H} style={{ display: 'block' }}>
+    <path d={d} fill="none" stroke="var(--orange)" strokeWidth="1.5"
+      strokeLinejoin="round" strokeLinecap="round" />
+  </svg>;
+}
+
+function KwTrendModal({ keyword, trend, onClose }: {
+  keyword: string; trend: KwTrend | null; onClose: () => void;
+}) {
+  const fInt = (v: number) => (v == null ? '—' : `#${Math.round(v).toLocaleString()}`);
+  const fNum = (v: number) => (v == null ? '—' : Math.round(v).toLocaleString());
+  const fPct = (v: number) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`);
+  const topAsins = trend?.latest?.top_asins || [];
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="kr-trend-modal" onClick={e => e.stopPropagation()}>
+        <div className="kr-trend-head">
+          <div><b>{keyword}</b><span className="kr-trend-sub">SIF · ABA 官方周数据 · 关键词趋势</span></div>
+          <button className="modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="kr-trend-body">
+          {!trend ? <div className="kr-empty">该词暂无 ABA 数据，首次同步后自动出现。</div> : (
+            <>
+              <div className="kr-trend-meta">
+                数据截止 <b>{trend.latestDate || '—'}</b> · 共 {trend.dates?.length || 0} 周
+                {trend.fetchedAt && <> · 缓存于 {trend.fetchedAt.slice(0, 16).replace('T', ' ')}</>}
+              </div>
+              <TrendLine values={trend.ranks} color="var(--orange)" label="ABA 排名（越小越靠前，线靠上=变好）" format={fInt} />
+              <TrendLine values={trend.volumes} color="var(--blue)" label="周搜索量" format={fNum} invert />
+              <div className="kr-trend-grid">
+                <TrendLine values={trend.clickShares} color="var(--purple, #a78bfa)"
+                  label="Top3 点击集中度" format={fPct} invert />
+                <TrendLine values={trend.conversionShares} color="var(--green)"
+                  label="Top3 转化集中度" format={fPct} invert />
+              </div>
+              <div className="kr-trend-top3">
+                <span>最新周 Top3 ASIN</span>
+                {topAsins.length ? topAsins.map(a => <code key={a}>{a}</code>) : <em>无数据</em>}
+              </div>
+              <div className="kr-trend-note">
+                ABA 周报有 2~3 周发布滞后；排名为全部搜索词中的名次，数字越小越热门。
+                本页数据来自本地缓存（每周自动刷新），不消耗 SIF 额度。
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---- Main View ----
 export function KeywordRank() {
   const [tasks, setTasks]   = React.useState<RankTask[]>([]);
@@ -755,6 +866,12 @@ export function KeywordRank() {
   const [queue, setQueue] = React.useState<QueueInfo>({ waiting: 0, running: null, items: [] });
   const [runMsg, setRunMsg] = React.useState('');
   const activeRef = React.useRef<string | null>(null);
+
+  // ABA 周趋势（SIF 本地缓存）：列表零额度，详情弹窗只读缓存
+  const [kwTrends, setKwTrends] = React.useState<Record<string, KwTrend>>({});
+  const [trendMissing, setTrendMissing] = React.useState<string[]>([]);
+  const [trendKw, setTrendKw] = React.useState<string | null>(null);
+  const trendRetry = React.useRef(0);
 
   const active = tasks.find(t => t.id === activeId) || null;
   const rows   = active ? buildRows(active.keywords, snaps) : [];
@@ -828,6 +945,26 @@ export function KeywordRank() {
   };
 
   React.useEffect(() => { reloadTasks(); }, []);
+
+  // 切任务时批量读 ABA 趋势缓存；有词缺数据 → 后端后台补，10s 后自动再拉一次
+  React.useEffect(() => {
+    const kws = active?.keywords || [];
+    if (!kws.length) { setKwTrends({}); setTrendMissing([]); return; }
+    let alive = true;
+    const load = () => apiKeywordTrendBatch(kws, active?.marketplace || 'US')
+      .then(d => {
+        if (!alive) return;
+        setKwTrends(d.trends || {});
+        setTrendMissing(d.missing || []);
+        if ((d.missing || []).length && trendRetry.current < 1) {
+          trendRetry.current += 1;
+          window.setTimeout(load, 10000);
+        }
+      }).catch(() => { /* 不阻断主表格 */ });
+    trendRetry.current = 0;
+    load();
+    return () => { alive = false; };
+  }, [active?.id, (active?.keywords || []).join('|')]);
   React.useEffect(() => { if (activeId) reloadSnaps(activeId); else setSnaps([]); }, [activeId]);
   React.useEffect(() => { activeRef.current = activeId; }, [activeId]);
 
@@ -995,6 +1132,8 @@ export function KeywordRank() {
                       )}
                       <th className="kr-col-kw">关键词</th>
                       <th className="kr-col-rank">自然排名</th>
+                      <th className="kr-col-aba" title="SIF ABA 官方周排名（全部搜索词中的名次，越小越热门）">ABA 排名</th>
+                      <th className="kr-col-abatrend" title="近 1 个月 ABA 排名走势；线靠上 = 排名越靠前 = 越好">近1月排名</th>
                       <th className="kr-col-rank">广告排名</th>
                       <th className="kr-col-spark">近5天趋势</th>
                       <th className="kr-col-time">更新时间</th>
@@ -1026,6 +1165,31 @@ export function KeywordRank() {
                         <td className="kr-col-rank">
                           {/* 没拿到排名时把「有效结论」传进去，才能显示「前3页未找到」 */}
                           <RankCell snap={row.latest || lastRes} prevSnap={row.prev} type="organic" />
+                        </td>
+                        <td className="kr-col-aba">
+                          {(() => {
+                            const t = kwTrends[row.keyword];
+                            if (!t || t.rankLast == null)
+                              return <span className="kr-aba-empty"
+                                title={trendMissing.includes(row.keyword)
+                                  ? '首次同步中，稍后自动出现' : '该词暂无 ABA 数据'}>—</span>;
+                            const d = (t.rankPrev != null) ? t.rankLast - t.rankPrev : null;
+                            return <button className="kr-aba-link" title={`数据截止 ${t.latestDate || '—'}，点击查看完整趋势`}
+                              onClick={() => setTrendKw(row.keyword)}>
+                              #{Number(t.rankLast).toLocaleString()}
+                              {d != null && d !== 0 &&
+                                <span className={d < 0 ? 'kr-aba-up' : 'kr-aba-down'}
+                                  title={d < 0 ? `较上周前进 ${Math.abs(d)} 位` : `较上周后退 ${d} 位`}>
+                                  {d < 0 ? '↑' : '↓'}
+                                </span>}
+                            </button>;
+                          })()}
+                        </td>
+                        <td className="kr-col-abatrend">
+                          <button className="kr-aba-spark" title="线靠上 = 排名越靠前；点击查看完整趋势"
+                            onClick={() => setTrendKw(row.keyword)}>
+                            <RankSpark values={kwTrends[row.keyword]?.rankRecent || []} />
+                          </button>
                         </td>
                         <td className="kr-col-rank">
                           <RankCell snap={row.latest} prevSnap={row.prev} type="sponsored" />
@@ -1111,6 +1275,12 @@ export function KeywordRank() {
       {detail && active && (
         <TrendModal task={active} initialKw={detail.kw} snapshots={snaps}
           onClose={() => setDetail(null)} />
+      )}
+
+      {/* ABA 关键词完整趋势（只读本地缓存，零 SIF 额度） */}
+      {trendKw && (
+        <KwTrendModal keyword={trendKw} trend={kwTrends[trendKw] || null}
+          onClose={() => setTrendKw(null)} />
       )}
 
     {/* 批量操作条：任务多选 / 单任务词多选都汇到这里 */}
