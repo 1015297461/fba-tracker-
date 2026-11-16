@@ -139,15 +139,17 @@ def search_url(marketplace, keyword, page=1):
     return f"https://{mk['domain']}/s?{qs}"
 
 
-def fetch_via_cdp(marketplace, keyword, page=1, timeout=12):
+def fetch_via_cdp(marketplace, keyword, page=1, timeout=18, retries=1):
     """用真实浏览器（CDP）抓搜索页 —— HTTP 被 bm-verify 拦时的兜底。
 
     为什么有效：bm-verify 是一个要执行 JS 才能通过的插页，纯 HTTP 客户端
     天生过不了；真实 Chrome 跑完脚本会自动跳转回正常结果页。
 
-    timeout=12：实测搜索页 10 秒就能拿到完整 50 张卡片（timeout 10/15/25 都返回 50 张，
-    但耗时 15.9/17.3/27.4s）—— 原来给 25 秒纯属白等，页面渲染完脚本还在空转。
-    代价仍然不低（冷加载 + JS 执行），只适合兜底，不能当主通道。
+    timeout=18（2026-11-16 从 12 上调）：实测同一页要 14.3s 才渲染出 50 张卡片，
+    12s 到点取 DOM 时偶尔还是空壳 → `cdp_no_results`（steering wheel cover
+    09:51 那次就是）。留 4 秒余量。
+    另加一次重试：第二次导航资源已在缓存里，通常更快；只有 `cdp_no_results`
+    才值得重试（blocked / cdp 异常重试没用）。
     """
     url = search_url(marketplace, keyword, page)
     if not url:
@@ -156,18 +158,28 @@ def fetch_via_cdp(marketplace, keyword, page=1, timeout=12):
         from . import browser_fetch
         if not browser_fetch.available():
             return None, "cdp_unavailable"
-        html, err = browser_fetch._fetch_headless_cdp(
-            url, ready_expr="!!document.querySelector('.s-search-result')",
-            timeout=timeout)
     except Exception as e:
         return None, f"cdp_exc:{type(e).__name__}"
-    if err:
-        return None, f"cdp_{err}"
-    if "s-search-result" not in html:
-        return None, "cdp_no_results"
-    if any(h in html for h in _BLOCK_HINTS) or "bm-verify" in html:
-        return None, "cdp_blocked"
-    return html, None
+
+    last = None
+    for attempt in range(max(1, int(retries) + 1)):
+        try:
+            html, err = browser_fetch._fetch_headless_cdp(
+                url, ready_expr="!!document.querySelector('.s-search-result')",
+                timeout=timeout)
+        except Exception as e:
+            return None, f"cdp_exc:{type(e).__name__}"
+        if err:
+            return None, f"cdp_{err}"          # 超时/打不开，重试也一样
+        if any(h in html for h in _BLOCK_HINTS) or "bm-verify" in html:
+            return None, "cdp_blocked"
+        if "s-search-result" in html:
+            return html, None
+        last = "cdp_no_results"
+        if attempt < retries:
+            _log(f"[rank] CDP 拿到空壳（{len(html)} 字节），{timeout}s 后重试一次")
+            time.sleep(2)
+    return None, last or "cdp_no_results"
 
 
 def fetch_page(marketplace, keyword, page=1, timeout=20, fingerprint=None):
@@ -302,7 +314,8 @@ def locate_rank(asin, marketplace, keyword, max_pages=3,
     sp_words = mk["sp"] if mk else ["Sponsored"]
     fp = random.choice(_FINGERPRINTS)  # 同一关键词所有翻页使用同一指纹
 
-    used_cdp = False           # 本词是否用了真实浏览器兜底（调用方据此扣配额）
+    used_cdp = False           # 本词是否用真实浏览器兜底成功（调用方据此扣配额）
+    cdp_tried = False          # 是否尝试过兜底（失败也要让前端「来源」列看得出来）
     organic_seen = 0           # 截至目前累计的自然结果数（用于跨页全局排名）
     sponsored_hits = []        # 命中的广告坑位 [{page, slot}]
     organic_rank = None
@@ -314,6 +327,8 @@ def locate_rank(asin, marketplace, keyword, max_pages=3,
             marketplace, keyword, page, fingerprint=fp, allow_cdp=allow_cdp)
         if via == "cdp":
             used_cdp = True
+        elif via == "cdp_failed":
+            cdp_tried = True
         if err:
             last_error = err
             # 被封 / 网络错误 / 重试后仍空 → 这个关键词到此为止
@@ -366,7 +381,8 @@ def locate_rank(asin, marketplace, keyword, max_pages=3,
         "organic_page": organic_page,
         "sponsored": sponsored_hits,
         "organic_scanned": organic_seen,
-        "via": "cdp" if used_cdp else "http",
+        "via": ("cdp" if used_cdp else
+                ("cdp_failed" if cdp_tried else "http")),
         "error": last_error,
         "captured_at": _now_iso(),
     }
