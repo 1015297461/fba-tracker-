@@ -152,6 +152,12 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                 #   6 个词里前 3 个被拦时用光额度（且兜底成功显示 ok），后 2 个再被拦
                                 #   只能 blocked_x3 干等 —— 看着像「只有这几个词有问题」，其实是额度耗尽。
                                 #   rank_fetcher._BLOCK_HINTS 同步补 bm-verify / checkpoint 等 2026 挑战页特征。
+                                #   **CDP 兜底超时与空壳重试（2026-11-16）**：`fetch_via_cdp`
+                                #   timeout 12 → **18**，`cdp_no_results` 时重试一次（第二次资源已缓存）。
+                                #   起因：`steering wheel cover` 11-16 09:51 报 `blocked|cdp_no_results`
+                                #   —— 兜底其实走了，但 12s 到点取 DOM 仍是空壳；实测同一页要 14.3s。
+                                #   另 `locate_rank` 新增 `cdp_tried`：兜底失败时 `via` 记 `cdp_failed`
+                                #   （不再是 `http`），前端「来源」列才能看出「试过但没成」。
     scrape.py                   # /api/scrape/*：start_scrape_task()/_run_scrape() 服务端后台
                                 #   执行器（POST /start 立即返回 taskId，前端轮询 /progress，
                                 #   刷新不丢任务）+ 运行时暂停/取消/继续（/pause /resume /cancel，
