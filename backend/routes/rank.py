@@ -54,16 +54,10 @@ def _due_slot(task, now_utc=None):
     return None
 
 
-# CDP 兜底额度：常驻 Chrome + 12s 超时后，单次只要 5~12 秒（实测 5.4s 拿到
-# 1.78MB / 50 卡），比「HTTP 换指纹硬撞 3 次」的 20~30 秒还快，也不额外刺激风控。
-# 所以不再限 3 个：整批每个词都给额度，避免后段词额度耗尽后只能 blocked_x3 干等。
-CDP_BUDGET_PER_TASK = 3          # 保留兼容：只有显式传 0 时才会用到
-CDP_FULL_GRANT_MAX_KW = 5        # 保留兼容
-
-
-def _cdp_budget(n_kw):
-    """每个被拦的词都允许走一次常驻浏览器兜底。"""
-    return max(1, int(n_kw))
+# CDP 兜底不设上限（2026-11-16 去掉「本批剩 N 次额度」）：
+# 常驻 Chrome + 18s 超时后单次 5~18 秒，比「HTTP 换指纹硬撞 3 次」的 20~30 秒还快；
+# 旧额度按「词」扣、上限也等于词数，逻辑上永远不会卡住任何词 ——
+# 那串「剩 N 次」只会让人误以为快用完就不兜底。现在每个词直接允许。
 
 
 def run_rank_task(state, task, delay_between_kw=(3.0, 7.0)):
@@ -73,15 +67,14 @@ def run_rank_task(state, task, delay_between_kw=(3.0, 7.0)):
     """
     results = []
     kws = task.get("keywords", [])
-    cdp_budget = _cdp_budget(len(kws))
+    cdp_used = 0
     for i, kw in enumerate(kws):
         kw = (kw or "").strip()
         if not kw:
             continue
-        allow_cdp = cdp_budget > 0
         try:
             res = rank_fetcher.locate_rank(task["asin"], task["marketplace"], kw,
-                                           max_pages=3, allow_cdp=allow_cdp)
+                                           max_pages=3, allow_cdp=True)
         except Exception as e:
             res = {
                 "asin": task["asin"], "keyword": kw,
@@ -90,8 +83,9 @@ def run_rank_task(state, task, delay_between_kw=(3.0, 7.0)):
                 "error": f"fetch_exc:{type(e).__name__}", "captured_at": _now_iso(),
             }
         if res.get("via") == "cdp":
-            cdp_budget -= 1
-            _log(f"[rank] 「{kw}」HTTP 被拦，已用真实浏览器兜底成功（本批剩 {cdp_budget} 次额度）")
+            cdp_used += 1
+            _log(f"[rank] 「{kw}」HTTP 被拦，已用真实浏览器兜底成功"
+                 f"（本批第 {cdp_used} 次，共 {len(kws)} 个词）")
         state.add_snapshot(task["id"], res)
         results.append(res)
         if i < len(kws) - 1:
