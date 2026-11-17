@@ -1116,6 +1116,23 @@ SIF 的时间参数有硬约束，且**违反约束的表现不一致**（有的
 前端 `api()` 抛错带 `status`，401 转成 **sticky toast**（不自动消失），文案明确说
 「不是数据被删了，是登录态过期」，不再让用户误判。
 
+**⚠️ 必须优先读 `structuredContent`（2026-11-17 踩过）**：MCP 的 `tools/call` 同时
+返回 `content[]`（文本）与 `structuredContent`（结构化）。SIF 对部分重接口
+（如 `market_get_keyword_competition`）把 text **降级成摘要**，摘要里的
+`top_competitors` 是**数量**（int），完整数组只在 `structuredContent` 里：
+
+```
+content[0].text              → {"top_competitors": 100, ...}      ← 数量
+result.structuredContent     → {"top_competitors": [{asin:...}×100]} ← 真数据
+```
+
+`_call_once` 原来只解析 `content[].text`，于是 `[...][:top_n]` 报
+`TypeError: 'int' object is not subscriptable`（11-17 10:32 线上
+「chemo gloves and socks」异步查询失败即此）。现在改为**优先返回
+`structuredContent`**，为空才回退 text；并在 `keyword_competition_rank` 里
+对「不是数组」的情况降级成空榜 + 日志，不再崩。
+排查同类问题：看 text 里有没有 `_notice: 完整结构化数据见 structuredContent`。
+
 **超时与重试**：`call_tool(name, args, timeout=60, retries=0)` —— 默认不重试。
 重接口（`market_get_keyword_competition`、`market_get_asin_aba_footprint`）自带
 `timeout=90, retries=1`：`competePattern` 要拉前 100 名竞品，**实测 51 秒**才返回，

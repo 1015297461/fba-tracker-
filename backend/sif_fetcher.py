@@ -207,6 +207,24 @@ def _call_once(name: str, arguments: dict, timeout: int = 60) -> dict:
                 break
         raise SifError(f"SIF 工具 {name} 失败: {err_text[:300]}",
                        fatal=is_fatal_message(err_text))
+    # ⚠️ 优先 structuredContent（2026-11-17 实测 SIF 改版后必须这样）
+    #
+    # MCP 的 tools/call 可以同时返回 content(text) 和 structuredContent。
+    # SIF 现在把 text 降级成**摘要**，里面还会带一行
+    #   `_notice: 完整结构化数据见 structuredContent（本 text 为摘要）`
+    # 典型差异（market_get_keyword_competition）：
+    #   text               → top_competitors: 100            （数量）
+    #   structuredContent  → top_competitors: [{asin:...}×100] （真正的数组）
+    # 只读 text 就会拿到 int，上层一切片就 `'int' object is not subscriptable`
+    # （11-17 10:32 「chemo gloves and socks」线上报错即此）。
+    stc = result.get("structuredContent")
+    if isinstance(stc, dict) and stc:
+        # 规范允许把结果再包一层 {"content": {...}}，只有单键时才拆
+        inner = stc.get("content")
+        if isinstance(inner, dict) and len(stc) == 1:
+            return inner
+        return stc
+
     for c in result.get("content", []) or []:
         t = c.get("text", "")
         if not t:
@@ -962,7 +980,15 @@ def keyword_competition_rank(keyword: str, country: str = "US", asin: str = None
                     on_retry=on_retry)
 
     comps = []
-    for c in (data.get("top_competitors") or [])[:int(top_n)]:
+    raw_comps = data.get("top_competitors")
+    if not isinstance(raw_comps, list):
+        # 兜底：正常走 structuredContent 时这里是数组。若哪天 SIF 又把完整数据挪走、
+        # 这里只剩数量（2026-11-17 就吃过一次：text 里是 int 100），不能直接切片崩掉
+        # （`'int' object is not subscriptable`），降级成空榜并留日志。
+        _log(f"[sif] 竞品榜 {keyword} 返回的 top_competitors 不是数组"
+             f"（{type(raw_comps).__name__}），本次按空榜处理")
+        raw_comps = []
+    for c in raw_comps[:int(top_n)]:
         comps.append({
             "asin":            _plain_asin(c.get("asin")),
             "price":           _num_r(c.get("price")),
