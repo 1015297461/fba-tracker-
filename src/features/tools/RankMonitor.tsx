@@ -743,6 +743,15 @@ function KeywordResult({ data: data0, hideKpis }: { data: any; hideKpis?: boolea
     <>
       {!hideKpis && <KeywordKpis data={data} />}
 
+      {/* 「解析不出来」和「真没数据」必须分开说：接口改版时榜单会是空的，
+          不提示的话用户会以为这个词真的没人做（2026-11-17 SIF 就改过一次格式） */}
+      {data.format_warning && (
+        <div className="rk-format-warn">
+          <b>⚠️ 数据可能不完整</b>
+          <span>{data.format_warning}</span>
+        </div>
+      )}
+
       <div className="tf-card">
         <div className="tf-card-head">
           <span>竞品份额榜</span>

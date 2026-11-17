@@ -1412,6 +1412,13 @@ export function ProductScrape() {
     });
   }, [filteredProducts, sortKey, sortAsc]);
 
+  // 「页面完整但解析不出」= 疑似 Amazon 改版（与「被风控」「真下架」区分开）。
+  // 后端 product_fetcher.ProductFormatChanged 抛出的文案里带「改版」二字，这里据此统计。
+  const formatChangedCount = React.useMemo(
+    () => products.filter(p => p.status === 'failed'
+      && /改版|结构已变更|结构变化/.test(p.errorMessage || '')).length,
+    [products]);
+
   const totalPages = Math.max(1, Math.ceil(sortedProducts.length / pageSize));
   React.useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages]);
   React.useEffect(() => { setPage(1); }, [searchQuery, pageSize]);
@@ -1515,6 +1522,17 @@ export function ProductScrape() {
               <button className="btn btn-sm" onClick={handlePause} disabled={stopping}>暂停</button>
               <button className="btn btn-sm" onClick={handleCancelScrape} disabled={stopping}>取消采集</button>
             </div>
+          </div>
+        )}
+
+        {formatChangedCount > 0 && (
+          <div className="ps-format-warn">
+            <b>⚠️ 疑似亚马逊详情页改版</b>
+            <span>
+              {formatChangedCount} 个商品页面被完整返回，但找不到
+              <code>productTitle</code> 等已知字段，解析失败。
+              这<b>不是被反爬拦截</b>，重试无效 —— 需要更新解析规则（后端日志有页面体积可佐证）。
+            </span>
           </div>
         )}
 

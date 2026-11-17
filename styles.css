@@ -3467,6 +3467,26 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 [data-theme="dark"] .rk-ev-head select,
 [data-theme="dark"] .cm-filters select { color-scheme: dark; }
 
+/* 产品采集：疑似亚马逊改版的汇总提示（失败项里含「改版」字样时出现） */
+.ps-format-warn { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap;
+  margin: 10px 0; padding: 10px 13px; border-radius: 8px; font-size: 12px; line-height: 1.65;
+  color: var(--ink); background: rgba(245,158,11,.12);
+  border: 1px solid rgba(245,158,11,.45); }
+.ps-format-warn b { color: #b45309; }
+.ps-format-warn span { color: var(--ink-3); flex: 1; min-width: 220px; }
+.ps-format-warn code { padding: 1px 5px; border-radius: 4px; font-size: 11px;
+  background: rgba(120,120,120,.18); }
+[data-theme="dark"] .ps-format-warn b { color: #fbbf24; }
+
+/* 「数据可能不完整（疑似对方改版）」提示条：与"没数据"区分开，必须显眼 */
+.rk-format-warn { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap;
+  margin: 8px 0; padding: 9px 12px; border-radius: 8px; font-size: 12px; line-height: 1.6;
+  color: var(--ink); background: rgba(245,158,11,.12);
+  border: 1px solid rgba(245,158,11,.45); }
+.rk-format-warn b { color: #b45309; white-space: nowrap; }
+[data-theme="dark"] .rk-format-warn b { color: #fbbf24; }
+.rk-format-warn span { color: var(--ink-3); }
+
 /* 竞品份额榜卡片头里的日历：跟标题同一行，别把标题挤下去 */
 .rk-hist-cal { display: inline-flex; align-items: center; margin-left: 2px; }
 

@@ -1133,6 +1133,39 @@ result.structuredContent     → {"top_competitors": [{asin:...}×100]} ← 真�
 对「不是数组」的情况降级成空榜 + 日志，不再崩。
 排查同类问题：看 text 里有没有 `_notice: 完整结构化数据见 structuredContent`。
 
+### 「对方改版」必须能被识别，并且前端要说出来（2026-11-17）
+
+**背景**：只降级成空数据/打日志，用户看到的只是「没数据」，分不清是
+「真的没有」还是「对方改了结构」。所以每个会解析外部页面的模块，都要能区分
+**解析失败** 与 **确实为空**，并把结论带到前端。
+
+**产品采集（`product_fetcher`）**
+- `is_full_product_page(html)`：页面 ≥150KB（实测详情页 800KB~2MB，空壳 <100KB）
+  且命中详情页骨架（`dp-container` / `feature-bullets` / `addToCart` / `buybox` …）。
+- `200 + 无 productTitle + is_full_product_page` → 抛 **`ProductFormatChanged`**
+  （文案写明页面体积）。**这是改版，不是风控**，`fetch_product_page` 立即抛出、
+  **不重试**（原来一律判「疑似软封空壳页」→ 清 cookie 重试 4 次全废，
+  还把原因误导成「被反爬」）。
+- `is_deterministic_failure(msg)`：`不存在 / 无效 / 改版 / 结构已变更` 都算确定性失败，
+  `scrape_product_robust` 的 rounds 与 `scrape_products` 的「失败项重试轮」都据此跳过
+  —— 改版 ASIN 只抓 1 次（实测桩测：改版 1 次 / 空壳 4 次）。
+- 前端 `ProductScrape`：`products` 里失败项若 `errorMessage` 匹配
+  `/改版|结构已变更|结构变化/`，在进度区下方显示 `.ps-format-warn` 橙色提示
+  「N 个商品页面被完整返回但解析失败，不是被反爬拦截，重试无效」。
+
+**SIF（`sif_fetcher`）**
+- `keyword_competition_rank` 遇到 `top_competitors` 不是数组时，除了降级空榜，
+  还返回 **`format_warning`**（含实际类型），`rank_monitor.fetch_keyword` 原样透出，
+  前端 `RankMonitor` 在竞品份额榜上方显示 `.rk-format-warn`
+  —— 避免「接口改版」被读成「这个词没人做」。
+
+**类目榜单**：`no_recs` 的中文映射改成「页面无榜单数据（疑似 Amazon 改版）」。
+
+**判断口径（以后再遇到类似问题照这个来）**：
+1. 页面/接口**拿到响应**了吗？→ 拿到才谈「改版」；没拿到是网络/风控。
+2. 响应**结构完整**吗（体积/骨架/字段类型）？→ 完整但解析不出 = 改版。
+3. 改版属**确定性失败**，必须不重试 + 前端提示；风控/空壳才值得重试。
+
 **超时与重试**：`call_tool(name, args, timeout=60, retries=0)` —— 默认不重试。
 重接口（`market_get_keyword_competition`、`market_get_asin_aba_footprint`）自带
 `timeout=90, retries=1`：`competePattern` 要拉前 100 名竞品，**实测 51 秒**才返回，

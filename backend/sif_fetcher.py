@@ -980,11 +980,17 @@ def keyword_competition_rank(keyword: str, country: str = "US", asin: str = None
                     on_retry=on_retry)
 
     comps = []
+    format_warning = None
     raw_comps = data.get("top_competitors")
     if not isinstance(raw_comps, list):
-        # 兜底：正常走 structuredContent 时这里是数组。若哪天 SIF 又把完整数据挪走、
-        # 这里只剩数量（2026-11-17 就吃过一次：text 里是 int 100），不能直接切片崩掉
-        # （`'int' object is not subscriptable`），降级成空榜并留日志。
+        # 正常走 structuredContent 时这里是数组。若哪天 SIF 又把完整数据挪走、
+        # 只剩数量（2026-11-17 就吃过一次：text 里是 int 100），不能直接切片崩掉
+        # （`'int' object is not subscriptable`），降级成空榜。
+        # ⚠️ 必须**带出 format_warning**：否则界面显示「0 个竞品」，
+        # 用户会以为是这个词真的没人做，而不是「SIF 接口改版了」。
+        format_warning = (f"SIF 竞品榜返回格式异常（top_competitors="
+                          f"{type(raw_comps).__name__}，预期数组），本次未取到数据；"
+                          "疑似 SIF 接口改版，请检查后端日志")
         _log(f"[sif] 竞品榜 {keyword} 返回的 top_competitors 不是数组"
              f"（{type(raw_comps).__name__}），本次按空榜处理")
         raw_comps = []
@@ -1047,6 +1053,9 @@ def keyword_competition_rank(keyword: str, country: str = "US", asin: str = None
         "data_notice":      data.get("data_notice"),
         "competitor_count": len(comps),
         "competitors":      comps,
+        # 非空 = 接口格式不对，本次是「解析不出来」而不是「真的没数据」。
+        # 前端据此显示「疑似 SIF 改版」提示，不要当成 0 竞品展示。
+        "format_warning":   format_warning,
         "market_structure": {
             "visible_asin_count":    _num_r(ms.get("visible_asin_count"), 0),
             "concentration_level":   ms.get("concentration_level"),

@@ -107,7 +107,10 @@ function fmtRunErr(s: string | null): string {
   if (!s) return '';
   const ST: Record<string, string> = {
     partial: '部分条目字段不全', error: '采集失败', blocked: '被反爬拦截',
-    incomplete: '部分条目字段不全', no_html: '未取到页面', no_recs: '页面无榜单数据',
+    incomplete: '部分条目字段不全', no_html: '未取到页面',
+    // no_recs = 页面拿到了、但一个榜单条目都没解析出来。除了「该榜单确实为空」，
+    // 更常见的是 **Amazon 改了榜单页结构** —— 必须点明，否则用户会以为类目没数据。
+    no_recs: '页面无榜单数据（疑似 Amazon 改版）',
   };
   return s.split(';').map(seg => {
     const t = seg.trim();

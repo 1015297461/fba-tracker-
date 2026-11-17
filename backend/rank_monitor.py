@@ -254,6 +254,9 @@ def fetch_keyword(target: dict, on_retry=None, track_organic: int = None) -> dic
         "country": country,
         "captured_at": _now_iso(),
         "competitor_count": raw.get("competitor_count"),
+        # 非空 = SIF 返回格式异常（疑似接口改版），本次是「解析不出来」而非「真没数据」。
+        # 前端据此显示提示，别让用户以为这个词没人做。
+        "format_warning": raw.get("format_warning"),
         # 数据周期：份额榜是 ABA 周数据，同一周内重跑内容完全一样（用户会以为"没抓新的"）
         "period": raw.get("period"),
         "data_notice": raw.get("data_notice"),

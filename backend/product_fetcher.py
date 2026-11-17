@@ -192,6 +192,28 @@ MAX_RETRIES = 3
 RETRY_DELAYS = [2.0, 5.0, 10.0]
 
 
+class ProductFormatChanged(Exception):
+    """页面被完整返回，但已知选择器全部落空 —— Amazon 改版的信号。
+
+    与「软封空壳页」的区别：空壳页体积很小（几十 KB）且没有详情页骨架；
+    改版是**完整页面**（实测 800KB~2MB）、骨架还在，只是 `productTitle` 这类
+    id/class 被换掉了。两者处理方式相反：
+      · 空壳 → 清 cookie 换身份**重试**（多半能自愈）
+      · 改版 → 重试**毫无意义**，必须改解析规则，所以立刻抛出、不浪费次数
+    """
+
+
+def is_deterministic_failure(msg):
+    """确定性失败：重试只会浪费时间，必须跳过失败项重试轮。
+
+    · 不存在 / 无效 → ASIN 本身的问题
+    · 改版 / 结构已变更 → 选择器失效，重抓同一页面结果不会变
+    只有「被拦 / 超时 / 空壳」这类才值得再试。
+    """
+    m = str(msg or "")
+    return any(k in m for k in ("不存在", "无效", "改版", "结构已变更", "结构变化"))
+
+
 class ProductNotFoundError(Exception):
     pass
 
@@ -387,6 +409,23 @@ def is_captcha_page(html_text):
     )
 
 
+# 详情页骨架特征：改后可能变，但「整页仍在」这件事能靠它们判断。
+# 只用来区分「改版」与「空壳」，不参与数据解析。
+_PROD_PAGE_MARKS = (
+    'id="dp-container"', 'id="feature-bullets"', 'id="addToCart"',
+    'id="buybox"', 'id="title_feature_div"', 'data-feature-name="title"',
+    "dp-container", "feature-bullets",
+)
+FULL_PAGE_MIN_BYTES = 150_000       # 实测详情页 800KB~2MB，空壳页 < 100KB
+
+
+def is_full_product_page(html_text):
+    """页面是否为「被完整返回的详情页」（不看具体字段能否解析）。"""
+    if not html_text or len(html_text) < FULL_PAGE_MIN_BYTES:
+        return False
+    return any(m in html_text for m in _PROD_PAGE_MARKS)
+
+
 def is_dog_page(html_text):
     lower = html_text.lower()
     return ("sorry" in lower and "dogs of amazon" in lower) or "ref=cs_503_link" in lower
@@ -522,6 +561,11 @@ def fetch_product_page(asin, marketplace, max_attempts=None):
         # （无 id="productTitle"，也非验证码/Dog页）。若不识别，会把它当正常页返回 →
         # parse 无标题 → 详情弹窗报「未能解析到产品数据」。清 cookie + 换指纹重试自愈。
         if 'id="productTitle"' not in html_text:
+            if is_full_product_page(html_text):
+                # 整页都回来了、骨架也在，就是没有 productTitle → 改版，重试无用
+                raise ProductFormatChanged(
+                    f"疑似 Amazon 详情页改版：页面完整（{len(html_text)//1024} KB）"
+                    "但找不到 productTitle，重试无效，需要更新解析规则")
             last_error = "疑似软封空壳页（无 productTitle），重置会话重试"
             _reset_identity()
             if attempt < total_attempts - 1:
@@ -1565,8 +1609,7 @@ def scrape_product_robust(asin, marketplace, rounds=2, with_customers_say=True,
     for r in range(1, max(1, rounds)):
         if p.get("status") != "failed":
             break
-        em = p.get("error_message") or ""
-        if "不存在" in em or "无效" in em:
+        if is_deterministic_failure(p.get("error_message")):
             break
         _log(f"[scrape] {asin} 单条第 {r + 1} 轮重来（重置会话 + 换指纹）")
         reset_session(marketplace)
@@ -1657,8 +1700,7 @@ def scrape_products(asins, marketplace, with_reviews=False, on_progress=None,
     failed_indices = [
         i for i, r in enumerate(results)
         if r and r["status"] == "failed"
-        and "不存在" not in (r.get("error_message") or "")
-        and "无效" not in (r.get("error_message") or "")
+        and not is_deterministic_failure(r.get("error_message"))
     ]
 
     if failed_indices:
