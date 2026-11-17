@@ -73,6 +73,27 @@ Amphetamine），排除 Mac 睡眠。
 `rmon_targets.run_at` / `catmon_targets.schedule_time` / `sif_tasks.schedule_time`
 任何一项落到 08:00 之前，都要改。当前全库已校验无早于 08:00 的配置。
 
+### 已落地的强制限制：08:30 ~ 21:00（2026-11-17）
+
+不止靠人记住，前后端都硬拦：
+
+- **后端（权威）** `backend/utils.py`：`TIME_MIN = "08:30"` / `TIME_MAX = "21:00"`，
+  `time_in_window()` / `time_window_error()`。
+  接入点：`rank.py::_norm_slots`（批量档位）与 `post_tasks`（单任务）、
+  `rank_monitor_routes.py::_norm_hhmm`（`runAt` / `dailyAt` 共用）、
+  `catmon.py::put_target`（`scheduleTime`）、`sif_keywords.py::post_tasks/put_tasks`。
+  越界一律 400，错误文案带具体时刻和说明 —— 防的是绕过前端直接调接口。
+- **前端** `src/features/tools/timeWindow.ts`：`TIME_MIN/TIME_MAX`、`inTimeWindow()`、
+  `clampTime()`、`firstOutOfWindow()`、`PRESET_TIMES`、`QUICK_HOURS`。
+  6 个 `<input type="time">` 全部带 `min`/`max` + `data-invalid` 标红；
+  保存前用 `firstOutOfWindow()` 二次校验；预设/快捷按钮与新建任务默认档位
+  （原 `['00:00','06:00','12:00','18:00']`）一并改成窗口内的值。
+  涉及 `KeywordRank`（任务弹窗 + 批量弹窗）、`CategoryMonitor`、`RankMonitor`
+  （前台实测每日时刻 + SIF 每周时刻）、`SifKeyword`。
+- ⚠️ **时区**：关键词排名档位按 `keyword_tasks.timezone` 解释（当前全部
+  `Asia/Shanghai`）。若切到美东等时区，档位字面值合规但换算到北京时间可能
+  落在凌晨 —— 前端 hint 已提示，改时区时需自行确认。
+
 ## 技术栈与构建
 
 - 前端：React 19 + TypeScript（`tsconfig.json` 严格模式），esbuild 打包，`--jsx=automatic`（**必须显式 `import { useState, ... } from 'react'`**，没有全局 React）

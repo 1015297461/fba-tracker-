@@ -42,7 +42,7 @@ from urllib.parse import urlparse, parse_qs
 
 from .. import sif_fetcher, sif_signals
 from ..db import SIF_MAX_RETRIES_PER_DAY
-from ..utils import _extract_token, _now_iso, _log
+from ..utils import _extract_token, _now_iso, _log, time_window_error
 
 # 正在执行的任务 id 集合（调度器与手动触发共用，避免同一任务并发跑）
 _running: set = set()
@@ -693,6 +693,10 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             return
         if payload.get("freqType") not in ("daily", "every_n", "weekly"):
             payload["freqType"] = "daily"
+        err = time_window_error(payload.get("scheduleTime"))
+        if err:
+            self._send_json(400, {"error": err})
+            return
         defaults = state.get_sif_settings().get("defaults", {})
         for key, dkey in (("topN", "topN"), ("quotaLimit", "quotaLimit"),
                           ("asinLimit", "asinLimit"), ("backfillDays", "backfillDays")):
@@ -717,6 +721,10 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             return
         if _is_running(tid):
             self._send_json(400, {"error": "任务正在运行，请稍后再改"})
+            return
+        err = time_window_error(payload.get("scheduleTime"))
+        if err:
+            self._send_json(400, {"error": err})
             return
         state.update_sif_task(tid, payload)
         if payload.get("asins") is not None:

@@ -4,6 +4,7 @@ import { authHeaders, rankCls } from './AiAnalyze';
 import { LineChart } from './SifKeyword';
 import { ProductDetailDialog } from './ProductScrape';
 import { useAsinDetail } from './useAsinDetail';
+import { TIME_MIN, TIME_MAX, TIME_WINDOW_HINT, inTimeWindow } from './timeWindow';
 import { toScrapedProduct } from './CategoryMonitor';
 import { useColResize } from './colResize';
 import { groupsApi, groupItems } from './recordGroups';
@@ -379,7 +380,8 @@ function RunConfigModal({ open, kind, value, pages, pageCfg, defaultN,
                       onChange={e => setSrpDaily(e.target.checked)} />
                     <span>加入每天自动抓取</span>
                     {srpDaily ? (
-                      <input type="time" value={srpAt}
+                      <input type="time" value={srpAt} min={TIME_MIN} max={TIME_MAX}
+                        title={TIME_WINDOW_HINT} data-invalid={!inTimeWindow(srpAt)}
                         onChange={e => setSrpAt(e.target.value)} />
                     ) : <em>不勾就只抓这一次</em>}
                   </label>
@@ -413,7 +415,8 @@ function RunConfigModal({ open, kind, value, pages, pageCfg, defaultN,
                       <input type="number" min={1} max={15} value={sifN}
                         onChange={e => setSifN(Math.max(1, Math.min(15, Number(e.target.value) || 1)))} />
                       <em>个竞品</em>
-                      <input type="time" value={sifAt}
+                      <input type="time" value={sifAt} min={TIME_MIN} max={TIME_MAX}
+                        title={TIME_WINDOW_HINT} data-invalid={!inTimeWindow(sifAt)}
                         onChange={e => setSifAt(e.target.value)} />
                     </>
                   ) : <em>不勾就只查这一次</em>}
@@ -2700,9 +2703,16 @@ export function RankMonitor() {
     srpDaily: boolean; srpAt: string;
     sifMonitor: boolean; sifN: number; sifAt: string;
   }, execute = true) {
-    setRunOpen(false);
     const kw = value.trim();
     if (!kw) { setErr({ title: '请输入关键词' }); return; }
+    // 时段红线：凌晨是本机网络故障窗口（00:00~07:00 失败率 25%~52%）
+    if (opt.doSif && opt.sifMonitor && !inTimeWindow(opt.sifAt)) {
+      setErr({ title: `SIF 监测时刻 ${opt.sifAt} 超出允许时段`, hint: TIME_WINDOW_HINT }); return;
+    }
+    if (opt.doScrape && kind === 'keyword' && opt.srpDaily && !inTimeWindow(opt.srpAt)) {
+      setErr({ title: `每天抓取时刻 ${opt.srpAt} 超出允许时段`, hint: TIME_WINDOW_HINT }); return;
+    }
+    setRunOpen(false);
     const ownNow = (opt.ownAsin || '').trim().toUpperCase();
     setOwn(ownNow);
 

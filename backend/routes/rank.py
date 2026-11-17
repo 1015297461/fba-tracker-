@@ -8,7 +8,7 @@ from urllib.parse import urlparse, parse_qs
 from zoneinfo import ZoneInfo
 
 from .. import rank_fetcher
-from ..utils import _extract_token, _now_iso, _log
+from ..utils import _extract_token, _now_iso, _log, time_window_error
 
 # 可选时区：定时档位按哪个时区的时间解释（用户可切中国/美东/美西）
 TIMEZONES = {
@@ -357,6 +357,9 @@ def _norm_slots(raw):
         s = str(x or "").strip()
         if not _SLOT_RE.match(s):
             raise ValueError(f"非法时间 {s!r}（应为 HH:MM）")
+        err = time_window_error(s)
+        if err:
+            raise ValueError(err)
         out.append(s)
     out = sorted(set(out))
     if not out:
@@ -404,6 +407,11 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             return
         if not (payload.get("asin") or "").strip():
             self._send_json(400, {"error": "asin required"})
+            return
+        bad = next((t for t in (payload.get("schedule") or [])
+                    if time_window_error(str(t))), None)
+        if bad:
+            self._send_json(400, {"error": time_window_error(str(bad))})
             return
         self._send_json(200, {"task": state.upsert_rank_task(payload)})
     POST["/api/rank/tasks"] = post_tasks

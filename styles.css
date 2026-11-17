@@ -2185,6 +2185,11 @@ select.meta-edit { cursor: pointer; }
 /* 自定义时间点：每个时间一个 time 输入 + 删除；下面一行是整点快捷 */
 .kr-schedule { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .kr-time-item { display: inline-flex; align-items: center; gap: 2px; }
+/* 时段红线（08:30~21:00）：越界的时间输入标红，保存时会被拦下 */
+input[type="time"][data-invalid="true"] { border-color: var(--red) !important;
+  box-shadow: 0 0 0 1px var(--red) inset; }
+.kr-slot-bad { background: rgba(220,38,38,.14) !important; color: var(--red) !important;
+  text-decoration: line-through; }
 .kr-time-item input[type="time"] {
   font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--border-strong);
   border-radius: 6px; background: var(--card-bg); color: var(--ink);

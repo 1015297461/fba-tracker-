@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { marked } from 'marked';
+import { TIME_MIN, TIME_MAX, TIME_WINDOW_HINT, inTimeWindow } from './timeWindow';
 
 // ===========================================================================
 // SIF 爆品关键词监控 v2
@@ -734,7 +735,7 @@ function TaskForm({ task, defaults, onClose, onSaved }:
   const [freq, setFreq] = useState<'daily' | 'every_n' | 'weekly'>(task?.freqType || 'daily');
   const [everyN, setEveryN] = useState(task?.everyNDays ?? 2);
   const [wd, setWd] = useState(task?.scheduleWeekday ?? 1);
-  const [time, setTime] = useState(task?.scheduleTime || '08:00');
+  const [time, setTime] = useState(task?.scheduleTime || '09:00');
   const [enabled, setEnabled] = useState(task ? task.enabled : true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -755,6 +756,10 @@ function TaskForm({ task, defaults, onClose, onSaved }:
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (time && !inTimeWindow(time)) {
+      setErr(`${time} 超出允许时段。${TIME_WINDOW_HINT}`);
+      return;
+    }
     setErr('');
     const body: any = {
       name: name.trim(), direction: dir, mode, country, enabled, topN: Number(topN),
@@ -877,7 +882,9 @@ function TaskForm({ task, defaults, onClose, onSaved }:
               </select></label>
           )}
           <label className="sif-field"><span className="sif-field-label">触发时刻（服务器本地时间）</span>
-            <input type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
+            <input type="time" value={time} min={TIME_MIN} max={TIME_MAX}
+              title={TIME_WINDOW_HINT} data-invalid={!inTimeWindow(time)}
+              onChange={e => setTime(e.target.value)} /></label>
           <label className="sif-field sif-check" style={{ alignSelf: 'end' }}>
             <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
             <span>启用定时抓取（不勾选=只能手动抓取）</span>

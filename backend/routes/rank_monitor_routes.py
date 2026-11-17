@@ -19,7 +19,7 @@ import time
 from urllib.parse import parse_qs, quote, urlparse
 
 from .. import rank_export, rank_monitor, search_fetcher, sif_fetcher
-from ..utils import _extract_token, _log
+from ..utils import _extract_token, _log, TIME_MIN, TIME_MAX, time_in_window
 
 ASIN_RE = re.compile(r"^[A-Z0-9]{10}$")
 HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -37,11 +37,17 @@ def _rank_int(v):
 
 
 def _norm_hhmm(v):
-    """校验并规范化 HH:MM。空值返回 ""；格式非法返回 False（调用方据此回 400）。"""
+    """校验并规范化 HH:MM。空值返回 ""；格式非法**或超出允许时段**返回 False。
+
+    时段红线见 utils.TIME_MIN/TIME_MAX（08:30~21:00）：凌晨 00:00~07:00 是本机
+    网络故障窗口（各档位失败率 25%~52%），定时任务不允许排在那里。
+    """
     s = str(v or "").strip()
     if not s:
         return ""
-    return s if HHMM_RE.match(s) else False
+    if not HHMM_RE.match(s):
+        return False
+    return s if time_in_window(s) else False
 
 
 def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
@@ -437,7 +443,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
             cn = None
         run_at = _norm_hhmm(payload.get("runAt"))
         if run_at is False:
-            self._send_json(400, {"error": "采集时刻格式应为 HH:MM（00:00~23:59）"})
+            self._send_json(400, {"error": f"采集时刻需为 HH:MM 且在 {TIME_MIN}~{TIME_MAX} 之间"})
             return
         extra = rank_monitor.parse_extra_asins(payload.get("extraAsins"))
         try:
@@ -481,7 +487,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         if "runAt" in payload:
             v = _norm_hhmm(payload.get("runAt"))
             if v is False:
-                self._send_json(400, {"error": "采集时刻格式应为 HH:MM（00:00~23:59）"})
+                self._send_json(400, {"error": f"采集时刻需为 HH:MM 且在 {TIME_MIN}~{TIME_MAX} 之间"})
                 return
             fields["run_at"] = v or None
         if "freq" in payload:
@@ -1244,7 +1250,7 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         pages = search_fetcher.clamp_pages(payload.get("pages"))
         daily_at = _norm_hhmm(payload.get("dailyAt"))
         if daily_at is False:
-            self._send_json(400, {"error": "抓取时间需为 HH:MM"})
+            self._send_json(400, {"error": f"抓取时间需为 HH:MM 且在 {TIME_MIN}~{TIME_MAX} 之间"})
             return
         enabled = payload.get("enabled")
         t = state.upsert_srp_target(

@@ -21,7 +21,7 @@ import threading
 import time
 from urllib.parse import urlparse, parse_qs
 
-from ..utils import _extract_token, _now_iso, _log
+from ..utils import _extract_token, _now_iso, _log, time_window_error
 from .. import asin_meta
 from .. import catmon_fetcher
 from .. import sprite_fetch
@@ -228,6 +228,10 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         tid = (payload.get("id") or "").strip()
         if not tid or not state.get_catmon_target(tid):
             self._send_json(404, {"error": "target not found"})
+            return
+        err = time_window_error(payload.get("scheduleTime"))
+        if err:
+            self._send_json(400, {"error": err})
             return
         state.update_catmon_target(tid, payload)
         self._send_json(200, {"target": state.get_catmon_target(tid)})

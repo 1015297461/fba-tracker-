@@ -1,6 +1,10 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { DateCalendar } from './DateCalendar';
+import {
+  TIME_MIN, TIME_MAX, TIME_WINDOW_HINT, PRESET_TIMES, QUICK_HOURS,
+  inTimeWindow, clampTime, firstOutOfWindow,
+} from './timeWindow';
 
 const AUTH_TOKEN_KEY = 'fba-auth-v1';
 function authHeaders(): Record<string, string> {
@@ -628,7 +632,8 @@ function TaskModal({ task, timezones, onClose, onSaved }: {
   const [marketplace, setMkt]     = React.useState(task?.marketplace || 'US');
   const [kwText, setKwText]       = React.useState((task?.keywords || []).join('\n'));
   const [schedule, setSchedule]   = React.useState<string[]>(
-    task?.schedule?.length ? task.schedule : ['00:00', '06:00', '12:00', '18:00']);
+    // 默认档位必须在 08:30~21:00 内（凌晨是本机网络故障窗口），见 timeWindow.ts
+    task?.schedule?.length ? task.schedule : ['09:00', '15:00', '20:00']);
   const [timezone, setTimezone]   = React.useState(task?.timezone || 'Asia/Shanghai');
   const [enabled, setEnabled]     = React.useState(task?.enabled ?? true);
   const [saving, setSaving]       = React.useState(false);
@@ -642,13 +647,14 @@ function TaskModal({ task, timezones, onClose, onSaved }: {
   }
   function removeSlot(i: number) { setSchedule(s => s.filter((_, idx) => idx !== i)); }
   function addSlot() {
-    // 默认加一个「下一个整点」，没有就 08:00，用户再改
+    // 默认给窗口内第一个没用过的整点（08:30~21:00，越界时段禁止）
     const used = new Set(schedule);
-    let next = '08:00';
-    for (let h = 0; h < 24; h++) {
+    let next = TIME_MIN;
+    for (const h of QUICK_HOURS) {
       const s = `${String(h).padStart(2, '0')}:00`;
       if (!used.has(s)) { next = s; break; }
     }
+    if (used.has(next)) next = TIME_MIN;
     setSchedule(s => [...s, next]);     // 追加到末尾，不重排（否则新加的行会跳走）
   }
   /** 快捷档：点一下加入/移除「HH:00」 */
@@ -663,6 +669,8 @@ function TaskModal({ task, timezones, onClose, onSaved }: {
     if (!asin.trim()) { setErr('请填写 ASIN'); return; }
     if (!keywords.length) { setErr('请至少填写一个关键词'); return; }
     if (enabled && !slots.length) { setErr('启用定时采集时至少要有一个时间点'); return; }
+    const bad = firstOutOfWindow(slots);
+    if (bad) { setErr(`${bad} 超出允许时段。${TIME_WINDOW_HINT}`); return; }
     setSaving(true); setErr('');
     try {
       const saved = await apiSaveTask({
@@ -704,6 +712,9 @@ function TaskModal({ task, timezones, onClose, onSaved }: {
                 // key 只用索引：拿时间值当 key 会在每次输入后重建 input（焦点丢失）
                 <span className="kr-time-item" key={i}>
                   <input type="time" value={t} step={60}
+                    min={TIME_MIN} max={TIME_MAX}
+                    data-invalid={!!t && !inTimeWindow(t)}
+                    title={TIME_WINDOW_HINT}
                     onChange={e => setSlotAt(i, e.target.value)} />
                   <button type="button" className="kr-time-del" title="删除这个时间点"
                     onClick={() => removeSlot(i)}>✕</button>
@@ -713,7 +724,7 @@ function TaskModal({ task, timezones, onClose, onSaved }: {
             </div>
             <div className="kr-slots kr-slots-quick">
               <span className="kr-muted">快捷：</span>
-              {[0, 6, 12, 18].map(h => {
+              {QUICK_HOURS.map(h => {
                 const s = `${String(h).padStart(2, '0')}:00`;
                 return (
                   <button key={h} type="button" className="kr-slot"
@@ -1459,6 +1470,7 @@ export function KeywordRank() {
           <div className="kr-batch-body">
             <div className="kr-batch-tip">
               将修改 {targetIds.length} 个任务（共 {selectedWordCount} 个词）· 时区沿用各任务自己的设置
+              <br />{TIME_WINDOW_HINT}
             </div>
             <div className="kr-batch-mode">
               <label><input type="radio" checked={bsMode === 'replace'}
@@ -1467,23 +1479,28 @@ export function KeywordRank() {
                 onChange={() => { setBsMode('add'); setBsSlots([]); }} /> 追加：保留原有档位，只加选中的时间点</label>
             </div>
             <div className="kr-batch-presets">
-              {['06:00', '09:00', '12:00', '15:00', '18:00', '20:00', '22:00'].map(x => (
+              {PRESET_TIMES.map(x => (
                 <button key={x} type="button" className={'kr-slot-btn' + (bsSlots.includes(x) ? ' on' : '')}
                   onClick={() => setBsSlots(p => p.includes(x) ? p.filter(y => y !== x) : [...p, x])}>{x}</button>
               ))}
             </div>
             <div className="kr-batch-custom">
-              <input type="time" value={bsCustom} onChange={e => setBsCustom(e.target.value)} />
+              <input type="time" value={bsCustom} min={TIME_MIN} max={TIME_MAX}
+                title={TIME_WINDOW_HINT}
+                onChange={e => setBsCustom(e.target.value)} />
               <button className="btn btn-sm" type="button" onClick={() => {
-                if (/^\d{2}:\d{2}$/.test(bsCustom) && !bsSlots.includes(bsCustom))
-                  setBsSlots(p => [...p, bsCustom]);
+                const v = bsCustom.trim();
+                if (!/^\d{2}:\d{2}$/.test(v)) return;
+                if (!inTimeWindow(v)) { setBatchMsg(`${v} 超出允许时段。${TIME_WINDOW_HINT}`); return; }
+                if (!bsSlots.includes(v)) setBsSlots(p => [...p, v]);
                 setBsCustom('');
               }}>添加自定义</button>
             </div>
             <div className="kr-batch-slots">
               已选时间点：
               {bsSlots.length ? bsSlots.slice().sort().map(x => (
-                <span key={x} className="kr-slot" title="点击移除"
+                <span key={x} className={'kr-slot' + (inTimeWindow(x) ? '' : ' kr-slot-bad')}
+                  title={inTimeWindow(x) ? '点击移除' : `${TIME_WINDOW_HINT}，点击移除`}
                   onClick={() => setBsSlots(p => p.filter(y => y !== x))}>{x} ✕</span>
               )) : <i>请在上方选择</i>}
             </div>
@@ -1493,6 +1510,8 @@ export function KeywordRank() {
             <button className="btn btn-sm" onClick={() => setBatchOpen(false)}>取消</button>
             <button className="btn btn-primary btn-sm" disabled={!bsSlots.length || batchBusy}
               onClick={async () => {
+                const bad = firstOutOfWindow(bsSlots);
+                if (bad) { setBatchMsg(`${bad} 超出允许时段。${TIME_WINDOW_HINT}`); return; }
                 const ok = await batchCall({ action: 'schedule', slots: bsSlots, mode: bsMode },
                   '采集时间已更新');
                 if (ok) setBatchOpen(false);

@@ -6,6 +6,7 @@ import { useAsinDetail } from './useAsinDetail';
 import type { ScrapedProduct } from './ProductScrape';
 import { useColResize } from './colResize';
 import { DateCalendar } from './DateCalendar';
+import { TIME_MIN, TIME_MAX, TIME_WINDOW_HINT, inTimeWindow } from './timeWindow';
 import { groupsApi, groupItems, moveBefore } from './recordGroups';
 import type { RecGroup, RecMember, RecGroupsPayload } from './recordGroups';
 import { NameDialog, MoveDialog } from './RecordGroupDialogs';
@@ -964,6 +965,7 @@ function ScheduleEditor({ target, onSaved }: { target: CatTarget; onSaved: () =>
   }, [target.id]);
 
   const save = async () => {
+    if (!inTimeWindow(time)) { setMsg(`选 ${TIME_MIN}~${TIME_MAX} 之间（凌晨是本机网络故障窗口）`); return; }
     setSaving(true); setMsg('');
     try {
       await apiSend('/api/catmon/targets', 'PUT', {
@@ -992,7 +994,9 @@ function ScheduleEditor({ target, onSaved }: { target: CatTarget; onSaved: () =>
           ))}
         </select>
       )}
-      <input type="time" value={time} onChange={e => setTime(e.target.value)} />
+      <input type="time" value={time} min={TIME_MIN} max={TIME_MAX}
+        title={TIME_WINDOW_HINT} data-invalid={!inTimeWindow(time)}
+        onChange={e => setTime(e.target.value)} />
       <button className="cm-ghost" onClick={save} disabled={saving}>{saving ? '保存中…' : '保存'}</button>
       {msg && <span className="cm-muted">{msg}</span>}
     </div>
