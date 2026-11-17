@@ -19,6 +19,7 @@ CLI 自测：
   python3 rank_fetcher.py --keyword "yoga mat" --marketplace US --asin B0XXXXXXXX
 """
 
+import socket
 import urllib.request
 import urllib.parse
 import gzip
@@ -30,6 +31,8 @@ import random
 import threading
 import argparse
 import datetime
+
+from .utils import _log
 
 
 # 站点配置：域名 + Accept-Language + 该语言下"赞助"标签关键词
@@ -245,6 +248,31 @@ def fetch_page(marketplace, keyword, page=1, timeout=20, fingerprint=None):
 # 原实现遇到 no_results 直接 break，于是整批被记成 not_found、当天数据全空。
 _SOFT_FAILS = ("blocked", "no_results")
 
+# 瞬时网络故障：换指纹没用，但**退避重试有用**（DNS 几秒后恢复、代理节点切换完成）。
+# 原来这些被当「硬错误」第一次就 break，于是 11-17 06:00 那批 4 个词
+# 12 条快照全是 gaierror —— 一次失败就整页放弃，连重试都没有。
+_NET_RETRY_HINTS = ("gaierror", "ssleof", "ssl", "timeout", "timed out",
+                    "connectionreset", "remotedisconnected", "eof",
+                    "connection refused", "connectionrefused")
+
+
+def _net_retryable(err):
+    """`neterr:*` 里哪些值得重试（瞬时网络故障）。"""
+    e = (err or "").lower()
+    return e.startswith("neterr") and any(h in e for h in _NET_RETRY_HINTS)
+
+
+def _dns_ok(host="www.amazon.com"):
+    """系统 DNS 能否解析 —— gaierror 时判断「值不值得交给浏览器」。
+
+    Chrome 用同一套系统解析：DNS 服务器都不可达时，CDP 只是白等 18 秒。
+    """
+    try:
+        socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+        return True
+    except Exception:
+        return False
+
 
 def fetch_page_resilient(marketplace, keyword, page=1, timeout=20, fingerprint=None,
                          tries=3, allow_cdp=False):
@@ -263,21 +291,41 @@ def fetch_page_resilient(marketplace, keyword, page=1, timeout=20, fingerprint=N
     for i in range(max(1, int(tries))):
         if i:
             fp = random.choice(_FINGERPRINTS)
-            time.sleep(random.uniform(4.0, 8.0))
+            # 网络类退避短一些：DNS 恢复 / 代理切节点通常几秒就好
+            if _net_retryable(last):
+                time.sleep(random.uniform(2.0, 4.0))
+            else:
+                time.sleep(random.uniform(4.0, 8.0))
         html, err = fetch_page(marketplace, keyword, page, timeout=timeout, fingerprint=fp)
         if not err:
             return html, None, fp, via
         last = err
-        if err not in _SOFT_FAILS:
-            break                      # 网络/HTTP 硬错误，重试没意义
+
         if err == "blocked" and allow_cdp:
-            # 被 bm-verify 拦：直接走真实浏览器，别再用同一个指纹硬撞
+            # bm-verify 要执行 JS 才过，换指纹是白撞 → 直接上浏览器
             html, cdp_err = fetch_via_cdp(marketplace, keyword, page)
             if not cdp_err:
                 return html, None, fp, "cdp"
             last = f"{err}|{cdp_err}"
             via = "cdp_failed"
             break
+        if err in _SOFT_FAILS or _net_retryable(err):
+            continue                   # 软失败 / 瞬时网络：继续换指纹重试
+        break                          # http_404 / unknown_marketplace 等真硬错误
+
+    # 重试用尽：网络类故障最后交给浏览器试一次。Chrome 的连接复用与代理规则不同于
+    # urllib，实测 SSLEOFError 这类能过；但 gaierror 若系统 DNS 也不通就跳过（白等 18s）。
+    if allow_cdp and _net_retryable(last) and last not in _SOFT_FAILS:
+        if "gaierror" not in (last or "").lower() or _dns_ok():
+            _log(f"[rank] 「{keyword}」HTTP 网络失败（{last}），改用真实浏览器兜底")
+            html, cdp_err = fetch_via_cdp(marketplace, keyword, page)
+            if not cdp_err:
+                return html, None, fp, "cdp"
+            last = f"{last}|{cdp_err}"
+            via = "cdp_failed"
+        else:
+            _log(f"[rank] 「{keyword}」系统 DNS 也不通（{last}），跳过浏览器兜底")
+
     # 重试过还不行 → 标记一下，方便前端区分「试了一次就空」与「试了三次都空」
     if last in _SOFT_FAILS:
         last = f"{last}_x{max(1, int(tries))}"
