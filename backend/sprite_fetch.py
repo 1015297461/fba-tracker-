@@ -730,7 +730,10 @@ def fetch_dates(asins, country="US", close_browser=False):
 
     with _run_lock:
         ok, detail = _ensure_browser(headless=True)   # 无头：屏幕上不会有窗口
-        _log(f"[sprite] 浏览器状态：{detail}（端口 {CDP_PORT}）")
+        # 日志写清「复用还是新起」：用户要能一眼看出常驻有没有生效
+        _STATE_CN = {"reused": "复用已常驻的实例", "started_headless": "新启动（无头）",
+                     "started_headed": "新启动（登录窗口）"}
+        _log(f"[sprite] 浏览器状态：{_STATE_CN.get(detail, detail)}（端口 {CDP_PORT}）")
         if not ok:
             _log(f"[sprite] 浏览器不可用：{detail}")
             _record("error", f"浏览器启动失败：{detail}")
