@@ -159,21 +159,26 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                 #   —— 兜底其实走了，但 12s 到点取 DOM 仍是空壳；实测同一页要 14.3s。
                                 #   另 `locate_rank` 新增 `cdp_tried`：兜底失败时 `via` 记 `cdp_failed`
                                 #   （不再是 `http`），前端「来源」列才能看出「试过但没成」。
-                                #   **网络错误也重试 + 可走 CDP（2026-11-17）**：
-                                #   原来 `fetch_page_resilient` 里 `if err not in _SOFT_FAILS: break`
-                                #   —— `neterr:*` 被当永久硬错误，**第一次失败就整页放弃**，
-                                #   既不换指纹重试也不走 CDP。11-17 06:00「穿戴毯」4 词 12 条快照
-                                #   全是 `neterr:URLError:gaierror`、`via` 全 `http`，原因就在这。
-                                #   现在：
-                                #   · `_net_retryable()`：`neterr` 里 gaierror / SSLEOF / Timeout /
-                                #     ConnectionReset / EOF 等视为**瞬时故障**，照常退避重试
-                                #     （网络类退避 2~4s，软失败 4~8s）；`http_404` 等仍直接放弃；
-                                #   · 重试用尽后对网络类错误**再走一次 CDP**（Chrome 连接复用/代理
-                                #     规则不同于 urllib，实测 SSLEOF 能过）；
-                                #   · `_dns_ok()`：`gaierror` 且系统 DNS 也不通时**跳过 CDP**
-                                #     （Chrome 用同一套解析，硬上只是白等 18 秒）；
-                                #   · 顺带补 `from .utils import _log` —— 上一轮加的
-                                #     「CDP 拿到空壳」日志此前从未导入 `_log`，一触发就 NameError。
+                                #   **网络错误的分级处理（2026-11-17 两轮修正）**：
+                                #   原来 `if err not in _SOFT_FAILS: break` —— `neterr:*` 被当
+                                #   永久硬错误，第一次失败就整页放弃。11-17 06:00「穿戴毯」4 词
+                                #   12 条快照全 `gaierror`、`via` 全 `http`，原因就在这。
+                                #   但**不能一律重试 + 一律上浏览器**（用户质疑：断网时 CDP 也要
+                                #   走网络）。复核数据后按下表分级（`_net_retryable()`）：
+                                #     · `blocked`（网络通、指纹被识别）→ 立即 CDP。唯一该用浏览器的
+                                #       场景，实绩 49 次成功（11-16 15:00 一批就 25 次）。
+                                #     · `gaierror`（DNS 层断）→ **不重试、不兜底，1 次即失败**。
+                                #       恢复要等系统 DNS 负缓存过期（分钟级，实测窗口 8~9 分钟），
+                                #       重试 3 次×4s 必然全废；11-17 凌晨 24 次尝试 0 成功。
+                                #       快速失败是为了**别把采集队列堵在后面**。
+                                #     · `SSLEOF / Timeout / ConnectionReset`（连接层抖动）→ 重试
+                                #       1~2 次（退避 2~4s），**不走 CDP**（同一条出口，上去白等 18s）。
+                                #     · `no_results`（网络通、页面无商品）→ 换指纹重试（4~8s）。
+                                #     · `http_404` / `unknown_marketplace` → 直接放弃。
+                                #   代价对比：4 词全 gaierror，旧版 12 次请求 + 约 24s 退避（实测
+                                #   整批 133 秒），新版 4 次请求即结束。
+                                #   顺带补 `from .utils import _log` —— 早前加的「CDP 拿到空壳」
+                                #   日志从未导入 `_log`，一触发就 NameError（桩测才暴露）。
     scrape.py                   # /api/scrape/*：start_scrape_task()/_run_scrape() 服务端后台
                                 #   执行器（POST /start 立即返回 taskId，前端轮询 /progress，
                                 #   刷新不丢任务）+ 运行时暂停/取消/继续（/pause /resume /cancel，

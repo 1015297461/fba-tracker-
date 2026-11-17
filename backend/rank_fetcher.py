@@ -19,7 +19,6 @@ CLI 自测：
   python3 rank_fetcher.py --keyword "yoga mat" --marketplace US --asin B0XXXXXXXX
 """
 
-import socket
 import urllib.request
 import urllib.parse
 import gzip
@@ -257,21 +256,21 @@ _NET_RETRY_HINTS = ("gaierror", "ssleof", "ssl", "timeout", "timed out",
 
 
 def _net_retryable(err):
-    """`neterr:*` 里哪些值得重试（瞬时网络故障）。"""
-    e = (err or "").lower()
-    return e.startswith("neterr") and any(h in e for h in _NET_RETRY_HINTS)
+    """`neterr:*` 里哪些值得重试 —— 只留「可能几秒自愈」的。
 
-
-def _dns_ok(host="www.amazon.com"):
-    """系统 DNS 能否解析 —— gaierror 时判断「值不值得交给浏览器」。
-
-    Chrome 用同一套系统解析：DNS 服务器都不可达时，CDP 只是白等 18 秒。
+    ⚠️ **gaierror 故意排除**（2026-11-17 复核数据后改）：
+    DNS 解析失败不是抖动，而是「路由器/运营商 DNS 那一层断了」，恢复要等
+    系统 DNS 负缓存过期（分钟级，实测凌晨故障窗口 8~9 分钟）。
+    对它重试 3 次 × 4 秒＝12 秒，实测 11-17 凌晨 24 次尝试 0 成功 ——
+    纯白等，还把采集队列堵在后面。**直接失败、快速让位**才是对的。
     """
-    try:
-        socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
-        return True
-    except Exception:
+    e = (err or "").lower()
+    if not e.startswith("neterr"):
         return False
+    if "gaierror" in e:
+        return False
+    return any(h in e for h in _NET_RETRY_HINTS)
+
 
 
 def fetch_page_resilient(marketplace, keyword, page=1, timeout=20, fingerprint=None,
@@ -313,18 +312,11 @@ def fetch_page_resilient(marketplace, keyword, page=1, timeout=20, fingerprint=N
             continue                   # 软失败 / 瞬时网络：继续换指纹重试
         break                          # http_404 / unknown_marketplace 等真硬错误
 
-    # 重试用尽：网络类故障最后交给浏览器试一次。Chrome 的连接复用与代理规则不同于
-    # urllib，实测 SSLEOFError 这类能过；但 gaierror 若系统 DNS 也不通就跳过（白等 18s）。
-    if allow_cdp and _net_retryable(last) and last not in _SOFT_FAILS:
-        if "gaierror" not in (last or "").lower() or _dns_ok():
-            _log(f"[rank] 「{keyword}」HTTP 网络失败（{last}），改用真实浏览器兜底")
-            html, cdp_err = fetch_via_cdp(marketplace, keyword, page)
-            if not cdp_err:
-                return html, None, fp, "cdp"
-            last = f"{last}|{cdp_err}"
-            via = "cdp_failed"
-        else:
-            _log(f"[rank] 「{keyword}」系统 DNS 也不通（{last}），跳过浏览器兜底")
+    # ⚠️ 网络类错误**不走 CDP 兜底**（2026-11-17 复核后删掉）：
+    # 断网时浏览器用的是同一条出口 / 同一套 DNS，上去只会白等 18 秒。
+    # CDP 只在 `blocked` 分支有意义 —— 那种情况下 HTTP 是**通的**（拿到了
+    # bm-verify 挑战页，200 / 2.4KB），只是指纹被识别；实测 49 次成功全属此类
+    # （11-16 15:00 那批一次就 25 次）。断网 ≠ 被拦，两者不能混为一谈。
 
     # 重试过还不行 → 标记一下，方便前端区分「试了一次就空」与「试了三次都空」
     if last in _SOFT_FAILS:
