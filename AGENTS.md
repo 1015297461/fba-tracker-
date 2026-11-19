@@ -310,6 +310,15 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                               #   老数据 `not_found` + `error` 为空 = not_ranked（前端 isSuccessLike 兼容）。
                               #   快照另存 `organic_scanned`（这次扫了多少自然位），
                               #   前端据此说「扫完 144 个自然位都没有」。
+                              #   **「更新时间 / 自然排名」按最新有效结论渲染（2026-11-19 修）**：
+                              #   `buildRows` 里 `latest` = 最后一次 `status='ok'`（有名次），
+                              #   `lastResult` = 最后一次有效结论（ok 或 not_ranked）。
+                              #   ⚠️ 展示必须用 **lastResult**：原来两处都用 `latest`，于是 ASIN
+                              #   掉出前 3 页后，更新时间停在「最后一次有名次」那天、排名列还挂着
+                              #   旧数字（踩过：`car seat cooling pad` 11-17 第 37 名一直显示到
+                              #   11-19，实际早已 not_ranked，用户以为「两天没更新」）。
+                              #   现在：时间取 lastResult；排名列 snap 传 lastResult（not_ranked
+                              #   时显示「—」+「未排名」），tooltip 补「最后一次有排名：… 第 N 名」。
                               #   **快照还存 `via`（2026-11-13）**：`http` 直出 / `cdp` HTTP 被拦后由
                               #   常驻浏览器兜底成功 / `cdp_failed` 兜底也失败；旧行迁移默认 `http`。
                               #   `db.get_rank_history` 透出 `via`，前端「来源」列显示标签。
