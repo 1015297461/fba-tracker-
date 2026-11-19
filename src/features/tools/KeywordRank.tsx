@@ -821,9 +821,18 @@ function TrendLine({ values, dates, color, label, format, invert = false, peers 
           const shift = ratio < 0.16 ? 'translateX(0)'
             : ratio > 0.84 ? 'translateX(-100%)' : 'translateX(-50%)';
           const nudge = ratio < 0.16 ? 6 : ratio > 0.84 ? -6 : 0;
+          // 垂直方向也要避让：卡片原来死钉在顶部，曲线在顶上时整段被盖住。
+          // 按 hover 点在画布里的高度选对侧 —— 点在上半就把卡片放下面，反之放上面，
+          // 保证「当前正在看的那一点」始终露出来。
+          const dotY = toY(hoverVal);
+          const cardBelow = dotY < TREND_H * 0.55;
           return (
           <div className="kr-tl-tip"
-            style={{ left: `calc(${ratio * 100}% + ${nudge}px)`, transform: shift }}>
+            style={{
+              left: `calc(${ratio * 100}% + ${nudge}px)`,
+              transform: shift,
+              ...(cardBelow ? { top: 'auto', bottom: 6 } : { top: 6, bottom: 'auto' }),
+            }}>
             <div className="kr-tl-tip-date">{dates?.[hi] || `第 ${hi + 1} 周`}</div>
             <div className="kr-tl-tip-row"><b>{label.split('（')[0]}</b><span>{format(hoverVal)}</span></div>
             {delta != null && delta !== 0 &&
