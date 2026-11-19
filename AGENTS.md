@@ -284,6 +284,11 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                  #   权限 admin/root。
     catmon.py                    # /api/catmon/*，类目榜单监控：监控对象 CRUD + 立即采集（后台线程）
                                  #   + 快照/趋势/事件/运行日志 + 按需详情（落库缓存，?refresh=1 强制刷新）
+                                 #   **运行日志分页（2026-11-19）**：`GET /api/catmon/runs?targetId=&page=&pageSize=`
+                                 #   默认 page=1 / pageSize=20（clamp 5~200），返回 {runs, total, page, pageSize}；
+                                 #   越界页夹回最后一页。`db.count_catmon_runs()` 给真实总数。
+                                 #   前端 RunsPanel：首页/上一页/下一页/末页 + 每页 20/50/100，切目标或改条数回第 1 页。
+                                 #   （原来固定 LIMIT 20 全量渲染，一屏放不下，也没有总数）
   rank_fetcher.py              # 关键词排名抓取器（正则解析，无 bs4 依赖）
                               #   ⚠️ 搜「搜索结果页」时会偶发拿到**空结果页**（不是 CAPTCHA，
                               #   页面里没有 `s-search-result`）→ 记 `no_results`。
