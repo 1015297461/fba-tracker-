@@ -4230,6 +4230,16 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 .kr-trend-note { font-size: 11px; line-height: 1.7; color: var(--ink-4);
   padding-top: 8px; border-top: 1px solid var(--border); }
 .kr-tl-canvas { position: relative; padding: 2px 0; }
+/* 悬浮明细行：固定在图表外，行高写死避免出现/消失时图跳动 */
+.kr-tl-sub { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  min-height: 17px; margin: 1px 0 3px; font-size: 10.5px; line-height: 1.5;
+  color: var(--ink-4); transition: color .12s; }
+.kr-tl-sub.on { color: var(--ink-2); }
+.kr-tl-sub-date { font-weight: 600; color: var(--ink); }
+.kr-tl-sub.on .kr-tl-sub-date { color: var(--blue); }
+.kr-tl-sub-delta { color: var(--ink-3); }
+.kr-tl-sub-item b { font-weight: 600; color: var(--ink); }
+.kr-tl-sub-idle { color: var(--ink-4); }
 .kr-tl-canvas svg { display: block; cursor: crosshair; }
 .kr-tl-tip { position: absolute; top: 6px; transform: translateX(-50%);
   z-index: 5; min-width: 150px; max-width: min(196px, 92%); pointer-events: none;

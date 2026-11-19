@@ -803,6 +803,31 @@ function TrendLine({ values, dates, color, label, format, invert = false, peers 
         <span className="kr-tl-cur" style={{ color }}>
           {hi != null && hoverVal != null ? format(hoverVal) : format(last.v)}
         </span></div>
+
+      {/* 悬浮明细放**图表外**的固定一行：曲线区永远不被浮层遮挡，
+          代价是眼睛要往上扫一眼。行高固定，出现/消失不会让图跳。 */}
+      <div className={'kr-tl-sub' + (hi != null ? ' on' : '')}>
+        {hi != null && hoverVal != null ? (
+          <>
+            <span className="kr-tl-sub-date">{dates?.[hi] || `第 ${hi + 1} 周`}</span>
+            {delta != null && delta !== 0 && (
+              <span className="kr-tl-sub-delta">
+                较上周 {delta > 0 ? '+' : '−'}{format(Math.abs(delta))}
+              </span>
+            )}
+            {peers.map(pr => pr.values[hi] != null && (
+              <span key={pr.label} className="kr-tl-sub-item">
+                {pr.label} <b>{pr.format(pr.values[hi]!)}</b>
+              </span>
+            ))}
+          </>
+        ) : (
+          <span className="kr-tl-sub-idle">
+            {dates?.[last.i] || '最新'} · 鼠标移到曲线上查看任意一周
+          </span>
+        )}
+      </div>
+
       <div className="kr-tl-canvas">
         <svg viewBox={`0 0 ${TREND_W} ${TREND_H}`} width="100%" height={TREND_H}
           preserveAspectRatio="none" onMouseMove={onMove} onMouseLeave={() => setHi(null)}>
@@ -815,34 +840,6 @@ function TrendLine({ values, dates, color, label, format, invert = false, peers 
             <circle cx={toX(hi)} cy={toY(hoverVal)} r="3.4" fill={color} />}
           <circle cx={toX(last.i)} cy={toY(last.v)} r="2.6" fill={color} />
         </svg>
-        {hi != null && hoverVal != null && (() => {
-          // 靠边时改成左/右对齐，别让 -50% 把 tooltip 推出容器（最左点会溢出一半）
-          const ratio = hi / Math.max(1, values.length - 1);
-          const shift = ratio < 0.16 ? 'translateX(0)'
-            : ratio > 0.84 ? 'translateX(-100%)' : 'translateX(-50%)';
-          const nudge = ratio < 0.16 ? 6 : ratio > 0.84 ? -6 : 0;
-          // 垂直方向也要避让：卡片原来死钉在顶部，曲线在顶上时整段被盖住。
-          // 按 hover 点在画布里的高度选对侧 —— 点在上半就把卡片放下面，反之放上面，
-          // 保证「当前正在看的那一点」始终露出来。
-          const dotY = toY(hoverVal);
-          const cardBelow = dotY < TREND_H * 0.55;
-          return (
-          <div className="kr-tl-tip"
-            style={{
-              left: `calc(${ratio * 100}% + ${nudge}px)`,
-              transform: shift,
-              ...(cardBelow ? { top: 'auto', bottom: 6 } : { top: 6, bottom: 'auto' }),
-            }}>
-            <div className="kr-tl-tip-date">{dates?.[hi] || `第 ${hi + 1} 周`}</div>
-            <div className="kr-tl-tip-row"><b>{label.split('（')[0]}</b><span>{format(hoverVal)}</span></div>
-            {delta != null && delta !== 0 &&
-              <div className="kr-tl-tip-delta">较上周 {delta > 0 ? '+' : ''}{format(Math.abs(delta))}</div>}
-            {peers.map(pr => pr.values[hi] != null &&
-              <div className="kr-tl-tip-row" key={pr.label}><span>{pr.label}</span>
-                <span>{pr.format(pr.values[hi]!)}</span></div>)}
-          </div>
-          );
-        })()}
       </div>
       <div className="kr-tl-foot"><span>{format(first.v)}</span><span>{pts.length} 周</span></div>
     </div>
