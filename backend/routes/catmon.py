@@ -522,7 +522,21 @@ def register(GET, POST, PUT, DELETE, state, auth, ai_worker=None):
         if not tid:
             self._send_json(400, {"error": "targetId required"})
             return
-        self._send_json(200, {"runs": state.list_catmon_runs(tid)})
+        # 分页：默认每页 20 条（原来固定只返回最近 20 条且全展示，屏幕放不下）
+        try:
+            page = max(1, int((q.get("page") or ["1"])[0]))
+        except ValueError:
+            page = 1
+        try:
+            size = int((q.get("pageSize") or ["20"])[0])
+        except ValueError:
+            size = 20
+        size = max(5, min(200, size))
+        total = state.count_catmon_runs(tid)
+        last_page = max(1, (total + size - 1) // size)
+        page = min(page, last_page)        # 越界页夹回最后一页，别返回空表
+        runs = state.list_catmon_runs(tid, limit=size, offset=(page - 1) * size)
+        self._send_json(200, {"runs": runs, "total": total, "page": page, "pageSize": size})
     GET["/api/catmon/runs"] = get_runs
 
     # ---- 详情（按天快照：一天一条，同日覆盖；打开只看快照，重抓靠手动） ----

@@ -985,12 +985,19 @@ class DbState:
                 conn.commit()
         return n
 
-    def list_catmon_runs(self, target_id, limit=20):
+    def list_catmon_runs(self, target_id, limit=20, offset=0):
+        """运行日志，倒序（最新在前）。分页由 offset 控制。"""
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM catmon_runs WHERE target_id=? ORDER BY id DESC LIMIT ?",
-                [target_id, limit]).fetchall()
+                "SELECT * FROM catmon_runs WHERE target_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+                [target_id, limit, offset]).fetchall()
         return [dict(r) for r in rows]
+
+    def count_catmon_runs(self, target_id):
+        """某目标的运行日志总条数（分页要用真实总数，不能拿当前页长度猜）。"""
+        with self._conn() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM catmon_runs WHERE target_id=?", [target_id]).fetchone()[0]
 
     def _init_db(self):
         with self._conn() as conn:

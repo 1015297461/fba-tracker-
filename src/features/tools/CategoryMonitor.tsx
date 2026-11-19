@@ -1512,24 +1512,36 @@ function MatrixPanel({ targetId, listType, onOpen }: {
 // ---------------------------------------------------------------------------
 // 运行记录
 // ---------------------------------------------------------------------------
+const RUNS_PAGE_SIZES = [20, 50, 100];
+
 function RunsPanel({ targetId }: { targetId: string }) {
   const [runs, setRuns] = useState<RunRec[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(RUNS_PAGE_SIZES[0]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
 
+  // 服务端分页：一次只取当前页，total 用后端的真实总数
   const load = useCallback(async () => {
     setLoading(true); setErr('');
     try {
-      const j = await apiGet<{ runs: RunRec[] }>(`/api/catmon/runs?targetId=${encodeURIComponent(targetId)}`);
+      const j = await apiGet<{ runs: RunRec[]; total?: number; page?: number; pageSize?: number }>(
+        `/api/catmon/runs?targetId=${encodeURIComponent(targetId)}&page=${page}&pageSize=${pageSize}`);
       setRuns(j.runs || []);
+      setTotal(j.total ?? (j.runs || []).length);
     } catch (e: any) {
-      setErr(e.message); setRuns([]);
+      setErr(e.message); setRuns([]); setTotal(0);
     } finally {
       setLoading(false);
     }
-  }, [targetId]);
+  }, [targetId, page, pageSize]);
 
-  useEffect(() => { load(); }, [targetId]);
+  useEffect(() => { load(); }, [load]);
+  // 切目标 / 改每页条数时回到第 1 页（否则会停在越界页看到空白）
+  useEffect(() => { setPage(1); }, [targetId, pageSize]);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  useEffect(() => { if (page > totalPages) setPage(totalPages); }, [page, totalPages]);
   const runsCols = useColResize('catmon-runs');
 
   return (
@@ -1538,7 +1550,7 @@ function RunsPanel({ targetId }: { targetId: string }) {
         <button className="cm-btn" style={{ marginTop: 0, padding: '5px 12px' }} onClick={load} disabled={loading}>
           {loading ? '加载中…' : '刷新'}
         </button>
-        <span className="cm-muted">{runs.length} 条</span>
+        <span className="cm-muted">共 {total} 条</span>
       </div>
       {err && <div className="cm-err">{err}</div>}
       {!err && !runs.length && <div className="cm-muted" style={{ fontSize: 12 }}>还没有运行记录</div>}
@@ -1562,6 +1574,23 @@ function RunsPanel({ targetId }: { targetId: string }) {
             ))}
           </tbody>
         </table>
+      )}
+      {total > 0 && (
+        <div className="cm-pager">
+          <div className="cm-pager-btns">
+            <button className="cm-btn" onClick={() => setPage(1)} disabled={page <= 1 || loading}>首页</button>
+            <button className="cm-btn" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1 || loading}>上一页</button>
+            <span className="cm-pager-num">第 {page} / {totalPages} 页</span>
+            <button className="cm-btn" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages || loading}>下一页</button>
+            <button className="cm-btn" onClick={() => setPage(totalPages)} disabled={page >= totalPages || loading}>末页</button>
+          </div>
+          <div className="cm-pager-size">
+            <span className="cm-muted">每页</span>
+            <select value={pageSize} onChange={e => setPageSize(Number(e.target.value))}>
+              {RUNS_PAGE_SIZES.map(n => <option key={n} value={n}>{n} 条</option>)}
+            </select>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -3467,6 +3467,19 @@ tr[data-selected=true] td { background: var(--accent-bg, #f0f4ff); }
 [data-theme="dark"] .rk-ev-head select,
 [data-theme="dark"] .cm-filters select { color-scheme: dark; }
 
+/* 类目榜单 · 运行记录分页 */
+.cm-pager { display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap; margin-top: 8px; font-size: 11.5px; }
+.cm-pager-btns { display: flex; align-items: center; gap: 6px; }
+.cm-pager-btns .cm-btn { margin-top: 0; padding: 4px 10px; }
+.cm-pager-btns .cm-btn:disabled { opacity: .45; cursor: not-allowed; }
+.cm-pager-num { color: var(--ink-3); min-width: 82px; text-align: center; }
+.cm-pager-size { display: flex; align-items: center; gap: 5px; color: var(--ink-4); }
+.cm-pager-size select { font: inherit; font-size: 11.5px; padding: 3px 6px; border-radius: 6px;
+  border: 1px solid var(--border-strong); background: var(--card-bg); color: var(--ink);
+  color-scheme: light; cursor: pointer; }
+[data-theme="dark"] .cm-pager-size select { color-scheme: dark; }
+
 /* 产品采集：疑似亚马逊改版的汇总提示（失败项里含「改版」字样时出现） */
 .ps-format-warn { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap;
   margin: 10px 0; padding: 10px 13px; border-radius: 8px; font-size: 12px; line-height: 1.65;
