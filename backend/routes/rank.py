@@ -259,21 +259,42 @@ def _fmt_wait(sec):
 
 
 def _maybe_retry(state, job, results):
+    """只重试**没有有效结论**的词 —— 整批全败就全重试，部分失败只补失败的那几个。
+
+    原来按「整批」判断：只要有一个词拿到有效结论就整批不重试。于是 4 个词里
+    2 个被拦（blocked）也要一直挂到下一个档位才补（踩过：11-19 10:00「加热坐垫」
+    前 2 词 ok、后 2 词 blocked，失败的那两个拖到 15:00）。
+    现在改成逐个词判断：成功的词不动，只把失败的词重新排队。
+    """
     retry = int(job.get("retry") or 0)
     if retry >= MAX_AUTO_RETRY or not results:
         return
-    # 只要有任何一个词拿到「有效结论」（有排名 / 页面正常但未排名），就不算整体失败
-    if any(r.get("status") in ("ok", "not_ranked") for r in results):
-        return
+    failed = [r for r in results if r.get("status") not in ("ok", "not_ranked")]
+    if not failed:
+        return                      # 全部拿到有效结论，无需重试
     if in_block_cooldown():
-        _log(f"[rank] 「{job['name']}」失败但不重试：风控冷却中（剩 {block_cooldown_left() // 60} 分钟）")
+        _log(f"[rank] 「{job['name']}」{len(failed)} 个词失败但不重试："
+             f"风控冷却中（剩 {block_cooldown_left() // 60} 分钟）")
         return
-    wait = _retry_delay(results, retry)
-    _log(f"[rank] 「{job['name']}」本次全部失败（{results[0].get('error')}），"
-         f"{_fmt_wait(wait)}后自动重试（第 {retry + 1}/{MAX_AUTO_RETRY} 次）")
+    # 等待时间按**失败词**的错误类型算（原来是 results[0]，首个词成功时算错档位）
+    wait = _retry_delay(failed, retry)
+    kws = [str(r.get("keyword") or "").strip() for r in failed]
+    kws = [k for k in dict.fromkeys(kws) if k]
+    scope = ("全部失败" if len(failed) == len(results)
+             else f"{len(failed)}/{len(results)} 个词失败")
+    _log(f"[rank] 「{job['name']}」{scope}（{failed[0].get('error')}），"
+         f"{_fmt_wait(wait)}后自动重试失败的词（第 {retry + 1}/{MAX_AUTO_RETRY} 次）")
     try:
-        submit(state, job["task"], keyword=job.get("keyword"), source="retry",
-               delay=wait, retry=retry + 1)
+        if kws and len(failed) < len(results):
+            # 部分失败：逐个词入队（key 是 task:kw，不会和整批 job 撞车），
+            # 让「重试后仍失败」只针对那几个词继续，不牵连已成功的词。
+            for k in kws:
+                submit(state, job["task"], keyword=k, source="retry",
+                       delay=wait, retry=retry + 1)
+        else:
+            # 整批全败：保持整批重试（一个 job 跑完所有词，日志不会刷屏）
+            submit(state, job["task"], keyword=job.get("keyword"), source="retry",
+                   delay=wait, retry=retry + 1)
     except Exception as e:
         _log(f"[rank] 安排重试失败：{type(e).__name__}: {e}")
 
