@@ -205,6 +205,17 @@ backend/                     # 后端 Python 包（启动方式：python3 -m bac
                                 #   依据：常驻 Chrome + 18s 超时后单次 5~18 秒，比 HTTP 硬撞 3 次
                                 #   （20~30 秒 + 3 次刺激风控）还快。
                                 #   rank_fetcher._BLOCK_HINTS 同步补 bm-verify / checkpoint 等 2026 挑战页特征。
+                                #   **`cdp_empty_dom` 的含义与处理（2026-11-19）**：错误串
+                                #   `blocked|cdp_empty_dom` = HTTP 被拦 → 换常驻浏览器 → 浏览器取到的
+                                #   HTML 小于 `DUMP_MIN_BYTES=80KB`。**不代表浏览器坏了**，可能是
+                                #   （a）同一 IP 也被挑战页拦住（挑战页约 2.4KB）、（b）标签页首次
+                                #   打开太慢没加载出来（about:blank）、（c）checkpoint 页。
+                                #   现在 `_fetch_headless_cdp` 返回 `empty_dom:<字节数>:<标记>`，
+                                #   标记为 bm-verify / checkpoint / blank，日志可直接分辨。
+                                #   `fetch_via_cdp` 对**非挑战类** empty_dom（blank/无标记）重试一次
+                                #   （第二次有缓存通常就够）；带 bm-verify/checkpoint 的直接放弃。
+                                #   实例：11-19 10:01「通风坐垫」两词均报 cdp_empty_dom，10:05 复测
+                                #   同一词 5.7s / 1.37MB / 50 卡正常 —— 属瞬时，自动重试即可恢复。
                                 #   **CDP 兜底超时与空壳重试（2026-11-16）**：`fetch_via_cdp`
                                 #   timeout 12 → **18**，`cdp_no_results` 时重试一次（第二次资源已缓存）。
                                 #   起因：`steering wheel cover` 11-16 09:51 报 `blocked|cdp_no_results`

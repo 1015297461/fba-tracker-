@@ -198,7 +198,9 @@ def _fetch_headless(url, timeout=DUMP_TIMEOUT):
                 pass
 
     if not html or len(html) < DUMP_MIN_BYTES:
-        return None, "empty_dom"
+        n = len(html or "")
+        tag = ":bm-verify" if (html and "bm-verify" in html) else (":blank" if not (html or "").strip() else "")
+        return None, f"empty_dom:{n}{tag}"
     return html, None
 
 
@@ -511,7 +513,17 @@ def _cdp_fetch_locked(url, cookies, ready_expr, timeout):
             except Exception:
                 pass
         if len(html) < DUMP_MIN_BYTES:
-            return None, "empty_dom"
+            # 带上实际字节数和「是不是挑战页」：光一个 empty_dom 分不清
+            # 「浏览器拿到的也是 bm-verify 挑战页」和「标签页压根没加载出来」。
+            # 实测：挑战页 ≈2.4KB、about:blank ≈0、正常搜索页 1.3~1.8MB。
+            tag = ""
+            if "bm-verify" in html or "triggerInterstitialChallenge" in html:
+                tag = ":bm-verify"
+            elif 'id="checkpointForm"' in html:
+                tag = ":checkpoint"
+            elif not html.strip():
+                tag = ":blank"
+            return None, f"empty_dom:{len(html)}{tag}"
         return html, None
     except subprocess.TimeoutExpired:
         return None, "cdp_timeout"

@@ -172,7 +172,18 @@ def fetch_via_cdp(marketplace, keyword, page=1, timeout=18, retries=1):
         except Exception as e:
             return None, f"cdp_exc:{type(e).__name__}"
         if err:
-            return None, f"cdp_{err}"          # 超时/打不开，重试也一样
+            # empty_dom 分两种，处理方式相反：
+            #  · 标签里明确带 bm-verify/checkpoint → 挑战页，重试也是同一堵墙，直接放弃
+            #  · 只是「页面没加载出来」（blank / 无标记）→ 多半是标签页首次打开太慢，
+            #    第二次有缓存通常就够，值得再试一次（11-19 10:01「通风坐垫」
+            #    两个词都报 cdp_empty_dom，4 分钟后再测同一词 5.7s / 1.37MB 成功）
+            if err.startswith("empty_dom") and "bm-verify" not in err \
+                    and "checkpoint" not in err and attempt < retries:
+                last = f"cdp_{err}"
+                _log(f"[rank] CDP 没拿到页面（{err}），重试一次")
+                time.sleep(2)
+                continue
+            return None, f"cdp_{err}"          # 超时/打不开/挑战，重试也一样
         if any(h in html for h in _BLOCK_HINTS) or "bm-verify" in html:
             return None, "cdp_blocked"
         if "s-search-result" in html:
