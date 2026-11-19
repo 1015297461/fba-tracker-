@@ -1299,7 +1299,9 @@ export function KeywordRank() {
                       const lastRes = row.lastResult;
                       const lastIsFail = isRealFailure(lastTry)
                         && (!lastRes || (lastTry as Snapshot).capturedAt > lastRes.capturedAt);
-                      const shown = row.latest || lastRes;
+                      // shown = 最近一次「有效结论」（拿到排名 或 扫完没找到），
+                      // 不是「最后一次有名次」—— 后者会让掉榜的词看起来「两天没更新」。
+                      const shown = lastRes || row.latest;
                       return (
                       <tr key={row.keyword}>
                         {batchMode && (
@@ -1313,7 +1315,10 @@ export function KeywordRank() {
                         </td>
                         <td className="kr-col-rank">
                           {/* 没拿到排名时把「有效结论」传进去，才能显示「前3页未找到」 */}
-                          <RankCell snap={row.latest || lastRes} prevSnap={row.prev} type="organic" />
+                          {/* 必须用 lastRes（最新结论），不能用 row.latest（最后一次有名次）：
+                            否则 ASIN 掉出前 3 页后，这里会一直显示旧的排名数字（踩过：
+                            11-17 第 37 名一直挂到 11-19，实际早已 not_ranked）。 */}
+                        <RankCell snap={lastRes || row.latest} prevSnap={row.prev} type="organic" />
                         </td>
                         <td className="kr-col-aba">
                           {(() => {
@@ -1357,11 +1362,16 @@ export function KeywordRank() {
                           ) : shown ? (
                             <>
                               {fmtDateTime(shown.capturedAt)}
-                              {!row.latest && (
+                              {shown.status !== 'ok' && (
                                 <span className="kr-norank"
-                                  title={lastRes?.organicScanned
-                                    ? `扫完 ${lastRes.organicScanned} 个自然位都没有这个 ASIN（页面正常，不是采集失败）`
-                                    : '页面正常但前 3 页没有这个 ASIN（不是采集失败）'}>
+                                  title={[
+                                    lastRes?.organicScanned
+                                      ? `扫完 ${lastRes.organicScanned} 个自然位都没有这个 ASIN（页面正常，不是采集失败）`
+                                      : '页面正常但前 3 页没有这个 ASIN（不是采集失败）',
+                                    row.latest
+                                      ? `最后一次有排名：${fmtDateTime(row.latest.capturedAt)}（第 ${row.latest.organicRank} 名）`
+                                      : '历史上从未进过前 3 页',
+                                  ].join('；')}>
                                   未排名
                                 </span>
                               )}
