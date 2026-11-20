@@ -1342,6 +1342,22 @@ result.structuredContent     → {"top_competitors": [{asin:...}×100]} ← 真�
     (asin, marketplace) 最新一条成功记录写进池（`snap_date`/`fetched_at` 都用原采集时间，
     **不能用「现在」**，否则界面全显示成今天抓的——已踩过并修正）。幂等，可重跑。
   · ⚠️ `db.save_asin_detail_snapshot(..., fetched_at=None)`：回填/补历史时必须显式传原始时间。
+- **详情正文只存池一份，签收单瘦化（2026-11-20）** —— 此前产品采集成功后 `scrape_products` 与
+  `asin_detail_snapshots` 各存一份完整详情（4 个大字段双写，`scrape_products` 因此占 38MB）。
+  现在以详情池为**唯一正文源**：
+  · 写入 `routes/scrape.py::_run_scrape`：先 `_to_pool()`（返回**确实写入**的 ASIN 集合），
+    再 `_persist(products, pooled)` 把这些 ASIN 的 11 个正文列（bullet_points / description /
+    images / aplus_images / specifications / product_details / customers_say / customers_say_tags /
+    customers_say_aspects / review_images / select_to_learn_more）清空并置 `detail_in_pool=1`。
+    **池写失败则保留全文兜底**，绝不丢数据；复用池的行本来就在池里，直接瘦化。
+  · 读取 `db.get_scrape_products`：按 `detail_in_pool` 标记找出瘦化行，按市场分组用
+    `get_latest_pool_details()`（**无时间窗口**，`get_reusable_asin_details` 的 30 天窗口补不了老数据）
+    批量取池最新快照，经 `db._detail_to_pool_backfill()` 转驼峰 patch 补回。只覆盖那 11 列，
+    **不动 `review_media` / `reviewMediaFetched` 等签收单独有字段**。池里找不到就留空，不造假数据。
+  · schema：`scrape_products.detail_in_pool INTEGER DEFAULT 0`（老库自动迁移；历史行默认 0 = 读自己
+    行里的全文，零兼容风险）。同一天多次「新增一条记录」的多版本正文会共用池里同日那条，
+    **旧版本详情不再逐版本保留**（用户确认基本不用该功能）。
+  · 前端/导出零改动：`get_scrape_products` 返回的字段结构与形状完全不变。
 - **为什么「单条详情」比「批量采集」容易失败（2026-10-30 复盘）**：
   ⚠️ 两条链路**早就是同一套抓取函数**，差别不在"采集方式"，而在**机会数与时间分布**：
   批量一个 ASIN 有 4（函数内重试）× 2（失败项重试轮）= 8 次机会、跨数分钟摊开，失败还被第二轮盖过去

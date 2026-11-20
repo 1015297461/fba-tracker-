@@ -880,6 +880,40 @@ class DbState:
             return None
         return {"snap_date": row["snap_date"], "data": d, "fetched_at": row["fetched_at"]}
 
+    def get_latest_pool_details(self, asins, marketplace="US"):
+        """批量取每个 ASIN 在详情池里的**最新一条**快照（无时间窗口）。
+
+        给 `get_scrape_products` 补齐「正文只存池」的行用——签收单里那些行可能
+        是几个月前抓的，不能走 `get_reusable_asin_details` 的 30 天窗口。
+        返回 {ASIN: detail_dict}（驼峰结构，池里的原始格式）。
+        """
+        clean = []
+        for a in asins or []:
+            s = str(a or "").strip().upper()
+            if s and s not in clean:
+                clean.append(s)
+        if not clean:
+            return {}
+        mk = str(marketplace or "US").strip().upper()
+        marks = ",".join("?" for _ in clean)
+        sql = ("SELECT asin, data FROM asin_detail_snapshots "
+               f"WHERE marketplace=? AND asin IN ({marks}) "
+               "ORDER BY asin ASC, snap_date DESC, fetched_at DESC")
+        with self._conn() as conn:
+            rows = conn.execute(sql, [mk] + clean).fetchall()
+        out = {}
+        for r in rows:
+            a = r["asin"]
+            if a in out:          # 已按日期倒序 → 每个 ASIN 只留最新
+                continue
+            try:
+                d = json.loads(r["data"] or "{}")
+            except Exception:
+                continue
+            if isinstance(d, dict) and d:
+                out[a] = d
+        return out
+
     def get_reusable_asin_details(self, asins, marketplace="US",
                                   days=None, until=None):
         """批量取「可复用」的详情快照（每个 ASIN 窗口内最新一条）。
@@ -1128,7 +1162,8 @@ class DbState:
                     scraped_at    TEXT,
                     seq           INTEGER DEFAULT 0,
                     review_media  TEXT,
-                    reused_from   TEXT
+                    reused_from   TEXT,
+                    detail_in_pool INTEGER DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_scrape_prod_task ON scrape_products(task_id);
 
@@ -1740,6 +1775,10 @@ class DbState:
             # 抓取时刻更早的快照（值就是那次真实抓取时间），界面上要标出来。
             if "reused_from" not in _scraped_cols:
                 conn.execute("ALTER TABLE scrape_products ADD COLUMN reused_from TEXT")
+            # 详情正文只存池一份：新采的成功结果大字段留空，读时按标记从池补齐。
+            # 历史行保持 NULL/0 → 读自己行里的全文，完全兼容旧数据。
+            if "detail_in_pool" not in _scraped_cols:
+                conn.execute("ALTER TABLE scrape_products ADD COLUMN detail_in_pool INTEGER DEFAULT 0")
 
 
             # SIF v1 → v2：旧版结构（单表快照 + detail 冗余存 60 周历史）与新「爆品关键词
@@ -2334,8 +2373,8 @@ class DbState:
                             bsr_sub_category, bsr_sub_rank, bsr_raw_text, customers_say,
                             customers_say_tags, customers_say_aspects,
                             review_images, select_to_learn_more, status, error_message, scraped_at,
-                            seq, reused_from)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            seq, reused_from, detail_in_pool)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                            ON CONFLICT(task_id, asin, seq) DO UPDATE SET
                                marketplace=excluded.marketplace, title=excluded.title,
                                brand=excluded.brand, price=excluded.price,
@@ -2360,7 +2399,8 @@ class DbState:
                                select_to_learn_more=excluded.select_to_learn_more,
                                status=excluded.status, error_message=excluded.error_message,
                                scraped_at=excluded.scraped_at,
-                               reused_from=excluded.reused_from""",
+                               reused_from=excluded.reused_from,
+                               detail_in_pool=excluded.detail_in_pool""",
                         [
                             task_id, p.get("asin"), p.get("marketplace"),
                             p.get("title"), p.get("brand"), p.get("price"), p.get("rating"),
@@ -2385,6 +2425,7 @@ class DbState:
                             p.get("scraped_at") or now,
                             int(p.get("seq") or 0),
                             p.get("reused_from"),
+                            int(p.get("detail_in_pool") or 0),
                         ],
                     )
                 conn.commit()
@@ -2479,12 +2520,52 @@ class DbState:
         except Exception:
             return []
 
+    def _detail_to_pool_backfill(self, d):
+        """池里的驼峰 detail → 签收单需要的驼峰大字段 patch。
+
+        与 `asin_detail_pool.detail_to_product` 同源口径，但只取「正文只存池」的
+        那几列；不能 import 那个模块（它反过来 import db，会循环）。
+        """
+        cr = d.get("customerReviews") or {}
+        return {
+            "bulletPoints": d.get("bulletPoints") or [],
+            "description": d.get("description"),
+            "images": d.get("images") or [],
+            "aplusImages": d.get("aplusImages") or [],
+            "specifications": d.get("specifications") or {},
+            "productDetails": d.get("productDetails") or {},
+            "customerReviewsPatch": {          # 单独合并，不覆盖 review_media 等签收单独有字段
+                "customersSay": cr.get("customersSay"),
+                "customersSayTags": cr.get("customersSayTags"),
+                "customersSayAspects": cr.get("customersSayAspects") or [],
+                "reviewImages": cr.get("reviewImages") or [],
+                "selectToLearnMore": cr.get("selectToLearnMore") or [],
+            },
+        }
+
     def get_scrape_products(self, task_id):
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM scrape_products WHERE task_id=? ORDER BY id ASC", [task_id]
             ).fetchall()
-            return [self._row_to_scrape_product(r) for r in rows]
+        products = [self._row_to_scrape_product(r) for r in rows]
+        # 正文存池的行：按市场分组批量取池快照，补回大字段（不动 review_media 等签收单独有列）
+        need = {}
+        for r, p in zip(rows, products):
+            if "detail_in_pool" in r.keys() and r["detail_in_pool"]:
+                mk = p.get("marketplace") or "US"
+                need.setdefault(mk, []).append(p)
+        for mk, pairs in need.items():
+            pool = self.get_latest_pool_details([p.get("asin") for p in pairs], mk)
+            for p in pairs:
+                d = pool.get(str(p.get("asin") or "").upper())
+                if not d:
+                    continue                      # 池里没有 → 保留空值，不造假数据
+                patch = self._detail_to_pool_backfill(d)
+                cr_patch = patch.pop("customerReviewsPatch")
+                p.update(patch)
+                p["customerReviews"].update(cr_patch)
+        return products
 
     def delete_scrape_task(self, task_id):
         with self.lock:

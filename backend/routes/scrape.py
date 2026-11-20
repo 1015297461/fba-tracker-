@@ -246,27 +246,46 @@ def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, c
         # 块末兜底写会各取一次 max+1，同一 ASIN 被写成两行。
         _seq_cache = {}
 
-        def _persist(products):
+        # 详情大字段正文只存池一份，签收单留空壳（detail_in_pool=1），读时从池补回。
+        # 只有「确实写进池」的成功结果才瘦化；池写失败则保留全文兜底，绝不丢数据。
+        _SLIM_FIELDS = ("bullet_points", "description", "images", "aplus_images",
+                        "specifications", "product_details", "customers_say",
+                        "customers_say_tags", "customers_say_aspects",
+                        "review_images", "select_to_learn_more")
+
+        def _slim(p):
+            out = {k: v for k, v in p.items() if k not in _SLIM_FIELDS}
+            out["detail_in_pool"] = 1
+            return out
+
+        def _persist(products, pooled=None):
+            """落库。pooled 是本次确实写进详情池的 ASIN 集合，这些才瘦化。"""
             if append:
                 for p in products:
                     a = p.get("asin")
                     if a not in _seq_cache:
                         _seq_cache[a] = state.next_scrape_product_seq(task_id, a)
                 products = [{**p, "seq": _seq_cache.get(p.get("asin"), 0)} for p in products]
+            if pooled:
+                products = [_slim(p) if str(p.get("asin") or "").upper() in pooled else p
+                            for p in products]
             state.save_scrape_products(task_id, products)
 
         def _to_pool(products):
-            """把成功结果写回详情池，供另外两个入口复用。失败只记日志，不影响采集。"""
+            """把成功结果写回详情池，返回**确实写入**的 ASIN 集合（供签收单瘦化）。"""
             nonlocal pool_saved
+            ok = set()
             for p in products:
                 if asin_detail_pool.put(state, p, marketplace):
                     pool_saved += 1
+                    ok.add(str(p.get("asin") or "").upper())
+            return ok
 
         def on_progress(_completed, _total, product):
             """每抓完一个 ASIN 就落库，进度条才不会长时间停在 0/500。"""
             nonlocal since_refresh, scraped
-            _persist([product])
-            _to_pool([product])       # 立刻进池：暂停/取消时本块已抓到的成果也不会白费
+            pooled = _to_pool([product])   # 先入池：只有入池成功才敢瘦化签收单
+            _persist([product], pooled)
             since_refresh += 1
             scraped += 1
             if scraped % PROGRESS_LOG_EVERY == 0:
@@ -284,7 +303,7 @@ def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, c
             if reused:
                 for a in chunk:                       # 按原顺序落库，列表顺序不变
                     if a in reused:
-                        _persist([reused[a]])
+                        _persist([reused[a]], {str(a).strip().upper()})  # 复用池的正文只在池里
                 reused_total += len(reused)
                 _log(f"[scrape] 第 {start // CHUNK_SIZE + 1} 块：{len(reused)} 个复用详情池"
                      f"（最近 {asin_detail_pool.reuse_window_days()} 天内抓过），"
@@ -310,8 +329,8 @@ def _run_scrape(state, task_id, marketplace, with_reviews, with_customers_say, c
                 results = [{**product_fetcher._empty_product(
                     a, marketplace, f"fetch_exc:{type(e).__name__}")} for a in to_fetch]
             # 兜底再写一次：失败重试轮的结果不走 on_progress，靠这里落库（UPSERT 幂等）
-            _persist(results)
-            _to_pool(results)          # 重试轮成功的结果也补进池子（写入幂等）
+            pooled = _to_pool(results)     # 先入池，再按入池结果瘦化签收单
+            _persist(results, pooled)
             state.refresh_scrape_task_counts(task_id)
             # 重采进度与任务计数脱钩，由这里按块推进（见 _run_progress 的说明）
             if force_set:
